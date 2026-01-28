@@ -1,0 +1,10 @@
+FULL RAW DATA:
+================================================================================
+Traceback (most recent call last):
+  File "E:\Workspace\VietChiBaoPrj\AutomationGenVideo_AI\debug_raw.py", line 20, in <module>
+    print(json.dumps(video.raw_data, indent=2, ensure_ascii=False))
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ngoct\AppData\Local\Programs\Python\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 65-66: character maps to <undefined>

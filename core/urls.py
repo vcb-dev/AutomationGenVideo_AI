@@ -1,23 +1,11 @@
 """
 URL configuration for core project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/4.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.views import APIView
 from rest_framework.response import Response
+
 
 class APIRootView(APIView):
     """
@@ -25,50 +13,80 @@ class APIRootView(APIView):
     """
     def get(self, request):
         return Response({
-            'message': 'Django Backend API is running!',
-            'version': '1.0.0',
+            'message': 'AutomationGenVideo AI Service v2.0',
+            'status': 'running',
+            'version': '2.0.0',
+            'description': 'Multi-platform video scraping service using Apify',
+            'platforms': ['tiktok', 'douyin', 'instagram', 'facebook'],
             'endpoints': {
-                'admin': '/admin/',
-                'api': {
-                    'channels': '/api/channels/',
-                    'search': {
-                        'url': '/api/search',
-                        'method': 'POST',
-                        'description': 'Search videos by keyword',
-                        'body': {
-                            'keyword': 'string (required)',
-                            'min_likes': 'integer (optional)',
-                            'min_views': 'integer (optional)',
-                            'sort_by': 'string (optional): likes, views'
-                        }
-                    },
-                    'search_status': {
-                        'url': '/api/search/status/<task_id>',
-                        'method': 'GET',
-                        'description': 'Check search task status'
-                    },
-                    'music_posts': {
-                        'url': '/api/music/posts',
-                        'method': 'POST',
-                        'description': 'Get posts by music ID',
-                        'body': {
-                            'music_id': 'string (required)',
-                            'count': 'integer (optional, default: 30)',
-                            'cursor': 'integer (optional, default: 0)'
-                        }
-                    },
-                    'download': {
-                        'url': '/api/download',
-                        'method': 'POST',
-                        'description': 'Get download URL for video',
-                        'body': {
-                            'url': 'string (required): video URL'
-                        }
+                'health': {
+                    'url': '/api/health/',
+                    'method': 'GET',
+                    'description': 'Health check endpoint'
+                },
+                'search': {
+                    'url': '/api/search/',
+                    'method': 'POST',
+                    'description': 'Search videos across platforms',
+                    'body': {
+                        'platform': 'string (required): tiktok, douyin, instagram, facebook',
+                        'keyword': 'string (required): search keyword or hashtag',
+                        'min_likes': 'integer (optional, default: 0)',
+                        'min_views': 'integer (optional, default: 0)',
+                        'max_results': 'integer (optional, default: 20, max: 100)',
+                        'use_cache': 'boolean (optional, default: true)',
+                        'async_mode': 'boolean (optional, default: false)'
                     }
+                },
+                'search_status': {
+                    'url': '/api/search/status/{task_id}/',
+                    'method': 'GET',
+                    'description': 'Check async search task status'
+                },
+                'search_history': {
+                    'url': '/api/search/history/',
+                    'method': 'GET',
+                    'description': 'Get search history',
+                    'params': {
+                        'platform': 'string (optional): filter by platform',
+                        'limit': 'integer (optional, default: 50)'
+                    }
+                },
+                'user_videos': {
+                    'url': '/api/search/user-videos/',
+                    'method': 'POST',
+                    'description': 'Get videos from specific user/channel',
+                    'body': {
+                        'platform': 'string (required)',
+                        'username': 'string (required)',
+                        'max_results': 'integer (optional, default: 20)'
+                    }
+                },
+                'channels': {
+                    'url': '/api/channels/',
+                    'method': 'GET, POST',
+                    'description': 'List or create tracked channels'
+                },
+                'channel_detail': {
+                    'url': '/api/channels/{id}/',
+                    'method': 'GET, PUT, DELETE',
+                    'description': 'Retrieve, update or delete channel'
+                },
+                'channel_check': {
+                    'url': '/api/channels/{id}/check/',
+                    'method': 'POST',
+                    'description': 'Manually trigger channel check'
+                },
+                'stats': {
+                    'url': '/api/stats/',
+                    'method': 'GET',
+                    'description': 'Get system statistics and analytics'
                 }
             },
-            'documentation': 'Visit /api/ endpoints for API usage'
+            'documentation': 'See README.md for detailed API documentation',
+            'admin_panel': '/admin/'
         })
+
 
 urlpatterns = [
     path('', APIRootView.as_view(), name='api-root'),

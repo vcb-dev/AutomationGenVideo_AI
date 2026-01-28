@@ -1,16 +1,36 @@
-from .channel_views import TrackedChannelViewSet
-from .search_views import SearchView, SearchStatusView, TestSearchView
-from .music_views import MusicPostsView
-from .download_views import DownloadView
-from .proxy_views import ProxyImageView, ProxyVideoView
+"""
+Views package initialization.
+"""
+
+from .search_views import (
+    SearchView,
+    SearchStatusView,
+    SearchHistoryView,
+    UserVideosView,
+    VideosByChannelView,
+)
+from .channel_views import (
+    ChannelListCreateView,
+    ChannelDetailView,
+    ChannelCheckView,
+)
+from .stats_views import (
+    StatsView,
+    HealthCheckView,
+)
 
 __all__ = [
-    'TrackedChannelViewSet',
+    # Search views
     'SearchView',
     'SearchStatusView',
-    'TestSearchView',
-    'MusicPostsView',
-    'DownloadView',
-    'ProxyImageView',
-    'ProxyVideoView'
+    'SearchHistoryView',
+    'UserVideosView',
+    'VideosByChannelView',
+    # Channel views
+    'ChannelListCreateView',
+    'ChannelDetailView',
+    'ChannelCheckView',
+    # Stats views
+    'StatsView',
+    'HealthCheckView',
 ]

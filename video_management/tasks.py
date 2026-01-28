@@ -1,161 +1,212 @@
-from celery import shared_task
-from celery.result import AsyncResult
-from .models import TrackedChannel, ReportedVideo
-from .services.douyin_client import DouyinClient
-from .services.telegram_utils import TelegramService
-from .services.rapidapi_service import TikhubService
-from django.core.cache import cache
+"""
+Celery tasks for asynchronous operations.
+
+This module defines background tasks for video scraping, channel monitoring,
+and cache cleanup.
+"""
+
 import logging
-import asyncio
+from typing import Dict, Any
+from celery import shared_task
+from django.utils import timezone
+from datetime import timedelta
+
+from .models import TrackedChannel, SearchHistory, SearchStatus, Platform
+from .services.apify_service import create_scraper
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, name='video_management.search_videos_task')
-def search_videos_task(self, keyword, min_likes=0, min_views=0, sort_by='likes', target_count=30):
+
+@shared_task(
+    bind=True,
+    name='video_management.search_videos',
+    max_retries=3,
+    default_retry_delay=60
+)
+def search_videos_task(
+    self,
+    platform: str,
+    keyword: str,
+    min_likes: int = 0,
+    min_views: int = 0,
+    max_results: int = 20,
+    use_cache: bool = True,
+    search_type: str = 'posts'
+) -> Dict[str, Any]:
     """
-    Celery task để search videos từ TikTok/Douyin sử dụng Tikhub API (chạy background)
+    Asynchronous video search task.
     
-    Flow:
-    1. Django Backend trigger task
-    2. Celery Task (ẩn - background)
-    3. Tikhub TikTok API
-    4. https://api.tikhub.io/api/v1/douyin/web/
-    5. Parse JSON data
-    6. Filter video (min_likes, min_views)
-    7. Return JSON và cache
+    Args:
+        platform: Platform to search
+        keyword: Search keyword
+        min_likes: Minimum likes filter
+        min_views: Minimum views filter
+        max_results: Maximum results
+        use_cache: Whether to use cache
+        search_type: Type of content (posts, reels)
+        
+    Returns:
+        Search result dictionary
     """
     try:
-        # Update task state
-        self.update_state(state='PROGRESS', meta={'status': 'Starting Tikhub API search...'})
+        logger.info(
+            f"[Task {self.request.id}] Starting search: "
+            f"platform={platform}, type={search_type}, keyword={keyword}"
+        )
         
-        logger.info(f"Celery task: Starting Tikhub API search for keyword: {keyword}, min_likes: {min_likes}, min_views: {min_views}")
-        
-        # Tạo cache key
-        cache_key = f"adv_search_{keyword}_{min_likes}_{min_views}"
-        
-        # Kiểm tra cache trước
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            logger.info(f"Cache hit for {cache_key}")
-            return {
-                'status': 'SUCCESS',
-                'videos': cached_result,
-                'count': len(cached_result)
-            }
-        
-        # Sử dụng Tikhub Service
-        self.update_state(state='PROGRESS', meta={'status': 'Calling Tikhub API...'})
-        
-        api_service = TikhubService()
-        formatted_videos = api_service.search_videos(
+        scraper = create_scraper(platform, search_type=search_type)
+        result = scraper.execute_search(
             keyword=keyword,
             min_likes=min_likes,
             min_views=min_views,
-            target_count=target_count
+            max_results=max_results,
+            use_cache=use_cache,
+            save_to_db=True
         )
         
-        # Validate results
-        if formatted_videos is None:
-            formatted_videos = []
+        logger.info(
+            f"[Task {self.request.id}] Search completed: "
+            f"found {result['count']} videos in {result['execution_time']:.2f}s"
+        )
         
-        if not isinstance(formatted_videos, list):
-            logger.warning(f"Tikhub API returned invalid format: {type(formatted_videos)}, falling back to scraper")
-            formatted_videos = []
+        return result
         
-        # Nếu Tikhub API không trả về kết quả, fallback sang scraper
-        if not formatted_videos or len(formatted_videos) == 0:
-            logger.info("Tikhub API returned no results, falling back to Playwright scraper...")
-            self.update_state(state='PROGRESS', meta={'status': 'Tikhub API returned no results, using Playwright scraper...'})
-            
-            try:
-                from .services.scraper_service import DouyinScraper
-                scraper = DouyinScraper(headless=True)
-                scraper_results = asyncio.run(scraper.search_videos(
-                    keyword=keyword,
-                    min_likes=min_likes,
-                    min_views=min_views,
-                    target_count=target_count
-                ))
-                
-                if scraper_results:
-                    formatted_videos = scraper_results
-                    logger.info(f"Scraper found {len(formatted_videos)} videos")
-            except Exception as scraper_error:
-                logger.error(f"Scraper fallback failed: {scraper_error}", exc_info=True)
-                # Tiếp tục với formatted_videos = [] nếu scraper cũng fail
+    except Exception as e:
+        logger.error(
+            f"[Task {self.request.id}] Search failed: {str(e)}",
+            exc_info=True
+        )
         
-        # Apply sorting
-        if formatted_videos:
-            if sort_by in ['likes', 'like_count']:
-                formatted_videos.sort(key=lambda x: x.get('likes', 0), reverse=True)
-            elif sort_by in ['views', 'view_count']:
-                formatted_videos.sort(key=lambda x: x.get('views', 0), reverse=True)
+        # Retry with exponential backoff
+        try:
+            raise self.retry(exc=e, countdown=2 ** self.request.retries)
+        except self.MaxRetriesExceededError:
+            return {
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'results': [],
+                'execution_time': 0
+            }
+
+
+# DISABLED: Background task removed - channel checks now run synchronously via API
+# TikHub integration removed - using Apify only
+
+
+# DISABLED: Scheduled channel checks removed - use manual checks instead
+# @shared_task(name='video_management.check_all_channels')
+# def check_all_channels_task() -> Dict[str, Any]:
+#     """
+#     Check all active tracked channels.
+#     
+#     This task is scheduled to run periodically via Celery Beat.
+#     
+#     Returns:
+#         Summary of checks performed
+#     """
+#     logger.info("Starting scheduled channel checks")
+#     
+#     # Get channels that should be checked
+#     now = timezone.now()
+#     channels = TrackedChannel.objects.filter(is_active=True)
+#     
+#     checked = 0
+#     skipped = 0
+#     
+#     for channel in channels:
+#         # Check if it's time to check this channel
+#         if channel.last_checked_at:
+#             next_check = channel.last_checked_at + timedelta(
+#                 minutes=channel.check_interval_minutes
+#             )
+#             if now < next_check:
+#                 skipped += 1
+#                 continue
+#         
+#         # Start async check
+#         check_channel_task.delay(channel.id)
+#         checked += 1
+#     
+#     logger.info(
+#         f"Scheduled checks completed: {checked} started, {skipped} skipped"
+#     )
+#     
+#     return {
+#         'success': True,
+#         'checked': checked,
+#         'skipped': skipped,
+#         'total': channels.count()
+#     }
+
+
+@shared_task(name='video_management.cleanup_old_cache')
+def cleanup_old_cache_task() -> Dict[str, Any]:
+    """
+    Clean up expired search cache entries.
+    
+    This task is scheduled to run daily via Celery Beat.
+    
+    Returns:
+        Cleanup summary
+    """
+    logger.info("Starting cache cleanup")
+    
+    try:
+        # Delete expired cache entries
+        expired = SearchHistory.objects.filter(
+            expires_at__lt=timezone.now(),
+            status=SearchStatus.COMPLETED
+        )
+        count = expired.count()
         
-        # Cache results
-        if formatted_videos:
-            cache.set(cache_key, formatted_videos, timeout=1800)  # 30 minutes
+        if count > 0:
+            expired.delete()
+            logger.info(f"Deleted {count} expired cache entries")
+        else:
+            logger.info("No expired cache entries to delete")
         
-        logger.info(f"Task completed. Found {len(formatted_videos)} videos")
+        # Also clean up very old failed searches (>30 days)
+        old_failed = SearchHistory.objects.filter(
+            status=SearchStatus.FAILED,
+            created_at__lt=timezone.now() - timedelta(days=30)
+        )
+        failed_count = old_failed.count()
+        
+        if failed_count > 0:
+            old_failed.delete()
+            logger.info(f"Deleted {failed_count} old failed searches")
         
         return {
-            'status': 'SUCCESS',
-            'videos': formatted_videos,
-            'count': len(formatted_videos)
+            'success': True,
+            'expired_deleted': count,
+            'failed_deleted': failed_count
         }
         
     except Exception as e:
-        error_msg = f"Tikhub API error: {str(e)}"
-        logger.error(error_msg, exc_info=True)
+        logger.error(f"Cache cleanup failed: {str(e)}", exc_info=True)
         return {
-            'status': 'FAILURE',
-            'error': error_msg
+            'success': False,
+            'error': str(e)
         }
 
-@shared_task
-def scan_tracked_channels():
-    """
-    Periodic task to scan all active TrackedChannel entries.
-    If a new video meets the likes threshold and hasn't been reported,
-    trigger a Telegram alert.
-    """
-    active_channels = TrackedChannel.objects.filter(is_active=True)
-    client = DouyinClient()
-    
-    for channel in active_channels:
-        # Fetch latest videos from Douyin API for this channel
-        # Note: In a real celery task, we'd use a sync wrapper for the async client
-        # or use a sync httpx client. Simplified here with asyncio.run.
-        channel_data = asyncio.run(client.get_channel_videos(channel.channel_id))
-        
-        if not channel_data:
-            continue
-            
-        videos = channel_data.get('list', [])
-        for video in videos:
-            video_id = video.get('video_id')
-            like_count = video.get('like_count', 0)
-            
-            # Check Threshold & Duplicate
-            if like_count >= channel.threshold_likes:
-                if not ReportedVideo.objects.filter(video_id=video_id).exists():
-                    # Trigger Telegram Notification
-                    video_url = video.get('share_url', f"https://www.douyin.com/video/{video_id}")
-                    asyncio.run(TelegramService.notify_hot_video(
-                        channel_name=channel.name,
-                        like_count=like_count,
-                        video_url=video_url
-                    ))
-                    
-                    # Record as reported
-                    ReportedVideo.objects.create(
-                        video_id=video_id,
-                        channel=channel,
-                        likes_at_report=like_count
-                    )
 
-@shared_task
-def cleanup_old_cache():
-    """Optional: Cleanup expired search cache entries."""
-    from .models import SearchCache
-    from django.utils import timezone
-    SearchCache.objects.filter(expires_at__lt=timezone.now()).delete()
+@shared_task(name='video_management.update_video_stats')
+def update_video_stats_task(video_ids: list = None) -> Dict[str, Any]:
+    """
+    Update statistics for videos (optional feature for refreshing data).
+    
+    Args:
+        video_ids: List of video IDs to update (None = all recent)
+        
+    Returns:
+        Update summary
+    """
+    # This is a placeholder for future enhancement
+    # Could re-scrape videos to update their stats
+    logger.info("Video stats update task (not yet implemented)")
+    
+    return {
+        'success': True,
+        'message': 'Feature not yet implemented'
+    }

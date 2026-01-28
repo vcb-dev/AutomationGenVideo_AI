@@ -37,21 +37,20 @@ class MusicPostsView(APIView):
                 }, status=status.HTTP_200_OK)
             
             # Call API
-            from ..services.rapidapi_service import TikhubService
+            # Call API
+            # from ..services.rapidapi_service import TikhubService
             
-            logger.info(f"Calling Tikhub API for musicId: {music_id}")
-            api_service = TikhubService()
-            videos = api_service.get_music_posts(
-                music_id=music_id,
-                count=count,
-                cursor=cursor,
-                min_likes=min_likes,
-                min_views=min_views
-            )
+            # logger.info(f"Calling Tikhub API for musicId: {music_id}")
+            # api_service = TikhubService()
+            # videos = api_service.get_music_posts(...)
+            
+            # Temporarily disabled or return empty list as Apify migration is in progress
+            logger.warning("Music search disabled (Migration to Apify in progress)")
+            videos = []
             
             # Cache results
-            if videos:
-                cache.set(cache_key, videos, timeout=1800)  # 30 minutes
+            # if videos:
+            #     cache.set(cache_key, videos, timeout=1800)  # 30 minutes
             
             return Response({
                 'videos': videos,

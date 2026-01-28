@@ -237,24 +237,51 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-# Douyin API settings (Legacy - có thể giữ lại cho tương thích)
-DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.com/douyin')
-DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
+# ==========================================
+# APIFY CONFIGURATION (Primary Scraping Service)
+# ==========================================
+APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
+
+# Apify Actor IDs for different platforms
+APIFY_ACTORS = {
+    'tiktok': env('APIFY_ACTOR_TIKTOK', default='OtzYfK1ndEGdwWFKQ'),  # TikTok Scraper with full authorMeta
+    'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
+    'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
+    'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
+    'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
+    'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
+}
+
+# Apify timeout settings (in seconds)
+APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=300)  # 5 minutes
+APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=100)
+
+# ==========================================
+# LEGACY API SETTINGS (Fallback)
+# ==========================================
 
 # Tikhub TikTok API settings
 TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
 TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
 
-# SociaVault TikTok API settings (Legacy - có thể giữ lại cho tương thích)
-SOCIAVAULT_API_KEY = env('SOCIAVAULT_API_KEY', default='')
-SOCIAVAULT_API_BASE_URL = env('SOCIAVAULT_API_BASE_URL', default='https://api.sociavault.com')
+# Douyin API settings
+DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.com/douyin')
+DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
 
-# RapidAPI TikTok API settings (Legacy - có thể giữ lại cho tương thích)
+# RapidAPI TikTok API settings
 TIKTOK_API_KEY = env('TIKTOK_API_KEY', default='')
 TIKTOK_API_HOST = env('TIKTOK_API_HOST', default='tiktok-scraper7.p.rapidapi.com')
 
-# Scraper fallback settings
-USE_SCRAPER_FALLBACK = env.bool('USE_SCRAPER_FALLBACK', default=False)  # Disable by default (very slow, 10-30s)
+# ==========================================
+# SCRAPER SETTINGS
+# ==========================================
+
+# Retry configuration
+SCRAPER_MAX_RETRIES = env.int('SCRAPER_MAX_RETRIES', default=3)
+SCRAPER_RETRY_DELAY = env.int('SCRAPER_RETRY_DELAY', default=2)  # seconds
+
+# Cache TTL (Time To Live) in seconds
+SEARCH_CACHE_TTL = env.int('SEARCH_CACHE_TTL', default=3600)  # 1 hour
 
 # Proxy settings (optional, for requests through proxy)
 PROXY_URL = env('PROXY_URL', default='')

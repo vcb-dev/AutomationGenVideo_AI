@@ -1,0 +1,11 @@
+{
+  "name": "django-ai-db-viewer",
+  "version": "1.0.0",
+  "description": "Prisma Studio for Django AI Database",
+  "scripts": {
+    "studio": "prisma studio"
+  },
+  "devDependencies": {
+    "prisma": "^5.0.0"
+  }
+}

@@ -1,0 +1,53 @@
+// Prisma schema for Django AI database
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = "postgresql://postgres:postgres@localhost:5432/video_production_ai"
+}
+
+// Django models (introspected)
+model video_management_scrapedvideo {
+  id              Int       @id @default(autoincrement())
+  platform        String    @db.VarChar(20)
+  video_id        String    @unique @db.VarChar(255)
+  title           String
+  description     String?
+  author_username String    @db.VarChar(255)
+  author_name     String?   @db.VarChar(255)
+  likes_count     Int       @default(0)
+  views_count     Int       @default(0)
+  comments_count  Int       @default(0)
+  shares_count    Int       @default(0)
+  video_url       String?   @db.VarChar(1000)
+  download_url    String?   @db.VarChar(1000)
+  thumbnail_url   String?   @db.VarChar(1000)
+  published_at    DateTime?
+  hashtags        Json?
+  music_info      Json?
+  raw_data        Json?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+  
+  @@index([platform])
+  @@index([author_username])
+  @@index([created_at])
+}
+
+model video_management_trackedchannel {
+  id                  Int       @id @default(autoincrement())
+  platform            String    @db.VarChar(20)
+  channel_id          String?   @db.VarChar(255)
+  username            String    @db.VarChar(255)
+  display_name        String?   @db.VarChar(255)
+  is_active           Boolean   @default(true)
+  follower_count      Int       @default(0)
+  last_checked_at     DateTime?
+  created_at          DateTime  @default(now())
+  updated_at          DateTime  @updatedAt
+  
+  @@unique([platform, username])
+  @@index([is_active])
+}

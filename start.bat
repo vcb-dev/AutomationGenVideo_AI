@@ -5,8 +5,8 @@ REM Example: start.bat 8000
 
 setlocal
 
-REM Default port
-set PORT=8000
+REM Default port matching NestJS configuration
+set PORT=8001
 
 REM Use first argument as port if provided
 if not "%1"=="" set PORT=%1
