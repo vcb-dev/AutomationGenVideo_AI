@@ -21,6 +21,11 @@ from .views import (
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
+from .views.duplicate_detection_views import (
+    generate_fingerprint,
+    check_duplicate,
+    compare_videos,
+)
 
 app_name = 'video_management'
 
@@ -42,6 +47,11 @@ urlpatterns = [
     # --- NEW ENDPOINT HERE ---
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     # -------------------------
+    
+    # Duplicate Detection endpoints
+    path('duplicate-detection/generate-fingerprint/', generate_fingerprint, name='generate-fingerprint'),
+    path('duplicate-detection/check-duplicate/', check_duplicate, name='check-duplicate'),
+    path('duplicate-detection/compare-videos/', compare_videos, name='compare-videos'),
     
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
