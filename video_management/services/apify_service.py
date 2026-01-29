@@ -156,10 +156,12 @@ class ApifyScraperService(BaseScraperService):
         if self.platform == Platform.TIKTOK:
             if username:
                 # For user profile scraping, use different fields
+                # Use the larger value to ensure we get as many videos as possible
+                max_to_fetch = max(max_results, self.max_results_limit)
                 return {
                     "profiles": [username],
-                    "resultsPerPage": min(max_results, self.max_results_limit),
-                    "postsCount": min(max_results, self.max_results_limit),  # Some actors use this
+                    "resultsPerPage": max_to_fetch,
+                    "postsCount": max_to_fetch,  # Some actors use this
                     "shouldDownloadVideos": False,
                 }
             return self._build_tiktok_input(keyword, max_results)

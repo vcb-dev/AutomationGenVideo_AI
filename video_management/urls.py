@@ -20,6 +20,7 @@ from .views import (
     HealthCheckView,
 )
 from .views.collection_views import VideoCollectionViewSet
+from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 
 app_name = 'video_management'
 
@@ -37,6 +38,10 @@ urlpatterns = [
     path('search/history/', SearchHistoryView.as_view(), name='search-history'),
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),
+    
+    # --- NEW ENDPOINT HERE ---
+    path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
+    # -------------------------
     
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
