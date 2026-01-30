@@ -10,7 +10,7 @@ ENV WORKDIR=/app
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -20,8 +20,11 @@ WORKDIR /app
 COPY requirements.txt .
 COPY requirements-duplicate-detection.txt .
 
+# Install CPU-only torch first to save download time and image size
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements-duplicate-detection.txt
+# RUN pip install --no-cache-dir -r requirements-duplicate-detection.txt
 
 # Copy project
 COPY . .
