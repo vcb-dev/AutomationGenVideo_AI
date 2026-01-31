@@ -1,0 +1,292 @@
+[
+  {
+    "facebookUrl": "https://www.facebook.com/huyk.kimhoanvienchibao",
+    "postId": "1219808399646522",
+    "pageName": "huyk.kimhoanvienchibao",
+    "url": "https://www.facebook.com/huyk.kimhoanvienchibao/videos/1219808399646522/",
+    "time": "2026-01-30T06:59:34.000Z",
+    "timestamp": 1769756374,
+    "user": {
+      "id": "100063721444581",
+      "name": "HuyK - Kim Ho\u00e0n",
+      "profileUrl": "https://www.facebook.com/100063721444581",
+      "profilePic": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-1/606073947_1479331404200894_2450350483072649470_n.jpg?stp=cp0_dst-jpg_s50x50_tt6&_nc_cat=100&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wV9tF8H21ygQ7kNvwHV_C_N&_nc_oc=Adk7QysTE2pShcw0EWjjU91uTdSn1gepTkRBaXxgrHCx4DsAxbT1yofuO4FNOD1iKr8&_nc_zt=24&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afr7T5rWmkRtP_UjBOuTv5o03eHZREYSsM_I5gWS5o4QFw&oe=69824C88"
+    },
+    "collaborators": [],
+    "text": "Anh ch\u1ecb nh\u1eafn tin \u0111\u1ec3 \u0111\u1eb7t h\u00e0ng nh\u00e9!",
+    "likes": 5,
+    "comments": 41,
+    "shares": 0,
+    "topReactionsCount": 1,
+    "isVideo": true,
+    "media": [
+      {
+        "thumbnail": "https://scontent-lga3-2.xx.fbcdn.net/v/t15.5256-10/623827840_1377086706956542_6598741354334602673_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=105&ccb=1-7&_nc_sid=df2c94&_nc_ohc=4Ih3GY3UiGwQ7kNvwH7CbDq&_nc_oc=AdkK1wT91-uiMhYiT0tCeeW5el6nO8Ivpt58nCQxkKP9Xd3zrBXQu3DWsOFYkJbO5tg&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afrh_e6qDww5vg-Qf_Et_jnee4rG0bP-D3uhml7E6RvtnQ&oe=69824297",
+        "__typename": "Video",
+        "thumbnailImage": {
+          "uri": "https://scontent-lga3-2.xx.fbcdn.net/v/t15.5256-10/623827840_1377086706956542_6598741354334602673_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=105&ccb=1-7&_nc_sid=df2c94&_nc_ohc=4Ih3GY3UiGwQ7kNvwH7CbDq&_nc_oc=AdkK1wT91-uiMhYiT0tCeeW5el6nO8Ivpt58nCQxkKP9Xd3zrBXQu3DWsOFYkJbO5tg&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afrh_e6qDww5vg-Qf_Et_jnee4rG0bP-D3uhml7E6RvtnQ&oe=69824297"
+        },
+        "id": "1219808399646522",
+        "is_clipping_enabled": false,
+        "live_rewind_enabled": false,
+        "owner": {
+          "__typename": "User",
+          "id": "100063721444581",
+          "__isVideoOwner": "User",
+          "has_professional_features_for_watch": true
+        },
+        "playable_duration_in_ms": 13274984,
+        "is_huddle": false,
+        "url": "https://www.facebook.com/huyk.kimhoanvienchibao/videos/1219808399646522/",
+        "if_viewer_can_use_latency_menu": null,
+        "if_viewer_can_use_latency_menu_toggle": null,
+        "captions_url": null,
+        "video_available_captions_locales": [],
+        "if_viewer_can_see_community_moderation_tools": null,
+        "if_viewer_can_use_live_rewind": null,
+        "if_viewer_can_use_clipping": null,
+        "if_viewer_can_see_costreaming_tools": null,
+        "video_player_scrubber_preview_renderer": {
+          "__typename": "XFBVideoPlayerScrubberDefaultPreviewRenderer",
+          "video": {
+            "scrubber_preview_thumbnail_information": {
+              "sprite_uris": [],
+              "thumbnail_width": 0,
+              "thumbnail_height": 0,
+              "has_preview_thumbnails": false,
+              "num_images_per_row": 0,
+              "max_number_of_images_per_sprite": 0,
+              "time_interval_between_image": 0
+            },
+            "id": "1219808399646522"
+          },
+          "__module_operation_VideoPlayerScrubberPreview_video": {
+            "__dr": "VideoPlayerScrubberDefaultPreview_video$normalization.graphql"
+          },
+          "__module_component_VideoPlayerScrubberPreview_video": {
+            "__dr": "VideoPlayerScrubberDefaultPreview.react"
+          }
+        },
+        "video_player_scrubber_base_content_renderer": null,
+        "recipient_group": null,
+        "breakingStatus": false,
+        "videoId": "1219808399646522",
+        "isPremiere": false,
+        "liveViewerCount": 4,
+        "rehearsalInfo": null,
+        "is_gaming_video": false,
+        "publish_time": 1769756374,
+        "animated_image_caption": null,
+        "width": 360,
+        "height": 640,
+        "broadcaster_origin": null,
+        "broadcast_id": "1506066254860742",
+        "broadcast_status": "LIVE",
+        "is_live_streaming": true,
+        "is_live_trace_enabled": true,
+        "is_looping": false,
+        "is_video_broadcast": true,
+        "is_podcast_video": false,
+        "loop_count": 0,
+        "is_spherical": false,
+        "is_spherical_enabled": true,
+        "unsupported_browser_message": null,
+        "pmv_metadata": null,
+        "latency_sensitive_config": {
+          "broadcast_latency_sensitivity": "NORMAL"
+        },
+        "live_playback_instrumentation_configs": {
+          "is_client_triggered_trace_enabled": false
+        },
+        "is_ncsr": false,
+        "permalink_url": "https://www.facebook.com/huyk.kimhoanvienchibao/videos/1219808399646522/",
+        "seo_web_crawler_lookaside_url": null,
+        "dash_prefetch_experimental": [],
+        "video_status_type": "OK",
+        "can_use_oz": true,
+        "min_quality_preference": null,
+        "spherical_video_fallback_urls": null,
+        "comet_video_player_nextgendash_availability": "UNAVAILABLE_TEMPORARY_FOR_THIS_KIND_OF_VIDEO_3",
+        "videoDeliveryLegacyFields": {
+          "dash_manifest_xml_string": "<?xml version=\"1.0\"?>\n<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" xmlns:xsi=\"http://www.w3.org/2011/XMLSchema-instance\" type=\"dynamic\" xsi:schemaLocation=\"urn:mpeg:DASH:schema:MPD:2011 DASH-MPD.xsd\" profiles=\"urn:mpeg:dash:profile:isoff-live:2011\" availabilityStartTime=\"2026-01-29T22:59:24-08:00\" availabilityEndTime=\"2026-01-30T02:21:11-08:00\" timeShiftBufferDepth=\"PT20S\" suggestedPresentationDelay=\"PT2S\" minBufferTime=\"PT1S\" publishTime=\"2026-01-29T22:59:24-08:00\" minimumUpdatePeriod=\"PT1S\" validationErrors=\"\" FBIsLiveTemplated=\"true\" currentServerTimeMs=\"1769767989554\" firstAvTimeMs=\"1769754739095\" lastVideoFrameTs=\"13256833\" loapStreamId=\"122164111424906370\" publishFrameTime=\"1624833\" usingASRCaptions=\"1\"><Period id=\"dash-abr-ibr-audio\" start=\"PT0S\"><AdaptationSet segmentAlignment=\"true\" maxWidth=\"1080\" maxHeight=\"1920\" maxFrameRate=\"30\"><Representation id=\"dash-lp-md-v\" mimeType=\"video/mp4\" codecs=\"avc1.4d401e\" width=\"360\" height=\"640\" frameRate=\"30\" startWithSAP=\"1\" bandwidth=\"266471\" FBMaxBandwidth=\"489848\" FBPlaybackResolutionMos=\"720:58.21,1080:51.60,144:94.10\" FBQualityClass=\"sd\" FBQualityLabel=\"360p\" FBDefaultQuality=\"1\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-md-v/122164111424906370_0-init.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-md-v/122164111424906370_0-$Time$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-md-v/122164111424906370_0-$Number$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBRepresentationMPDURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&amp;ccb=2-4&amp;ms=m_CTPA&amp;sc_t=1&amp;oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&amp;oe=697E6953</FBRepresentationMPDURL><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAnptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAd50cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAWgAAAKAAAAAAAF6bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABJW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOVzdGJsAAAAmXN0c2QAAAAAAAAAAQAAAIlhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAWgCgABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAM2F2Y0MBTUAe/+EAHGdNQB7sgLgo8vgLUBAQFAAAAwAEAAAfQDxYtlgBAARo6uVyAAAAEHN0dHMAAAAAAAAAAAAAABBzdHNjAAAAAAAAAAAAAAAUc3RzegAAAAAAAAAAAAAAAAAAABBzdGNvAAAAAAAAAAA=</FBInitializationBinary></Representation><Representation id=\"dash-lp-qd-v\" mimeType=\"video/mp4\" codecs=\"avc1.4d401e\" width=\"144\" height=\"256\" frameRate=\"30\" startWithSAP=\"1\" bandwidth=\"70856\" FBMaxBandwidth=\"119452\" FBPlaybackResolutionMos=\"720:24.18,1080:22.85,144:73.41\" FBQualityClass=\"sd\" FBQualityLabel=\"144p\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-qd-v/122164111424906370_0-init.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-qd-v/122164111424906370_0-$Time$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-qd-v/122164111424906370_0-$Number$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBRepresentationMPDURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&amp;ccb=2-4&amp;ms=m_CTPA&amp;sc_t=1&amp;oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&amp;oe=697E6953</FBRepresentationMPDURL><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAnptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAd50cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAJAAAAEAAAAAAAF6bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABJW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOVzdGJsAAAAmXN0c2QAAAAAAAAAAQAAAIlhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAJABAABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAM2F2Y0MBTUAM/+EAG2dNQAzsgSENgLUBAQFAAAADAEAAAfQDxQplgAEABWjq5TyAAAAAEHN0dHMAAAAAAAAAAAAAABBzdHNjAAAAAAAAAAAAAAAUc3RzegAAAAAAAAAAAAAAAAAAABBzdGNvAAAAAAAAAAA=</FBInitializationBinary></Representation><Representation id=\"dash-lp-hd1-v\" mimeType=\"video/mp4\" codecs=\"avc1.4d401e\" width=\"720\" height=\"1280\" frameRate=\"30\" startWithSAP=\"1\" bandwidth=\"718486\" FBMaxBandwidth=\"1311828\" FBPlaybackResolutionMos=\"1080:72.73,144:96.74,720:76.01\" FBQualityClass=\"hd\" FBQualityLabel=\"720p\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-hd1-v/122164111424906370_0-init.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-hd1-v/122164111424906370_0-$Time$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-hd1-v/122164111424906370_0-$Number$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBRepresentationMPDURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&amp;ccb=2-4&amp;ms=m_CTPA&amp;sc_t=1&amp;oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&amp;oe=697E6953</FBRepresentationMPDURL><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAnptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAd50cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAtAAAAUAAAAAAAF6bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABJW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOVzdGJsAAAAmXN0c2QAAAAAAAAAAQAAAIlhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAtAFAABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAAM2F2Y0MBTUAf/+EAHGdNQB/sgFoFDYC1AQEBQAAAAwBAAAH0A8YMZYABAARo75cgAAAAEHN0dHMAAAAAAAAAAAAAABBzdHNjAAAAAAAAAAAAAAAUc3RzegAAAAAAAAAAAAAAAAAAABBzdGNvAAAAAAAAAAA=</FBInitializationBinary></Representation><Representation id=\"dash-lp-hd2-v\" mimeType=\"video/mp4\" codecs=\"avc1.4d401e\" width=\"1080\" height=\"1920\" frameRate=\"30\" startWithSAP=\"1\" bandwidth=\"2522224\" FBMaxBandwidth=\"3743776\" FBPlaybackResolutionMos=\"720:89.00,144:98.63,1080:82.48\" FBQualityClass=\"hd\" FBQualityLabel=\"1080p\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-hd2-v/122164111424906370_0-init.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-hd2-v/122164111424906370_0-$Time$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-hd2-v/122164111424906370_0-$Number$.m4v?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBRepresentationMPDURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&amp;ccb=2-4&amp;ms=m_CTPA&amp;sc_t=1&amp;oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&amp;oe=697E6953</FBRepresentationMPDURL><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAnttb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAd90cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAABDgAAAeAAAAAAAF7bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABJm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAOZzdGJsAAAAmnN0c2QAAAAAAAAAAQAAAIphdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAABDgHgABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBTUAo/+EAHWdNQCjsgCIB48vgLUBAQFAAAAMAEAAAfQDxgxlgAQAEaO+XIAAAABBzdHRzAAAAAAAAAAAAAAAQc3RzYwAAAAAAAAAAAAAAFHN0c3oAAAAAAAAAAAAAAAAAAAAQc3RjbwAAAAAAAAAA</FBInitializationBinary></Representation></AdaptationSet><AdaptationSet segmentAlignment=\"true\"><Representation id=\"dash-lp-md-a\" mimeType=\"audio/mp4\" codecs=\"mp4a.40.2\" audioSamplingRate=\"48000\" startWithSAP=\"1\" bandwidth=\"67030\" FBMaxBandwidth=\"68180\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-md-a/122164111424906370_0-init.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-md-a/122164111424906370_0-$Time$.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-md-a/122164111424906370_0-$Number$.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAjptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAZ50cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAE6bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHNvdW4AAAAAAAAAAAAAAABTb3VuZEhhbmRsZXIAAAAA5W1pbmYAAAAQc21oZAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAAqXN0YmwAAABdc3RzZAAAAAAAAAABAAAATW1wNGEAAAAAAAAAAQAAAAAAAAAAAAIAEAAAAAC7gAAAAAAAKWVzZHMAAAAAAxsAAAAEE0AVAAAAAAHxUQAB8U0FBCsRiAAGAQIAAAAQc3R0cwAAAAAAAAAAAAAAEHN0c2MAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAA==</FBInitializationBinary></Representation><Representation id=\"dash-lp-qd-a\" mimeType=\"audio/mp4\" codecs=\"mp4a.40.2\" audioSamplingRate=\"48000\" startWithSAP=\"1\" bandwidth=\"99019\" FBMaxBandwidth=\"100592\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../dash-lp-qd-a/122164111424906370_0-init.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../dash-lp-qd-a/122164111424906370_0-$Time$.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/dash-lp-qd-a/122164111424906370_0-$Number$.m4a?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAjptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAZ50cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAE6bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALWhkbHIAAAAAAAAAAHNvdW4AAAAAAAAAAAAAAABTb3VuZEhhbmRsZXIAAAAA5W1pbmYAAAAQc21oZAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAAqXN0YmwAAABdc3RzZAAAAAAAAAABAAAATW1wNGEAAAAAAAAAAQAAAAAAAAAAAAIAEAAAAAC7gAAAAAAAKWVzZHMAAAAAAxsAAAAEE0AVAAAAAAHxUQAB8U0FBCsRiAAGAQIAAAAQc3R0cwAAAAAAAAAAAAAAEHN0c2MAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAA==</FBInitializationBinary></Representation></AdaptationSet><AdaptationSet segmentAlignment=\"true\" mimeType=\"application/mp4\" lang=\"\"><Role schemeIdUri=\"urn:mpeg:dash:role:2011\" value=\"subtitle\"/><Representation id=\"text-default\" mimeType=\"application/mp4\" codecs=\"wvtt\" startWithSAP=\"1\" bandwidth=\"67036\" FBCaptionLabel=\"unknown\"><BaseURL>https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/</BaseURL><SegmentTemplate presentationTimeOffset=\"0\" timescale=\"1000\" initialization=\"../text-default/122164111424906370_0-init.m4t?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" media=\"../text-default/122164111424906370_0-$Time$.m4t?ms=m_C&amp;sc_t=1&amp;ccb=2-4\"><SegmentTimeline FBAverageDuration=\"2000\" FBPredictedMedia=\"../ID/text-default/122164111424906370_0-$Number$.m4t?ms=m_C&amp;sc_t=1&amp;ccb=2-4\" FBPredictedMediaEndNumber=\"5915\" FBPredictedMediaStartNumber=\"100\" FBStartPts=\"1624866\"><S t=\"13236866\" d=\"2000\"/><S t=\"13238866\" d=\"2000\"/><S t=\"13240866\" d=\"2000\"/><S t=\"13242866\" d=\"2000\"/><S t=\"13244866\" d=\"2000\"/><S t=\"13246866\" d=\"2000\"/><S t=\"13248866\" d=\"2000\"/><S t=\"13250866\" d=\"2000\"/><S t=\"13252866\" d=\"2000\"/><S t=\"13254866\" d=\"2000\"/></SegmentTimeline></SegmentTemplate><FBInitializationBinary>AAAAHGZ0eXBpc282AAAAAWlzb21pc282ZGFzaAAAAhxtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAAAABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAKG12ZXgAAAAgdHJleAAAAAAAAAABAAAAAQAAAAAAAAAAAAAAAAAAAYB0cmFrAAAAXHRraGQAAAAHAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAEcbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAD6AAAAABVxAAAAAAALGhkbHIAAAAAAAAAAHRleHQAAAAAAAAAAAAAAABUZXh0SGFuZGxlcgAAAADIbWluZgAAAAxubWhkAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAJBzdGJsAAAARHN0c2QAAAAAAAAAAQAAADR3dnR0AAAAAAAAAAEAAAAPdnR0Q1dFQlZUVAAAAAAVdmxhYnNvdXJjZV9sYWJlbAAAAAAQc3R0cwAAAAAAAAAAAAAAEHN0c2MAAAAAAAAAAAAAABRzdHN6AAAAAAAAAAAAAAAAAAAAEHN0Y28AAAAAAAAAAA==</FBInitializationBinary></Representation></AdaptationSet></Period></MPD>\n",
+          "dash_manifest_url": "https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&ccb=2-4&ms=m_CTPA&sc_t=1&oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&oe=697E6953",
+          "browser_native_sd_url": "https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&ccb=2-4&ms=m_CTPA&sc_t=1&oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&oe=697E6953",
+          "browser_native_hd_url": "https://video-lga3-1.xx.fbcdn.net/hvideo-cco-vll/_nc_cat-111/_nc_sr_t-4/v/rASdG60BoUHkwlS3q9KPub_XDGjNtWJioqxA86C5IfkS8Gg/_nc_ohc-6fEe0KfaKC0Q7kNvwG_W5Ym/live-dash/dash-abr-ibr-audio/122164111424906370.mpd?_nc_zt=28&ccb=2-4&ms=m_CTPA&sc_t=1&oh=00_Afqxb_rL8bjyYwaJQY6d3nI4dfoVXLQzkZPa88tN_b4uRg&oe=697E6953",
+          "id": "1219808399646522"
+        },
+        "videoDeliveryResponseFragment": null,
+        "is_latency_menu_enabled": false,
+        "fbls_tier": "api",
+        "is_latency_sensitive_broadcast": false,
+        "video_player_shaka_performance_logger_init": {
+          "__typename": "VideoPlayerShakaPerformanceLoggerInit",
+          "__module_operation_useVideoPlayerShakaPerformanceLoggerRelayImpl_video": {
+            "__dr": "useVideoPlayerShakaPerformanceLoggerRelayImpl_init$normalization.graphql"
+          },
+          "__module_component_useVideoPlayerShakaPerformanceLoggerRelayImpl_video": {
+            "__dr": "VideoPlayerShakaPerformanceLogger"
+          }
+        },
+        "video_player_shaka_performance_logger_should_sample": false,
+        "video_player_shaka_performance_logger_init2": {
+          "__typename": "VideoPlayerShakaPerformanceLoggerInit",
+          "__module_operation_useVideoPlayerShakaPerformanceLoggerBuilder_video": {
+            "__dr": "useVideoPlayerShakaPerformanceLoggerBuilder_init$normalization.graphql"
+          },
+          "__module_component_useVideoPlayerShakaPerformanceLoggerBuilder_video": {
+            "__dr": "VideoPlayerShakaPerformanceLoggerBuilder"
+          },
+          "per_session_sampling_rate": null
+        },
+        "autoplay_gating_result": "all_page_organic_allowed",
+        "viewer_autoplay_setting": "default_autoplay",
+        "can_autoplay": true,
+        "drm_info": "{\"video_license_uri_map\":{},\"graph_api_video_license_uri\":null,\"fairplay_cert\":null,\"widevine_cert\":\"CsECCAMSEBcFuRfMEgSGiwYzOi93KowYgrSCkgUijgIwggEKAoIBAQCZ7Vs7Mn2rXiTvw7YqlbWYUgrVvMs3UD4GRbgU2Ha430BRBEGtjOOtsRu4jE5yWl5KngeVKR1YWEAjp+GvDjipEnk5MAhhC28VjIeMfiG\\/+\\/7qd+EBnh5XgeikX0YmPRTmDoBYqGB63OBPrIRXsTeo1nzN6zNwXZg6IftO7L1KEMpHSQykfqpdQ4IY3brxyt4zkvE9b\\/tkQv0x4b9AsMYE0cS6TJUgpL+X7r1gkpr87vVbuvVk4tDnbNfFXHOggrmWEguDWe3OJHBwgmgNb2fG2CxKxfMTRJCnTuw3r0svAQxZ6ChD4lgvC2ufXbD8Xm7fZPvTCLRxG88SUAGcn1oJAgMBAAE6FGxpY2Vuc2Uud2lkZXZpbmUuY29tEoADrjRzFLWoNSl\\/JxOI+3u4y1J30kmCPN3R2jC5MzlRHrPMveoEuUS5J8EhNG79verJ1BORfm7BdqEEOEYKUDvBlSubpOTOD8S\\/wgqYCKqvS\\/zRnB3PzfV0zKwo0bQQQWz53ogEMBy9szTK\\/NDUCXhCOmQuVGE98K\\/PlspKkknYVeQrOnA+8XZ\\/apvTbWv4K+drvwy6T95Z0qvMdv62Qke4XEMfvKUiZrYZ\\/DaXlUP8qcu9u\\/r6DhpV51Wjx7zmVflkb1gquc9wqgi5efhn9joLK3\\/bNixbxOzVVdhbyqnFk8ODyFfUnaq3fkC3hR3f0kmYgI41sljnXXjqwMoW9wRzBMINk+3k6P8cbxfmJD4\\/Paj8FwmHDsRfuoI6Jj8M76H3CTsZCZKDJjM3BQQ6Kb2m+bQ0LMjfVDyxoRgvfF\\/\\/M\\/EEkPrKWyU2C3YBXpxaBquO4C8A0ujVmGEEqsxN1HX9lu6c5OMm8huDxwWFd7OHMs3avGpr7RP7DUnTikXrh6X0\"}",
+        "p2p_settings": null,
+        "audio_settings": null,
+        "captions_settings": null,
+        "broadcast_low_latency_config": {
+          "ll_desired_latency_ms": 12000,
+          "ll_latency_tolerance_ms": 0
+        },
+        "audio_availability": "UNKNOWN",
+        "muted_segments": [],
+        "spherical_video_renderer": null,
+        "preferred_thumbnail": {
+          "image": {
+            "uri": "https://scontent-lga3-2.xx.fbcdn.net/v/t15.5256-10/623827840_1377086706956542_6598741354334602673_n.jpg?stp=dst-jpg_s960x960_tt6&_nc_cat=105&ccb=1-7&_nc_sid=be8305&_nc_ohc=4Ih3GY3UiGwQ7kNvwH7CbDq&_nc_oc=AdkK1wT91-uiMhYiT0tCeeW5el6nO8Ivpt58nCQxkKP9Xd3zrBXQu3DWsOFYkJbO5tg&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afrh_e6qDww5vg-Qf_Et_jnee4rG0bP-D3uhml7E6RvtnQ&oe=69824297"
+          },
+          "image_preview_payload": "ABgqxQzIwJ+UirsMfnkiNVJI5JAwP8DW8FQcKBj2FNLxp14z2Awc++P51lv6mhiS+dC2xvlPsAAfcECitVhFLgPzjON2D1op3XZBZ9xJ51jG5jx7Vnfb0Y8A/U//AFqhvPNlIXGB6ZHOPx/KoYbchv3gwPUFfr6+lNIV+xsxzv8AxIMY4IwRiiqdrPtXYx2EE7c9CCemfUUUmUVYjzkckjHAyfxz/PvUmPXI/wA/StQgLyvB9uKlDsepJ/GruZnPPHk+gP1/worel5U55oqXIEj/2Q==",
+          "id": "1377086703623209"
+        },
+        "video_imf_data": null,
+        "playback_language_on_comet": null,
+        "original_width": 0,
+        "original_height": 0,
+        "original_rotation": "NO_ROTATE",
+        "accent_color": "FF7596C8",
+        "video_container_type": "BROADCAST",
+        "is_soundbites_video": false,
+        "comet_video_player_audio_overlay_renderer": null,
+        "clip_fallback_cover": null,
+        "is_clip": false,
+        "matcha_related_keywords_links": [
+          ""
+        ],
+        "is_music_clip": false,
+        "can_open_tahoe_for_lva": false,
+        "video_collaborator_page_or_delegate_page": null,
+        "video_anchor_tag_info": null,
+        "image": {
+          "uri": "https://scontent-lga3-2.xx.fbcdn.net/v/t15.5256-10/623827840_1377086706956542_6598741354334602673_n.jpg?stp=dst-jpg_p296x100_tt6&_nc_cat=105&ccb=1-7&_nc_sid=df2c94&_nc_ohc=4Ih3GY3UiGwQ7kNvwH7CbDq&_nc_oc=AdkK1wT91-uiMhYiT0tCeeW5el6nO8Ivpt58nCQxkKP9Xd3zrBXQu3DWsOFYkJbO5tg&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afq-Lzel6sObyEBFbf7h7iVODE-3hcI7OfgGGVLYIo8_Dw&oe=69824297"
+        },
+        "canonical_uri_with_fallback": "https://www.facebook.com/vienchibao.official/videos/giao-l%C6%B0u-tham-kh%E1%BA%A3o-trang-s%E1%BB%A9c-b%E1%BA%A1c-vi%E1%BB%85n-ch%C3%AD-b%E1%BA%A3o/895210443260537/"
+      }
+    ],
+    "feedbackId": "ZmVlZGJhY2s6MTIxOTgwODM5OTY0NjUyMg==",
+    "reactionLikeCount": 5,
+    "topLevelUrl": "https://www.facebook.com/100063721444581/posts/1219808399646522",
+    "facebookId": "100063721444581",
+    "pageAdLibrary": {
+      "is_business_page_active": true,
+      "id": "2497800676910664"
+    },
+    "inputUrl": "https://www.facebook.com/huyk.kimhoanvienchibao",
+    "is_video_derived": true
+  },
+  {
+    "facebookUrl": "https://www.facebook.com/huyk.kimhoanvienchibao",
+    "postId": "1505545964912771",
+    "pageName": "huyk.kimhoanvienchibao",
+    "url": "https://www.facebook.com/huyk.kimhoanvienchibao/posts/pfbid02dLUncj4WopD1nAiV9Eg3Cc6nuuQoRYKBZdiE72PWBiSJyNEcwZEqM8azNKxDfZ3al",
+    "time": "2026-01-29T16:31:49.000Z",
+    "timestamp": 1769704309,
+    "user": {
+      "id": "100063721444581",
+      "name": "HuyK - Kim Ho\u00e0n",
+      "profileUrl": "https://www.facebook.com/100063721444581",
+      "profilePic": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-1/606073947_1479331404200894_2450350483072649470_n.jpg?stp=cp0_dst-jpg_s50x50_tt6&_nc_cat=100&ccb=1-7&_nc_sid=2d3e12&_nc_ohc=wV9tF8H21ygQ7kNvwHV_C_N&_nc_oc=Adk7QysTE2pShcw0EWjjU91uTdSn1gepTkRBaXxgrHCx4DsAxbT1yofuO4FNOD1iKr8&_nc_zt=24&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afr7T5rWmkRtP_UjBOuTv5o03eHZREYSsM_I5gWS5o4QFw&oe=69824C88"
+    },
+    "collaborators": [],
+    "text": "\u0110eo nh\u1eabn, nhi\u1ec1u ng\u01b0\u1eddi ngh\u0129 \u0111\u01a1n gi\u1ea3n ch\u1ec9 l\u00e0 th\u1ea5y \u0111\u1eb9p th\u00ec \u0111eo.\nNh\u01b0ng th\u1ef1c ra m\u1ed7i ng\u00f3n tay ng\u01b0\u1eddi ta ch\u1ecdn \u0111eo nh\u1eabn, th\u01b0\u1eddng ph\u1ea3n \u00e1nh m\u1ed9t tr\u1ea1ng th\u00e1i n\u00e0o \u0111\u00f3 trong cu\u1ed9c s\u1ed1ng.\nHuyK chia s\u1ebb l\u1ea1i \u0111\u1ec3 anh ch\u1ecb l\u01b0u v\u1ec1 tham kh\u1ea3o, c\u00f3 l\u00fac c\u1ea7n nh\u00ecn l\u1ea1i, ch\u1ec9 c\u1ea7n m\u1edf ra l\u00e0 nh\u1edb \ud83d\udc47\n\ud83d\udc8d Nh\u1eabn \u0111eo tay tr\u00e1i: Tay tr\u00e1i th\u01b0\u1eddng \u0111\u01b0\u1ee3c xem l\u00e0 n\u01a1i g\u1ea7n v\u1edbi c\u1ea3m x\u00fac v\u00e0 c\u00e1c m\u1ed1i quan h\u1ec7 c\u00e1 nh\u00e2n.\n\u2013 Ng\u00f3n c\u00e1i: Ng\u01b0\u1eddi \u0111eo nh\u1eabn \u1edf \u0111\u00e2y th\u01b0\u1eddng to\u00e1t ra s\u1ef1 t\u1ef1 tin, b\u1ea3n l\u0129nh, bi\u1ebft m\u00ecnh l\u00e0 ai v\u00e0 \u0111ang \u0111\u1ee9ng \u1edf \u0111\u00e2u.\n\u2013 Ng\u00f3n tr\u1ecf: Hay \u0111\u01b0\u1ee3c l\u1ef1a ch\u1ecdn khi c\u00f2n \u0111\u1ed9c th\u00e2n, \u0111ang trong giai \u0111o\u1ea1n t\u00ecm hi\u1ec3u b\u1ea3n th\u00e2n v\u00e0 th\u1ebf gi\u1edbi xung quanh.\n\u2013 Ng\u00f3n gi\u1eefa: Th\u1ec3 hi\u1ec7n s\u1ef1 g\u1eafn b\u00f3, \u0111ang c\u00f3 m\u1ed9t m\u1ed1i quan h\u1ec7 nghi\u00eam t\u00fac ho\u1eb7c \u0111\u00e3 s\u1eb5n s\u00e0ng cho nh\u1eefng cam k\u1ebft d\u00e0i l\u00e2u.\n\u2013 Ng\u00f3n \u00e1p \u00fat: Bi\u1ec3u tr\u01b0ng cho h\u00f4n nh\u00e2n, cho s\u1ef1 l\u1ef1a ch\u1ecdn \u0111i c\u00f9ng nhau b\u1ec1n b\u1ec9 qua th\u1eddi gian.\n\u2013 Ng\u00f3n \u00fat: Th\u01b0\u1eddng d\u00e0nh cho nh\u1eefng ng\u01b0\u1eddi y\u00eau s\u1ef1 t\u1ef1 do, ch\u01b0a mu\u1ed1n b\u1ecb r\u00e0ng bu\u1ed9c, ho\u1eb7c \u0111ang ch\u1ecdn s\u1ed1ng theo nh\u1ecbp ri\u00eang c\u1ee7a m\u00ecnh.\n\ud83d\udc8d Nh\u1eabn \u0111eo tay ph\u1ea3i: Tay ph\u1ea3i l\u1ea1i g\u1eafn v\u1edbi h\u00e0nh \u0111\u1ed9ng, l\u1ef1a ch\u1ecdn v\u00e0 c\u00e1ch m\u1ed7i ng\u01b0\u1eddi b\u01b0\u1edbc \u0111i trong cu\u1ed9c s\u1ed1ng.\n\u2013 Ng\u00f3n c\u00e1i: Th\u1ec3 hi\u1ec7n s\u1ef1 ch\u00edn ch\u1eafn, tr\u01b0\u1edfng th\u00e0nh v\u00e0 m\u1ed9t tinh th\u1ea7n \u0111\u1ed9c l\u1eadp r\u00f5 r\u00e0ng.\n\u2013 Ng\u00f3n tr\u1ecf: Cho th\u1ea5y mong mu\u1ed1n m\u1edf r\u1ed9ng m\u1ed1i quan h\u1ec7, giao ti\u1ebfp nhi\u1ec1u h\u01a1n v\u00e0 k\u1ebft n\u1ed1i v\u1edbi m\u1ecdi ng\u01b0\u1eddi xung quanh.\n\u2013 Ng\u00f3n gi\u1eefa: Mang c\u1ea3m gi\u00e1c \u1ed5n \u0111\u1ecbnh, v\u1eefng v\u00e0ng, l\u00e0 khi con ng\u01b0\u1eddi ta \u0111ang d\u1ea7n t\u00ecm \u0111\u01b0\u1ee3c nh\u1ecbp s\u1ed1ng ph\u00f9 h\u1ee3p v\u1edbi ch\u00ednh m\u00ecnh.\n\u2013 Ng\u00f3n \u00e1p \u00fat: Th\u1ec3 hi\u1ec7n mong mu\u1ed1n gi\u1eef s\u1ef1 c\u00e2n b\u1eb1ng, tr\u00e1nh xa nh\u1eefng \u0111i\u1ec1u ti\u00eau c\u1ef1c \u0111\u1ec3 t\u1eadp trung v\u00e0o \u0111i\u1ec1u quan tr\u1ecdng h\u01a1n.\n\u2013 Ng\u00f3n \u00fat: Th\u01b0\u1eddng xu\u1ea5t hi\u1ec7n \u1edf nh\u1eefng ng\u01b0\u1eddi \u0111ang b\u01b0\u1edbc sang m\u1ed9t giai \u0111o\u1ea1n m\u1edbi, sau kh\u00f3 kh\u0103n l\u00e0 s\u1ef1 nh\u1eb9 nh\u00f5m v\u00e0 hy v\u1ecdng.\nTrang s\u1ee9c kh\u00f4ng ch\u1ec9 \u0111\u1ec3 l\u00e0m \u0111\u1eb9p. N\u00f3 c\u00f2n l\u00e0 m\u1ed9t c\u00e1ch r\u1ea5t tinh t\u1ebf \u0111\u1ec3 m\u1ed7i ng\u01b0\u1eddi th\u1ec3 hi\u1ec7n c\u00e2u chuy\u1ec7n, l\u1ef1a ch\u1ecdn v\u00e0 c\u1ea3m x\u00fac c\u1ee7a ch\u00ednh m\u00ecnh \u2013 kh\u00f4ng c\u1ea7n n\u00f3i ra, nh\u01b0ng ai tinh \u00fd s\u1ebd nh\u1eadn ra.\nAnh ch\u1ecb th\u01b0\u1eddng \u0111eo nh\u1eabn \u1edf ng\u00f3n n\u00e0o nh\u1ea5t?\nC\u00f3 ph\u1ea3i n\u00f3 c\u0169ng ph\u1ea3n \u00e1nh \u0111\u00fang giai \u0111o\u1ea1n hi\u1ec7n t\u1ea1i c\u1ee7a m\u00ecnh kh\u00f4ng? Comment chia s\u1ebb \u0111\u1ec3 HuyK \u0111\u01b0\u1ee3c nghe th\u00eam c\u00e2u chuy\u1ec7n c\u1ee7a anh ch\u1ecb nh\u00e9 \ud83d\udc47#k203 #a2 #C #huykvienchibao",
+    "textReferences": [
+      {
+        "url": "https://www.facebook.com/hashtag/k203?__eep__=6",
+        "mobileUrl": "https://m.facebook.com/hashtag/k203",
+        "id": "408700082570556"
+      },
+      {
+        "url": "https://www.facebook.com/hashtag/a2?__eep__=6",
+        "mobileUrl": "https://m.facebook.com/hashtag/a2",
+        "id": "397934473648127"
+      },
+      {
+        "url": "https://www.facebook.com/hashtag/c?__eep__=6",
+        "mobileUrl": "https://m.facebook.com/hashtag/c",
+        "id": "120645788120371"
+      },
+      {
+        "url": "https://www.facebook.com/hashtag/huykvienchibao?__eep__=6",
+        "mobileUrl": "https://m.facebook.com/hashtag/huykvienchibao",
+        "id": "7343258139125699"
+      }
+    ],
+    "likes": 3,
+    "shares": 2,
+    "topReactionsCount": 1,
+    "media": [
+      {
+        "mediaset_token": "pcb.1505545964912771",
+        "url": "https://www.facebook.com/huyk.kimhoanvienchibao/posts/pfbid02dLUncj4WopD1nAiV9Eg3Cc6nuuQoRYKBZdiE72PWBiSJyNEcwZEqM8azNKxDfZ3al",
+        "comet_product_tag_feed_overlay_renderer": null
+      },
+      {
+        "thumbnail": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-6/623822740_1505546061579428_3548301475038055752_n.jpg?stp=dst-jpg_s590x590_tt6&_nc_cat=109&ccb=1-7&_nc_sid=833d8c&_nc_ohc=ILTbDutuw1oQ7kNvwHfXz5r&_nc_oc=AdmB_lJUxRVQGYt6YxNB3lrGWku3xYfqiH_BTnPWYdRx3dFVH7e4AWPZC5D-lB960m0&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afrd0WiYsaORGwa8wxQU3havHBAM3WRMFsitYdVh8BY6Hg&oe=69824D05",
+        "__typename": "Photo",
+        "is_playable": false,
+        "image": {
+          "uri": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-6/623822740_1505546061579428_3548301475038055752_n.jpg?stp=dst-jpg_s590x590_tt6&_nc_cat=109&ccb=1-7&_nc_sid=833d8c&_nc_ohc=ILTbDutuw1oQ7kNvwHfXz5r&_nc_oc=AdmB_lJUxRVQGYt6YxNB3lrGWku3xYfqiH_BTnPWYdRx3dFVH7e4AWPZC5D-lB960m0&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_Afrd0WiYsaORGwa8wxQU3havHBAM3WRMFsitYdVh8BY6Hg&oe=69824D05",
+          "height": 590,
+          "width": 590
+        },
+        "id": "1505545438246157",
+        "__isMedia": "Photo",
+        "photo_cix_screen": null,
+        "copyright_banner_info": null,
+        "owner": {
+          "__typename": "User",
+          "id": "100063721444581"
+        },
+        "ocrText": "May be an image of text that says 'HUYK M\u00c9 ME\u041b KIM HO\u00c0N \u0110\u00e3 \u0111\u00ednh h\u00f4n Ch\u01b0a k\u1ebft h\u00f4n C\u1ea3i thi\u00ean \u0110\u00e3 C\u1ea7u h\u00f4n quan ly h\u00f4n l\u1ed9c & nh\u01b0 \u0111ang C\u1ea7u y\u00eau ph\u00fac & an khang x\u00e3 h\u1ed9i B\u1ea3o v\u1ec7 kh\u1ecfi k\u1ebb \u00e1c Gi\u00e0u c\u00f3 quy\u1ec1n l\u1ef1e TAY TAYTR\u00c1I TR\u00c1I TAY PH\u1ea2I \"\u0110EO NH\u1eaaN \u0110\u00c3 L\u00c2U NH\u01afNG CH\u01afA CH\u1eaeC BAN \u0110\u00c3 BI\u1ebeT \u0110I\u1ec0U N\u00c0Y!'"
+      },
+      {
+        "thumbnail": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-6/623353499_1505545578246143_1425532706771361919_n.jpg?stp=dst-jpg_s590x590_tt6&_nc_cat=100&ccb=1-7&_nc_sid=833d8c&_nc_ohc=q7KgaRih4s4Q7kNvwEVo2pw&_nc_oc=Adn-I8fNgGnKqNxVemubVTmr91Iwg59CmP5ACbdnBBBOJhsMU9QGrW7J9QP5uMSMGyQ&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_AfoSQHE4SBz_mnDd2kbJ5Lq4LXrF-LFgehw6SdPOgnJUmg&oe=6982562B",
+        "__typename": "Photo",
+        "is_playable": false,
+        "image": {
+          "uri": "https://scontent-lga3-2.xx.fbcdn.net/v/t39.30808-6/623353499_1505545578246143_1425532706771361919_n.jpg?stp=dst-jpg_s590x590_tt6&_nc_cat=100&ccb=1-7&_nc_sid=833d8c&_nc_ohc=q7KgaRih4s4Q7kNvwEVo2pw&_nc_oc=Adn-I8fNgGnKqNxVemubVTmr91Iwg59CmP5ACbdnBBBOJhsMU9QGrW7J9QP5uMSMGyQ&_nc_zt=23&_nc_ht=scontent-lga3-2.xx&_nc_gid=Onan0xsuOU1Wzy9FTh_lEA&oh=00_AfoSQHE4SBz_mnDd2kbJ5Lq4LXrF-LFgehw6SdPOgnJUmg&oe=6982562B",
+          "height": 588,
+          "width": 590
+        },
+        "id": "1505545571579477",
+        "__isMedia": "Photo",
+        "photo_cix_screen": null,
+        "copyright_banner_info": null,
+        "owner": {
+          "__typename": "User",
+          "id": "100063721444581"
+        },
+        "ocrText": "May be an image of wrist watch and hat shop"
+      }
+    ],
+    "feedbackId": "ZmVlZGJhY2s6MTUwNTU0NTk2NDkxMjc3MQ==",
+    "reactionLikeCount": 3,
+    "topLevelUrl": "https://www.facebook.com/100063721444581/posts/1505545964912771",
+    "facebookId": "100063721444581",
+    "pageAdLibrary": {
+      "is_business_page_active": true,
+      "id": "2497800676910664"
+    },
+    "inputUrl": "https://www.facebook.com/huyk.kimhoanvienchibao"
+  }
+]

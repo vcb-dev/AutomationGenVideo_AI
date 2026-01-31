@@ -15,6 +15,7 @@ from .views import (
     ChannelListCreateView,
     ChannelDetailView,
     ChannelCheckView,
+    ChannelCheckByUsernameView,
     # Stats views
     StatsView,
     HealthCheckView,
@@ -25,6 +26,11 @@ from .views.duplicate_detection_views import (
     generate_fingerprint,
     check_duplicate,
     compare_videos,
+)
+from .views.facebook_analysis_views import (
+    analyze_facebook_url,
+    get_available_methods,
+    detect_facebook_type,
 )
 
 app_name = 'video_management'
@@ -55,11 +61,17 @@ urlpatterns = [
     
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
+    path('channels/check-by-username/', ChannelCheckByUsernameView.as_view(), name='channel-check-by-username'),
     path('channels/<int:pk>/', ChannelDetailView.as_view(), name='channel-detail'),
     path('channels/<int:pk>/check/', ChannelCheckView.as_view(), name='channel-check'),
     
     # Statistics
     path('stats/', StatsView.as_view(), name='stats'),
+    
+    # Facebook Analysis
+    path('facebook/analyze/', analyze_facebook_url, name='facebook-analyze'),
+    path('facebook/methods/', get_available_methods, name='facebook-methods'),
+    path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
     
     # Collections (router URLs)
     path('', include(router.urls)),

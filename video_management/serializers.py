@@ -76,6 +76,24 @@ class UserVideosRequestSerializer(serializers.Serializer):
         required=False,
         help_text="Maximum number of results (default: 9999 for all)"
     )
+    until_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Fetch videos from this start date (YYYY-MM-DD)"
+    )
+    start_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Start date for filtering (YYYY-MM-DD)"
+    )
+    end_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="End date for filtering (YYYY-MM-DD)"
+    )
 
 
 
@@ -83,6 +101,7 @@ class VideoSerializer(serializers.ModelSerializer):
     """Serializer for scraped video data."""
     
     engagement_rate = serializers.SerializerMethodField()
+    is_video = serializers.SerializerMethodField()
     platform_display = serializers.CharField(source='get_platform_display', read_only=True)
     
     class Meta:
@@ -101,6 +120,7 @@ class VideoSerializer(serializers.ModelSerializer):
             'comments_count',
             'shares_count',
             'engagement_rate',
+            'is_video',
             'video_url',
             'download_url',
             'thumbnail_url',
@@ -116,6 +136,26 @@ class VideoSerializer(serializers.ModelSerializer):
     def get_engagement_rate(self, obj):
         """Calculate engagement rate percentage."""
         return round(obj.engagement_rate, 2)
+        
+    def get_is_video(self, obj):
+        """Determine if this is a video content."""
+        # 1. Check raw_data (injected from scraper)
+        if obj.raw_data and isinstance(obj.raw_data, dict):
+            if 'is_video_derived' in obj.raw_data:
+                return bool(obj.raw_data['is_video_derived'])
+            # Fallback for old data or other scrapers
+            if obj.raw_data.get('isVideo'):
+                return True
+                
+        # 2. Check URL presence
+        if obj.video_url or obj.download_url:
+            return True
+            
+        # 3. Platform specific
+        if obj.platform in [Platform.TIKTOK, Platform.DOUYIN]:
+            return True
+            
+        return False
 
 
 class SearchHistorySerializer(serializers.ModelSerializer):

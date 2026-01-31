@@ -249,6 +249,17 @@ class ScrapedVideo(BaseModel):
         blank=True,
         help_text="List of hashtags"
     )
+    
+    # AI Comparison Data
+    feature_vector = models.BinaryField(
+        null=True, 
+        blank=True,
+        help_text="Extracted feature vector for AI comparison"
+    )
+    duration = models.FloatField(
+        default=0,
+        help_text="Video duration in seconds"
+    )
     music_info = models.JSONField(
         default=dict,
         blank=True,

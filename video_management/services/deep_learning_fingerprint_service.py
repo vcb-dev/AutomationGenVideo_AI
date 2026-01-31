@@ -55,7 +55,23 @@ class DeepLearningFingerprintService:
             logger.error(f"Failed to load model: {str(e)}")
             raise
     
-    def extract_features(self, video_path: str, num_frames: int = 16) -> np.ndarray:
+    def get_video_info(self, video_path: str):
+        """Get video metadata like duration"""
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return None
+            
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = frame_count / fps if fps > 0 else 0
+            
+            cap.release()
+            return {'duration': duration, 'fps': fps, 'frames': frame_count}
+        except Exception:
+            return None
+
+    def extract_features(self, video_path: str, num_frames: int = 32) -> np.ndarray:
         """
         Extract 512-dimensional feature vector from video
         
@@ -98,7 +114,7 @@ class DeepLearningFingerprintService:
             logger.error(f"Error extracting features from {video_path}: {str(e)}")
             raise
     
-    def _load_video_frames(self, video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+    def _load_video_frames(self, video_path: str, num_frames: int = 32) -> List[np.ndarray]:
         """
         Load evenly spaced frames from video
         
@@ -120,8 +136,16 @@ class DeepLearningFingerprintService:
             cap.release()
             raise ValueError(f"Video has no frames: {video_path}")
         
-        # Get evenly spaced frame indices
-        indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+        # Optimize: Sample from middle 80% of video to avoid intro/outro/edits noise
+        start_frame = int(total_frames * 0.1)
+        end_frame = int(total_frames * 0.9)
+        
+        # Ensure valid range
+        if end_frame <= start_frame:
+            start_frame = 0
+            end_frame = total_frames - 1
+
+        indices = np.linspace(start_frame, end_frame, num_frames).astype(int)
         
         frames = []
         for idx in indices:

@@ -13,6 +13,7 @@ from .channel_views import (
     ChannelListCreateView,
     ChannelDetailView,
     ChannelCheckView,
+    ChannelCheckByUsernameView,
 )
 from .stats_views import (
     StatsView,
@@ -30,6 +31,7 @@ __all__ = [
     'ChannelListCreateView',
     'ChannelDetailView',
     'ChannelCheckView',
+    'ChannelCheckByUsernameView',
     # Stats views
     'StatsView',
     'HealthCheckView',
