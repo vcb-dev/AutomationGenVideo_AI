@@ -264,6 +264,20 @@ FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
 FACEBOOK_ACCESS_TOKEN = env('FACEBOOK_ACCESS_TOKEN', default='')
 
+# ==========================================
+# HEYGEN API CONFIGURATION
+# ==========================================
+HEYGEN_API_KEY = env('HEYGEN_API_KEY', default='')
+HEYGEN_AVATAR_ID = env('HEYGEN_AVATAR_ID', default='')
+HEYGEN_API_URL = env('HEYGEN_API_URL', default='https://api.heygen.com/v2')
+HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/api/heygen/webhook')
+HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
+
+# ==========================================
+# OPENAI API CONFIGURATION
+# ==========================================
+OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+
 
 # ==========================================
 # LEGACY API SETTINGS (Fallback)

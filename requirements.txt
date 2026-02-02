@@ -44,3 +44,9 @@ torchvision>=0.15.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 pillow>=10.0.0
+
+# HeyGen API (AI Avatar & Lipsync)
+# Official SDK not available, using requests + custom wrapper
+aiohttp>=3.9.0
+ffmpeg-python>=0.2.0
+moviepy>=1.0.3

@@ -917,6 +917,134 @@ class UserVideosView(APIView):
                     except Exception as e:
                         logger.warning(f"Date filtering failed: {e}")
             
+            
+            # --- INSTAGRAM: Use Instagram Apify Service ---
+            elif platform_str.upper() == 'INSTAGRAM':
+                logger.info(f"📸 Using Instagram Apify Service for @{username}")
+                from ..services.instagram_apify_service import InstagramApifyService
+                
+                instagram_service = InstagramApifyService()
+                page_info = {}
+                
+                try:
+                    # Fetch profile info (Non-blocking / Optional)
+                    try:
+                        profile_info = instagram_service.get_profile_info(username)
+                        page_info = profile_info
+                        logger.info(f"✅ Instagram Profile: {profile_info.get('followersCount', 0):,} followers")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Instagram profile fetch failed: {e}. Proceeding to fetch posts...")
+                        page_info = {
+                            'username': username,
+                            'fullName': username,
+                            'followersCount': 0,
+                            'profilePicUrl': f"https://www.instagram.com/{username}/profile_pic.jpg"
+                        }
+                    
+                    # Fetch posts only if max_results > 0
+                    if max_results and max_results > 0:
+                        # This returns detailed, normalized data from the service
+                        posts_data = instagram_service.get_user_posts_and_reels(username, max_results=max_results)
+                        raw_results = posts_data
+                    else:
+                        # Profile only mode - no posts fetched
+                        logger.info(f"📊 Profile-only mode: Skipping posts fetch for @{username}")
+                        raw_results = []
+                    
+                    # Normalize posts (Note: instagram_service already returns mostly normalized data)
+                    normalized = []
+                    for post in raw_results:
+                        # The service returns snake_case keys (likes_count, etc.)
+                        # But also preserves 'raw_data' which has the original camelCase keys if needed.
+                        # We use the snake_case keys from the service which are reliable.
+                        
+                        # Infer author name from first post if profile fetch failed
+                        if not page_info.get('fullName') and post.get('author_name'):
+                             page_info['fullName'] = post.get('author_name')
+                             
+                        short_code = post.get('short_code') or post.get('video_id', '')
+                        post_url = post.get('url') or (f"https://www.instagram.com/p/{short_code}/" if short_code else '')
+                        
+                        norm = {
+                            'video_id': post.get('video_id') or short_code,
+                            'short_code': short_code,
+                            'url': post_url,
+                            'title': (post.get('caption') or '')[:100],
+                            'caption': post.get('caption') or '',
+                            'description': post.get('caption') or '',
+                            'video_url': post.get('video_url'),
+                            'thumbnail_url': post.get('thumbnail_url') or '',
+                            'likes': post.get('likes_count', 0),
+                            'likes_count': post.get('likes_count', 0),
+                            'comments': post.get('comments_count', 0),
+                            'comments_count': post.get('comments_count', 0),
+                            'shares_count': post.get('shares_count', 0),
+                            'views': post.get('video_view_count', 0),
+                            'views_count': post.get('video_view_count', 0),
+                            'published_at': post.get('timestamp'),
+                            'timestamp': post.get('timestamp'),
+                            'author_name': page_info.get('fullName') or post.get('author_name') or username,
+                            'author_username': username,
+                            'platform': 'instagram',
+                            'is_video': post.get('content_type') == 'reel' or bool(post.get('video_url')),
+                            'content_type': 'video' if post.get('content_type') == 'reel' else 'image', 
+                            'raw_data': post.get('raw_data', {})
+                        }
+                        normalized.append(norm)
+                    
+                    logger.info(f"✅ Instagram: Fetched {len(normalized)} posts for @{username}")
+                    
+                    # Filter by date range if provided
+                    if start_date and end_date and normalized:
+                        try:
+                            from datetime import datetime
+                            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                            end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+                            
+                            filtered_normalized = []
+                            for post in normalized:
+                                pub_at = post.get('published_at') or post.get('timestamp')
+                                if not pub_at:
+                                    continue
+                                
+                                # Parse the timestamp
+                                try:
+                                    if isinstance(pub_at, str):
+                                        # Remove timezone info for comparison (make naive)
+                                        # Handle formats like "2026-01-31 14:35:47+00:00" or "2026-01-31T14:35:47Z"
+                                        clean_date = pub_at.split('+')[0].split('Z')[0].replace('T', ' ')
+                                        
+                                        # Try parsing with time
+                                        try:
+                                            pub_dt = datetime.strptime(clean_date.strip(), '%Y-%m-%d %H:%M:%S')
+                                        except:
+                                            # Try just date
+                                            pub_dt = datetime.strptime(clean_date.strip()[:10], '%Y-%m-%d')
+                                    elif hasattr(pub_at, 'replace'):
+                                        # If it's a datetime object with timezone, make it naive
+                                        pub_dt = pub_at.replace(tzinfo=None)
+                                    else:
+                                        continue
+                                    
+                                    # Check if within date range
+                                    if start_dt <= pub_dt <= end_dt:
+                                        filtered_normalized.append(post)
+                                except Exception as parse_err:
+                                    logger.warning(f"Could not parse date {pub_at}: {parse_err}")
+                                    continue
+                            
+                            logger.info(f"📅 Instagram date filter: {len(filtered_normalized)}/{len(normalized)} posts between {start_date} and {end_date}")
+                            normalized = filtered_normalized
+                        except Exception as e:
+                            logger.warning(f"Instagram date filtering failed: {e}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Instagram fetch failed: {e}", exc_info=True)
+                    return Response({
+                        'success': False,
+                        'error': f'Failed to fetch Instagram data: {str(e)}'
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
             # --- OTHER PLATFORMS: Use Apify ---
             else:
                 logger.info(f"⚡ Using Apify to fetch videos for @{username} on {platform_str}")
@@ -1052,6 +1180,77 @@ class UserVideosView(APIView):
                     }
 
                 # --- TIKTOK / DOUYIN / INSTAGRAM SPECIFIC EXTRACTION ---
+                elif platform_str.upper() == 'INSTAGRAM':
+                    # Instagram uses page_info from Instagram Apify Service
+                    if page_info:
+                        # DEBUG: Log what keys are in page_info
+                        logger.info(f"🔍 page_info keys: {list(page_info.keys())}")
+                        
+                        # DEBUG: Log avatar-related fields
+                        avatar_keys = [k for k in page_info.keys() if any(x in k.lower() for x in ['pic', 'avatar', 'image', 'photo'])]
+                        logger.info(f"🖼️ Avatar-related keys in page_info: {avatar_keys}")
+                        for k in avatar_keys:
+                            logger.info(f"   {k} = {str(page_info.get(k))[:100]}")
+                        
+                        username = page_info.get('username') or username
+                        display_name = page_info.get('fullName') or username
+                        # Enhanced avatar extraction with multiple fallbacks
+                        avatar_url = (
+                            page_info.get('profilePicUrl') or 
+                            page_info.get('profilePicUrlHd') or 
+                            page_info.get('profile_pic_url') or 
+                            page_info.get('profilePictureUrl') or
+                            page_info.get('profilePic') or
+                            ''
+                        )
+                        logger.info(f"📸 Extracted avatar for {username}: {avatar_url[:80] if avatar_url else 'EMPTY'}...")
+                        follower_count = page_info.get('followersCount') or 0
+                        total_posts = page_info.get('postsCount') or len(normalized)
+                        
+                        # Calculate aggregated stats from fetched posts
+                        fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                        fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
+                        fetched_views = sum(v.get('views_count', 0) for v in normalized)
+                        
+                        # Engagement Rate Calculation
+                        engagement_rate = 0.0
+                        if follower_count > 0:
+                            # Instagram engagement = (likes + comments) / followers * 100
+                            engagement_rate = ((fetched_likes + fetched_comments) / follower_count) * 100
+                        
+                        profile_data = {
+                            'username': username,
+                            'display_name': display_name,
+                            'avatar_url': avatar_url,
+                            'follower_count': follower_count,
+                            'total_likes': fetched_likes,  # Sum of likes from fetched posts
+                            'total_videos': len([v for v in normalized if v.get('content_type') in ['Video', 'Reel']]),
+                            'total_posts': total_posts,  # Total posts including photos
+                            'total_views': fetched_views,
+                            'engagement_rate': round(engagement_rate, 2),
+                            'platform': platform_str,
+                            'metadata': {
+                                'is_verified': page_info.get('isVerified', False),
+                                'biography': page_info.get('biography', ''),
+                                'external_url': page_info.get('externalUrl', '')
+                            }
+                        }
+                    else:
+                        # Fallback if no page_info
+                        profile_data = {
+                            'username': username,
+                            'display_name': username,
+                            'avatar_url': '',
+                            'follower_count': 0,
+                            'total_likes': sum(v.get('likes_count', 0) for v in normalized),
+                            'total_videos': len(normalized),
+                            'total_posts': len(normalized),
+                            'total_views': sum(v.get('views_count', 0) for v in normalized),
+                            'engagement_rate': 0.0,
+                            'platform': platform_str
+                        }
+                
+                # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
                 else: 
                     # authorMeta is sometimes at root, sometimes nested in raw_data
                     author_meta = first_item.get('authorMeta') or first_item.get('raw_data', {}).get('authorMeta', {})
@@ -1105,55 +1304,47 @@ class UserVideosView(APIView):
 
 
             # Save videos
-
             ordered_videos = []
-
-            if normalized:
-
-                try:
-
-                    saved_videos = scraper.save_videos(normalized)
-
-                    # Map back to preserve order
-
-                    video_id_to_video = {v.video_id: v for v in saved_videos}
-
-                    for norm in normalized:
-
-                        vid = norm.get('video_id')
-
-                        if vid in video_id_to_video:
-
-                            ordered_videos.append(video_id_to_video[vid])
-
-                except Exception as e:
-
-                    logger.error(f"Error saving videos: {e}")
-
-                    # If save fails, just return normalized data for now
-
-                    ordered_videos = normalized
-
-
-
-            videos_serializer = VideoSerializer(ordered_videos, many=True)
-
             
+            if normalized:
+                # Instagram: Skip DB save for now, just return normalized data
+                if platform_str.upper() == 'INSTAGRAM':
+                    logger.info(f"📦 Returning {len(normalized)} Instagram posts (DB save skipped)")
+                    ordered_videos = normalized
+                else:
+                    # Other platforms: Save to DB
+                    try:
+                        saved_videos = scraper.save_videos(normalized)
+                        
+                        # Map back to preserve order
+                        video_id_to_video = {v.video_id: v for v in saved_videos}
+                        
+                        for norm in normalized:
+                            vid = norm.get('video_id')
+                            if vid in video_id_to_video:
+                                ordered_videos.append(video_id_to_video[vid])
+                    
+                    except Exception as e:
+                        logger.error(f"Error saving videos: {e}")
+                        # If save fails, just return normalized data for now
+                        ordered_videos = normalized
 
+            # Serialize videos
+            # For Instagram (dict data), serialize directly without VideoSerializer
+            if platform_str.upper() == 'INSTAGRAM':
+                results_data = ordered_videos  # Already normalized dicts
+            else:
+                # For other platforms (model objects), use VideoSerializer
+                videos_serializer = VideoSerializer(ordered_videos, many=True)
+                results_data = videos_serializer.data
+            
             response_data = {
-
                 'success': True,
-
                 'platform': platform_str,
-
                 'username': username,
-
                 'count': len(ordered_videos),
-
-                'results': videos_serializer.data,
-
+                'results': results_data,
                 'profile': profile_data  # Ensure profile is always in root if available
-
             }
 
                 
