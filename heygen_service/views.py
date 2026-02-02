@@ -109,9 +109,9 @@ def generate_video(request):
         voice_id = data.get('voice_id')
         avatar_id = data.get('avatar_id')
         
-        # HOTFIX: If old ID is sent (due to frontend cache), swap it with the new correct ID
-        if avatar_id == '871cc4b87b8643c6b9cc6b4cf6797fc9':
-            avatar_id = 'c73ebf9cd4ea4d0e9764ecf684999d71'
+        # HOTFIX: If old Talking Photo ID is sent (due to frontend cache), swap it with the new Video Avatar ID
+        if avatar_id == 'c73ebf9cd4ea4d0e9764ecf684999d71' or avatar_id == '871cc4b87b8643c6b9cc6b4cf6797fc9':
+            avatar_id = '4a4cbf45415048f79c6c7968e353a359'
 
         # Sanitize avatar_style
         raw_style = data.get('avatar_style', 'normal')

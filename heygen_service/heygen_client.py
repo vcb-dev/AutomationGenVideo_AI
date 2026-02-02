@@ -8,6 +8,7 @@ import os
 import aiohttp
 import asyncio
 import logging
+import json
 from typing import Optional, Dict, Any
 from .models import (
     VideoGenerationRequest,
@@ -86,9 +87,8 @@ class HeyGenClient:
         endpoint = f"{self.api_url}/video/generate"
         
         # Build request payload
-        # Route specific IDs or "photo" types to Talking Photo method
-        if request.avatar_id == "c73ebf9cd4ea4d0e9764ecf684999d71" or \
-           "photo" in request.avatar_id.lower() or "talking" in request.avatar_id.lower():
+        # Route "photo" types to Talking Photo method, but treat known Video Avatar IDs as standard
+        if "photo" in request.avatar_id.lower() or "talking" in request.avatar_id.lower():
              return await self.create_talking_photo_video(request)
 
         # Standard Avatar Payload
@@ -98,7 +98,7 @@ class HeyGenClient:
                     "character": {
                         "type": "avatar",
                         "avatar_id": request.avatar_id,
-                        "avatar_style": request.avatar_style
+                        "avatar_style": request.avatar_style or "normal"
                     },
                     "voice": self._build_voice_payload(request.voice_settings),
                     "background": self._build_background_payload(request)
@@ -108,10 +108,12 @@ class HeyGenClient:
                 "width": self._get_width(request.aspect_ratio),
                 "height": self._get_height(request.aspect_ratio)
             },
-            "test": self.test_mode,  # True = watermarked (FREE), False = production (costs credits)
+            "test": self.test_mode,
             "caption": False,
-            "quality": "medium"  # Force medium quality to avoid subscription errors
+            "quality": "medium"
         }
+        
+        logger.info(f"Sending Video Payload: {json.dumps(payload, ensure_ascii=False)}")
         
         if callback_id:
             payload["callback_id"] = callback_id
@@ -134,9 +136,10 @@ class HeyGenClient:
                     logger.error(f"HeyGen API error: {error_msg}")
                     
                     # If error suggests avatar not found, try Talking Photo method
-                    if "not found" in error_msg.lower() or "available" in error_msg.lower() or "exist" in error_msg.lower():
-                        logger.info("Avatar not found as standard avatar. Retrying as Talking Photo...")
-                        return await self.create_talking_photo_video(request)
+                    # DISABLE FALLBACK FOR NOW to verify standard avatar works
+                    # if "not found" in error_msg.lower() or "available" in error_msg.lower() or "exist" in error_msg.lower():
+                    #     logger.info("Avatar not found as standard avatar. Retrying as Talking Photo...")
+                    #     return await self.create_talking_photo_video(request)
                         
                     raise Exception(f"HeyGen API error: {error_msg}")
                 

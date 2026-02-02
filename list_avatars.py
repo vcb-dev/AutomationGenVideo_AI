@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = "sk_V2_hgu_khjPjWBvFvv_KO1v2YOM6V50Uvb7sffGgIWScxT5TD0x"
+API_KEY = "sk_V2_hgu_kjihuKdHmVc_AQcImD5QXm1s4o4V8KunsKmlo0LjOuDV"
 API_URL = "https://api.heygen.com/v2/avatars"
 
 headers = {
@@ -36,7 +36,7 @@ try:
     # Or checking V1 list which sometimes exposes them differently
     
     # Let's try to look for the ID directly in the dump if present
-    target_group_id = "871cc4b87b8643c6b9cc6b4cf6797fc9"
+    target_group_id = "4a4cbf45415048f79c6c7968e353a359"
     
     # Try getting avatar details directly by ID if there is such endpoint
     # (HeyGen doesn't document 'get single avatar' well, but let's try)
