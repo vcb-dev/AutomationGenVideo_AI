@@ -32,6 +32,9 @@ from .views.facebook_analysis_views import (
     get_available_methods,
     detect_facebook_type,
 )
+from .views.douyin_search_views import search_douyin_videos
+from .views.xiaohongshu_search_views import search_xiaohongshu_notes
+from .views.tiktok_search_views import search_tiktok_videos
 
 app_name = 'video_management'
 
@@ -72,6 +75,15 @@ urlpatterns = [
     path('facebook/analyze/', analyze_facebook_url, name='facebook-analyze'),
     path('facebook/methods/', get_available_methods, name='facebook-methods'),
     path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
+    
+    # Douyin Search
+    path('douyin/search/', search_douyin_videos, name='douyin-search'),
+    
+    # Xiaohongshu Search
+    path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
+    
+    # TikTok Search (TikHub)
+    path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
     
     # Collections (router URLs)
     path('', include(router.urls)),

@@ -185,6 +185,81 @@ class TikHubService:
             logger.error(f"Failed to get videos for {clean_username}: {str(e)}")
             raise
 
+    def search_videos(
+        self,
+        keyword: str,
+        search_type: str = 'keyword', # 'keyword' or 'hashtag'
+        sort_type: int = 0, # 0=general, 1=user, 2=music/video
+        cursor: int = 0,
+        count: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Search TikTok videos by keyword or hashtag.
+        
+        Args:
+            keyword: Search term
+            search_type: 'keyword' or 'hashtag'
+            sort_type: Sort order
+            cursor: Pagination cursor
+            count: Number of results
+            
+        Returns:
+            Dictionary containing search results
+        """
+        try:
+            endpoint = '/tiktok/web/search_item'
+            
+            # If hashtag search, ensure keyword starts with # or use different logic if API requires
+            # TikHub typically handles hashtag search via search_item with keyword starting with #
+            # Or dedicated endpoint /tiktok/web/challenge/detail for hashtag info
+            
+            if search_type == 'hashtag' and not keyword.startswith('#'):
+                keyword = f"#{keyword}"
+            
+            logger.info(f"🔍 Searching TikHub: {keyword} (Type: {search_type}, Cursor: {cursor})")
+            
+            params = {
+                'keyword': keyword,
+                'sort_type': sort_type,
+                'publish_time': 0, # All time
+                'cursor': cursor,
+                'count': count
+            }
+            
+            response = self._make_request(endpoint, params=params)
+            
+            data = response.get('data', {})
+            
+            item_list = data.get('item_list', []) or []
+            has_more = data.get('has_more', False)
+            next_cursor = data.get('cursor', cursor + count)
+            
+            # Normalize list
+            normalized_videos = []
+            for item in item_list:
+                # Type check to ensure it's a video object (sometimes search returns users/music)
+                if item.get('type') == 1: # 1 is usually video item
+                   item = item.get('item', {}) 
+                
+                # TikHub sometimes wraps item
+                if 'video' in item:
+                     # It's likely a video object already
+                     pass
+                
+                # Basic normalization for frontend
+                # We can reuse normalize_video_data but might need field adjustments
+                normalized_videos.append(item)
+                
+            return {
+                'videos': normalized_videos,
+                'cursor': next_cursor,
+                'has_more': has_more
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to search videos for {keyword}: {str(e)}")
+            raise
+
     def normalize_video_data(self, video_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize video data from TikHub to standard format.

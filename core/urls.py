@@ -91,6 +91,7 @@ class APIRootView(APIView):
 urlpatterns = [
     path('', APIRootView.as_view(), name='api-root'),
     path('admin/', admin.site.urls),
+    # Trigger Reload Again for TikTok
     path('api/', include('video_management.urls')),
 ]
 

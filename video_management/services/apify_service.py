@@ -247,7 +247,21 @@ class ApifyScraperService(BaseScraperService):
             return self._build_instagram_input(keyword, max_results)
         
         elif self.platform == Platform.FACEBOOK:
-            return self._build_facebook_input(keyword, max_results, username, until_date)
+            if username:
+                return self._build_facebook_input(keyword, max_results, username, until_date)
+            else:
+                # Use Global Search Actor
+                actors = getattr(settings, 'APIFY_ACTORS', {})
+                # Use a specific search actor (e.g., moJalo4813/facebook-search-scraper or similar)
+                # Fallback to the default 'facebook' key if 'facebook_search' not found, 
+                # though strictly speaking standard post scraper doesn't do global search well.
+                self.actor_id = actors.get('facebook_search', 'moJalo4813/facebook-search-scraper')
+                self.logger.info(f"Switching to Facebook Search Scraper ({self.actor_id}) for keyword: {keyword}")
+                
+                return {
+                    "searchQuery": keyword,
+                    "maxPosts": min(max_results, self.max_results_limit),
+                }
         
         elif self.platform == Platform.DOUYIN:
             # Similar to TikTok
@@ -657,12 +671,15 @@ class ApifyScraperService(BaseScraperService):
                  if pref.get('image') and pref['image'].get('uri'):
                      thumbnail_url = pref['image']['uri']
         
+        # Construct Web URL (Permalink) - MUST BE BEFORE is_video detection
+        permalink = data.get('url') or data.get('postUrl') or ''
+        
         # Determine if it's a video
         # Apify fb scraper often puts isVideo=True at root
         is_video = data.get('isVideo', False)
 
         # Detect from URL if it's a Reel
-        if not is_video and ('/reel/' in post_url or '/videos/' in post_url):
+        if not is_video and permalink and ('/reel/' in permalink or '/videos/' in permalink):
             is_video = True
             
         # Detect if videoUrl exists at root
@@ -704,8 +721,6 @@ class ApifyScraperService(BaseScraperService):
         # IMPORTANT: Inject into raw_data so it persists in DB
         data['is_video_derived'] = is_video
 
-        # Construct Web URL (Permalink)
-        permalink = data.get('url') or data.get('postUrl') or ''
         # If no URL but we have postId (and maybe username), construct it
         if not permalink and post_id:
             # Prefer username, fallback to ID, fallback to 'watch' format if video
