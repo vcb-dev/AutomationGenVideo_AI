@@ -639,203 +639,712 @@ class UserVideosView(APIView):
         # We need to fetch ALL videos to get accurate Total Views/Engagement stats.
 
         max_results = data.get('max_results')
-
+        start_date = data.get('start_date') or data.get('until_date')  # Backward compatibility
+        end_date = data.get('end_date')
         
-
-        logger.info(f"Processing request for {username} on {platform_str}")
-
-
+        logger.info(f"Processing request for {username} on {platform_str} (start={start_date}, end={end_date})")
 
         try:
+            # --- FACEBOOK: Try Graph API first, fallback to Apify (HYBRID) ---
+            if platform_str.upper() == 'FACEBOOK':
+                page_info = {}
+                raw_results = []
+                use_graph_api = False
+                
+                # Check for force_refresh flag
+                force_refresh = request.data.get('force_refresh', False)
+                
+                # Try to fetch from DB first if not forced to refresh
+                db_videos = []
+                if not force_refresh:
+                    logger.info(f"💾 Checking DB for @{username} on {platform_str}...")
+                    db_query = ScrapedVideo.objects.filter(
+                        platform=Platform[platform_str.upper()],
+                        author_username=username
+                    )
+                    
+                    if start_date:
+                        try:
+                            # Parse YYYY-MM-DD
+                            start_dt_db = datetime.strptime(start_date, '%Y-%m-%d')
+                            # Make aware if project uses timezone support
+                            if timezone.is_aware(timezone.now()):
+                                start_dt_db = timezone.make_aware(start_dt_db)
+                            
+                            logger.info(f"📅 DB Filter Start: {start_dt_db} (Total before: {db_query.count()})")
+                            db_query = db_query.filter(published_at__gte=start_dt_db)
+                        except Exception as e:
+                            logger.error(f"❌ Date Filter Error (Start): {e}")
+                        
+                    if end_date:
+                        try:
+                            # Parse YYYY-MM-DD
+                            end_dt_db = datetime.strptime(end_date, '%Y-%m-%d')
+                            # End of day (23:59:59)
+                            end_dt_db = end_dt_db.replace(hour=23, minute=59, second=59)
+                            # Make aware
+                            if timezone.is_aware(timezone.now()):
+                                end_dt_db = timezone.make_aware(end_dt_db)
+                                
+                            logger.info(f"📅 DB Filter End: {end_dt_db}")
+                            db_query = db_query.filter(published_at__lte=end_dt_db)
+                        except Exception as e:
+                            logger.error(f"❌ Date Filter Error (End): {e}")
+                        
+                    # Execute query
+                    raw_db_videos = list(db_query.order_by('-published_at'))
+                    
+                    # Deduplicate by video_id (and normalized ID for Facebook)
+                    seen_ids = set()
+                    db_videos = []
+                    
+                    for vid in raw_db_videos:
+                        # Normalize ID: Facebook sometimes uses PAGEID_POSTID or just POSTID
+                        # We standardized on just POSTID (last part)
+                        clean_id = vid.video_id
+                        if '_' in clean_id:
+                             clean_id = clean_id.split('_')[-1]
+                        
+                        if clean_id not in seen_ids:
+                            seen_ids.add(clean_id)
+                            # Also add original just in case mixed usage
+                            seen_ids.add(vid.video_id) 
+                            
+                            db_videos.append(vid)
+                            
+                    logger.info(f"✅ Found {len(db_videos)} videos in DB (after filtering & deduping).")
+                    
+                    if db_videos:
+                        logger.info(f"✅ Found {len(db_videos)} videos in DB. Skipping external fetch.")
+                        # Normalize DB videos to match expected output format
+                        normalized = []
+                        for vid in db_videos:
+                            # Reconstruct dict from model
+                            norm_item = {
+                                'video_id': vid.video_id,
+                                'title': vid.title,
+                                'description': vid.description,
+                                'video_url': vid.video_url,
+                                'thumbnail_url': vid.thumbnail_url,
+                                'likes_count': vid.likes_count,
+                                'comments_count': vid.comments_count,
+                                'shares_count': vid.shares_count,
+                                'views_count': vid.views_count,
+                                'published_at': vid.published_at,
+                                'timestamp': int(vid.published_at.timestamp()) if vid.published_at else 0,
+                                'author_name': vid.author_name,
+                                'author_username': vid.author_username,
+                                'platform': platform_str.lower(),
+                                'raw_data': vid.raw_data
+                            }
+                            normalized.append(norm_item)
+                        
+                        # Process profile info from the latest video's raw data if available
+                        first_vid = db_videos[0]
+                        avatar_url = first_vid.thumbnail_url # Default fallback
+                        
+                        if first_vid.raw_data:
+                            try:
+                                # Try to extract profile picture from nested 'user' or 'author' object commonly returned by Apify
+                                raw = first_vid.raw_data
+                                user_data = raw.get('user') or raw.get('author') or raw.get('owner')
+                                
+                                if user_data and isinstance(user_data, dict):
+                                    avatar_url = (
+                                        user_data.get('profilePic') or 
+                                        user_data.get('profile_pic_url') or 
+                                        user_data.get('avatar') or 
+                                        user_data.get('profileImage') or
+                                        avatar_url
+                                    )
+                                else:
+                                    # Sometimes it's at root level depending on scraper
+                                    avatar_url = (
+                                        raw.get('authorProfilePic') or
+                                        raw.get('userProfilePic') or
+                                        avatar_url
+                                    )
+                            except: pass
+                            
+                        # Sort by timestamp desc
+                        normalized.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+                        
+                        # Calculate aggregates
+                        count_posts = len(normalized)
+                        fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                        
+                        # Return immediately
+                        return Response({
+                            'success': True,
+                            'platform': platform_str,
+                            'username': username,
+                            'count': count_posts,
+                            'results': normalized,
+                            'profile': {
+                                'username': username,
+                                'display_name': first_vid.author_name or username,
+                                'avatar_url': avatar_url, # Enhanced avatar extraction
+                                'followers_count': 0, 
+                                'total_likes': fetched_likes,
+                                'total_videos': count_posts
+                            }
+                        }, status=status.HTTP_200_OK)
+                
+                # --- Proceed to External Fetch if no DB data or Force Refresh ---
+                
+                # Try Graph API first (fast, 2-3s)
+                try:
+                    logger.info(f"⚡ Trying Facebook Graph API for @{username} (FAST, 2-3s)")
+                    from ..services.facebook_graph_service import FacebookGraphService
+                    
+                    graph_service = FacebookGraphService()
+                    
+                    # Fetch page metadata
+                    logger.info("📊 Fetching page metadata...")
+                    graph_data = graph_service.get_page_metadata(username)
+                    
+                    page_info = {
+                        'likes': graph_data.get('fan_count', 0),
+                        'followers': graph_data.get('followers_count', 0),
+                        'image': graph_data.get('picture_url', ''),
+                        'profilePic': graph_data.get('picture_url', ''),
+                        'name': graph_data.get('name', ''),
+                        'about': graph_data.get('about', ''),
+                        'website': graph_data.get('website', ''),
+                        'category': graph_data.get('category', ''),
+                        'posts_count': graph_data.get('posts_count', 0)
+                    }
+                    
+                    # Fetch posts
+                    logger.info("📝 Fetching posts...")
+                    raw_results = graph_service.get_page_posts(
+                        page_id=username,
+                        max_results=max_results or 100,
+                        since_date=start_date
+                    )
+                    
+                    logger.info(f"✅ Graph API SUCCESS: {page_info.get('followers', 0):,} followers, {len(raw_results)} posts")
+                    use_graph_api = True
+                    
+                except Exception as graph_error:
+                    logger.warning(f"⚠️ Graph API failed (permissions issue): {str(graph_error)[:100]}")
+                    logger.info("🔄 Falling back to Apify (optimized, 20-40s)...")
+                    
+                    # Fallback to Apify (optimized)
+                    scraper = create_scraper(platform_str)
+                    
+                    # Try to fetch page info for accurate Followers/Likes
+                    try:
+                        logger.info(f"📊 Fetching page info via Apify fallback...")
+                        page_info = scraper.get_page_info(username)
+                        logger.info(f"✅ Apify Page Info: {page_info.get('followers')} followers")
+                    except Exception as e:
+                        logger.warning(f"Apify page info fetch failed: {e}")
+                        page_info = {}
 
-            # Using Apify only - TikHub removed as per user request
+                    raw_results = scraper.get_user_videos(username, max_results=max_results, until_date=start_date)
+                    use_graph_api = False
+                
+                # Normalize data
+                if use_graph_api:
+                    # Graph API posts are already normalized
+                    normalized = raw_results
+                else:
+                    # Apify data needs normalization
+                    normalized = []
+                    for v in raw_results:
+                        norm = scraper.normalize_video_data(v)
+                        if norm:
+                            normalized.append(norm)
+                
+                # Filter by date range if end_date is provided
+                if end_date and normalized:
 
-            logger.info(f"⚡ Using Apify to fetch videos for @{username} on {platform_str}")
+                    try:
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d') if start_date else None
+                        
+                        filtered_normalized = []
+                        for post in normalized:
+                            post_val = post.get('published_at')
+                            if post_val:
+                                try:
+                                    # Normalize post_dt to be offset-naive or aware matching the range
+                                    post_dt = None
+                                    if isinstance(post_val, datetime):
+                                        post_dt = post_val
+                                    elif isinstance(post_val, str):
+                                        # parsing ISO string
+                                        # Replace Z with +00:00 to ensure fromisoformat works
+                                        clean_str = post_val.replace('Z', '+00:00')
+                                        post_dt = datetime.fromisoformat(clean_str)
+                                    elif isinstance(post_val, (int, float)):
+                                        post_dt = datetime.fromtimestamp(post_val)
+                                    
+                                    if post_dt:
+                                        # Make naive for comparison to start_dt/end_dt (which are naive from strptime)
+                                        # Or better: make start/end aware if post_dt is aware
+                                        if post_dt.tzinfo is not None and post_dt.tzinfo.utcoffset(post_dt) is not None:
+                                            # Convert to naive (remove timezone) or UTC
+                                            # Simplest: remove tzinfo
+                                            post_dt = post_dt.replace(tzinfo=None)
+                                    
+                                        # Check if post is within date range
+                                        # Filter is: start_dt <= post_dt <= end_dt
+                                        # start_dt is 00:00:00, end_dt should be 23:59:59
+                                        
+                                        # Adjust end_dt to end of day
+                                        real_end_dt = end_dt.replace(hour=23, minute=59, second=59)
 
-            scraper = create_scraper(platform_str)
-
-            raw_results = scraper.get_user_videos(username, max_results=max_results)
-
+                                        if start_dt and post_dt < start_dt:
+                                            continue
+                                        if post_dt > real_end_dt:
+                                            continue
+                                    
+                                        filtered_normalized.append(post)
+                                    else:
+                                        filtered_normalized.append(post)
+                                except Exception as e:
+                                    # If date parsing fails, keep the post (safe fallback)
+                                    # logger.warning(f"Date check failed for post: {e}")
+                                    filtered_normalized.append(post)
+                            else:
+                                # If no date, keep the post
+                                filtered_normalized.append(post)
+                        
+                        normalized = filtered_normalized
+                        logger.info(f"📅 Date range filter: {len(filtered_normalized)} posts between {start_date} and {end_date}")
+                    except Exception as e:
+                        logger.warning(f"Date filtering failed: {e}")
             
+            
+            # --- INSTAGRAM: Use Instagram Apify Service ---
+            elif platform_str.upper() == 'INSTAGRAM':
+                logger.info(f"📸 Using Instagram Apify Service for @{username}")
+                from ..services.instagram_apify_service import InstagramApifyService
+                
+                instagram_service = InstagramApifyService()
+                page_info = {}
+                
+                try:
+                    # Fetch profile info (Non-blocking / Optional)
+                    try:
+                        profile_info = instagram_service.get_profile_info(username)
+                        page_info = profile_info
+                        logger.info(f"✅ Instagram Profile: {profile_info.get('followersCount', 0):,} followers")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Instagram profile fetch failed: {e}. Proceeding to fetch posts...")
+                        page_info = {
+                            'username': username,
+                            'fullName': username,
+                            'followersCount': 0,
+                            'profilePicUrl': f"https://www.instagram.com/{username}/profile_pic.jpg"
+                        }
+                    
+                    # Fetch posts only if max_results > 0
+                    if max_results and max_results > 0:
+                        # This returns detailed, normalized data from the service
+                        posts_data = instagram_service.get_user_posts_and_reels(username, max_results=max_results)
+                        raw_results = posts_data
+                    else:
+                        # Profile only mode - no posts fetched
+                        logger.info(f"📊 Profile-only mode: Skipping posts fetch for @{username}")
+                        raw_results = []
+                    
+                    # Normalize posts (Note: instagram_service already returns mostly normalized data)
+                    normalized = []
+                    for post in raw_results:
+                        # The service returns snake_case keys (likes_count, etc.)
+                        # But also preserves 'raw_data' which has the original camelCase keys if needed.
+                        # We use the snake_case keys from the service which are reliable.
+                        
+                        # Infer author name from first post if profile fetch failed
+                        if not page_info.get('fullName') and post.get('author_name'):
+                             page_info['fullName'] = post.get('author_name')
+                             
+                        short_code = post.get('short_code') or post.get('video_id', '')
+                        post_url = post.get('url') or (f"https://www.instagram.com/p/{short_code}/" if short_code else '')
+                        
+                        norm = {
+                            'video_id': post.get('video_id') or short_code,
+                            'short_code': short_code,
+                            'url': post_url,
+                            'title': (post.get('caption') or '')[:100],
+                            'caption': post.get('caption') or '',
+                            'description': post.get('caption') or '',
+                            'video_url': post.get('video_url'),
+                            'thumbnail_url': post.get('thumbnail_url') or '',
+                            'likes': post.get('likes_count', 0),
+                            'likes_count': post.get('likes_count', 0),
+                            'comments': post.get('comments_count', 0),
+                            'comments_count': post.get('comments_count', 0),
+                            'shares_count': post.get('shares_count', 0),
+                            'views': post.get('video_view_count', 0),
+                            'views_count': post.get('video_view_count', 0),
+                            'published_at': post.get('timestamp'),
+                            'timestamp': post.get('timestamp'),
+                            'author_name': page_info.get('fullName') or post.get('author_name') or username,
+                            'author_username': username,
+                            'platform': 'instagram',
+                            'is_video': post.get('content_type') == 'reel' or bool(post.get('video_url')),
+                            'content_type': 'video' if post.get('content_type') == 'reel' else 'image', 
+                            'raw_data': post.get('raw_data', {})
+                        }
+                        normalized.append(norm)
+                    
+                    logger.info(f"✅ Instagram: Fetched {len(normalized)} posts for @{username}")
+                    
+                    # Filter by date range if provided
+                    if start_date and end_date and normalized:
+                        try:
+                            from datetime import datetime
+                            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                            end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+                            
+                            filtered_normalized = []
+                            for post in normalized:
+                                pub_at = post.get('published_at') or post.get('timestamp')
+                                if not pub_at:
+                                    continue
+                                
+                                # Parse the timestamp
+                                try:
+                                    if isinstance(pub_at, str):
+                                        # Remove timezone info for comparison (make naive)
+                                        # Handle formats like "2026-01-31 14:35:47+00:00" or "2026-01-31T14:35:47Z"
+                                        clean_date = pub_at.split('+')[0].split('Z')[0].replace('T', ' ')
+                                        
+                                        # Try parsing with time
+                                        try:
+                                            pub_dt = datetime.strptime(clean_date.strip(), '%Y-%m-%d %H:%M:%S')
+                                        except:
+                                            # Try just date
+                                            pub_dt = datetime.strptime(clean_date.strip()[:10], '%Y-%m-%d')
+                                    elif hasattr(pub_at, 'replace'):
+                                        # If it's a datetime object with timezone, make it naive
+                                        pub_dt = pub_at.replace(tzinfo=None)
+                                    else:
+                                        continue
+                                    
+                                    # Check if within date range
+                                    if start_dt <= pub_dt <= end_dt:
+                                        filtered_normalized.append(post)
+                                except Exception as parse_err:
+                                    logger.warning(f"Could not parse date {pub_at}: {parse_err}")
+                                    continue
+                            
+                            logger.info(f"📅 Instagram date filter: {len(filtered_normalized)}/{len(normalized)} posts between {start_date} and {end_date}")
+                            normalized = filtered_normalized
+                        except Exception as e:
+                            logger.warning(f"Instagram date filtering failed: {e}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Instagram fetch failed: {e}", exc_info=True)
+                    return Response({
+                        'success': False,
+                        'error': f'Failed to fetch Instagram data: {str(e)}'
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+            # --- OTHER PLATFORMS: Use Apify ---
+            else:
+                logger.info(f"⚡ Using Apify to fetch videos for @{username} on {platform_str}")
+                scraper = create_scraper(platform_str)
+                page_info = {}
+                raw_results = scraper.get_user_videos(username, max_results=max_results, until_date=start_date)
+                
+                # Apify data needs normalization
+                normalized = []
+                for v in raw_results:
+                    norm = scraper.normalize_video_data(v)
+                    if norm:
+                        normalized.append(norm)
 
-            normalized = []
-
-            for v in raw_results:
-
-                norm = scraper.normalize_video_data(v)
-
-                if norm:
-
-                    normalized.append(norm)
 
 
-
-            # Extract profile data from Apify authorMeta
-
+            # Extract profile data
             profile_data = None
-
             if raw_results:
-
                 first_item = raw_results[0]
-
-                # authorMeta is sometimes at root, sometimes nested in raw_data
-
-                author_meta = first_item.get('authorMeta') or first_item.get('raw_data', {}).get('authorMeta', {})
-
                 
+                # --- FACEBOOK SPECIFIC EXTRACTION ---
+                if platform_str.upper() == 'FACEBOOK':
+                    # Facebook posts scraper returns list of posts, no global authorMeta
+                    # We must aggregate from what we have
+                    
+                    # 1. Basic Info from first post
+                    # First check normalized data for cleaner access
+                    first_norm = normalized[0] if normalized else {}
+                    username = first_norm.get('author_username') or username
+                    display_name = first_norm.get('author_name') or username
+                    avatar_url = first_norm.get('thumbnail_url', '') # Fallback to first post thumb if no avatar
+                    
+                    # Try to find better avatar in raw_data
+                    user_obj = first_item.get('user', {})
+                    if isinstance(user_obj, dict):
+                        # Some versions might have profilePic
+                        if user_obj.get('profilePic'): avatar_url = user_obj.get('profilePic')
+                        elif user_obj.get('id'): 
+                            # Try graph fallback (might be broken but better than nothing)
+                            avatar_url = f"https://graph.facebook.com/{user_obj.get('id')}/picture?type=large"
+                    
+                    # 2. Aggregated Stats
+                    # 2. Aggregated Stats
+                    count_posts = len(normalized)
+                    count_videos = sum(1 for v in normalized if v.get('video_url'))
+                    
+                    fetched_views = sum(v.get('views_count', 0) for v in normalized)
+                    fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                    fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
+                    fetched_shares = sum(v.get('shares_count', 0) for v in normalized)
+                    
+                    # Try to extract follower count if available in any post's raw data
+                    follower_count = 0
+                    for v in normalized:
+                        raw = v.get('raw_data', {})
+                        # Check user object
+                        user = raw.get('user') or {}
+                        f_count = user.get('followers') or user.get('followersCount') or user.get('followerCount')
+                        if f_count:
+                            try:
+                                follower_count = int(str(f_count).replace(',', '').replace('.', ''))
+                                break
+                            except:
+                                pass
+                        
+                        # Check 'page_info' or distinct fields if Apify provides them
+                        if raw.get('page_followers'):
+                             try:
+                                follower_count = int(str(raw.get('page_followers')).replace(',', ''))
+                                break
+                             except:
+                                pass
 
-                # Robust extraction with multiple fallbacks
+                    # 3. Engagement
+                    engagement_rate = 0.0
+                    if fetched_views > 0:
+                        engagement_rate = ((fetched_likes + fetched_comments + fetched_shares) / fetched_views) * 100
+                    
+                    
+                    # Use follower count as Total Likes for Page (User Request: "tổng like là tổng like trên trang")
+                    # Priority 1: From page_info (facebook-pages-scraper)
+                    # Priority 2: From post raw data (rare/unreliable)
+                    # Priority 3: 0 (UI will show sum of video likes as fallback, or 0)
+                    
+                    likes_count = 0  # Initialize outside to avoid UnboundLocalError
 
-                username = author_meta.get('name') or author_meta.get('uniqueId') or username
+                    if page_info:
+                        # Common keys in facebook-pages-scraper
+                        # 'likes' -> Page Likes
+                        # 'followers' -> Page Followers
+                        p_likes = page_info.get('likes') or page_info.get('likesCount')
+                        p_followers = page_info.get('followers') or page_info.get('followersCount')
+                        
+                        # Parse if string
+                        if isinstance(p_followers, str):
+                            try: follower_count = int(p_followers.replace(',', '').replace('.', ''))
+                            except: pass
+                        elif isinstance(p_followers, (int, float)):
+                            follower_count = int(p_followers)
 
-                display_name = author_meta.get('nickName') or author_meta.get('nickname') or username
+                        # Parse Likes separately
+                        if isinstance(p_likes, str):
+                            try: likes_count = int(p_likes.replace(',', '').replace('.', ''))
+                            except: pass
+                        elif isinstance(p_likes, (int, float)):
+                            likes_count = int(p_likes)
+                                
+                        # Update avatar if pages scraper has better one
+                        if page_info.get('image'): avatar_url = page_info.get('image')
+                        elif page_info.get('profilePic'): avatar_url = page_info.get('profilePic')
 
+                    # FIXED: Do NOT fallback to follower_count. Keep them distinct.
+                    page_total_likes = likes_count 
+                    
+                    profile_data = {
+                        'username': username,
+                        'display_name': display_name,
+                        'avatar_url': avatar_url,
+                        'follower_count': follower_count,
+                        'total_likes': page_total_likes, # UPDATED: Page Likes only
+                        'total_videos': count_posts, 
+                        'total_views': fetched_views,
+                        'engagement_rate': round(engagement_rate, 2),
+                        'platform': platform_str,
+                        'metadata': {
+                            'video_count': count_videos,
+                            'post_count': count_posts,
+                            'fetched_likes_sum': fetched_likes, # Keep the sum available in metadata
+                            'fetched_comments_sum': fetched_comments,
+                            'page_info_source': 'facebook_pages_scraper' if page_info else 'none'
+                        }
+                    }
+
+                # --- TIKTOK / DOUYIN / INSTAGRAM SPECIFIC EXTRACTION ---
+                elif platform_str.upper() == 'INSTAGRAM':
+                    # Instagram uses page_info from Instagram Apify Service
+                    if page_info:
+                        # DEBUG: Log what keys are in page_info
+                        logger.info(f"🔍 page_info keys: {list(page_info.keys())}")
+                        
+                        # DEBUG: Log avatar-related fields
+                        avatar_keys = [k for k in page_info.keys() if any(x in k.lower() for x in ['pic', 'avatar', 'image', 'photo'])]
+                        logger.info(f"🖼️ Avatar-related keys in page_info: {avatar_keys}")
+                        for k in avatar_keys:
+                            logger.info(f"   {k} = {str(page_info.get(k))[:100]}")
+                        
+                        username = page_info.get('username') or username
+                        display_name = page_info.get('fullName') or username
+                        # Enhanced avatar extraction with multiple fallbacks
+                        avatar_url = (
+                            page_info.get('profilePicUrl') or 
+                            page_info.get('profilePicUrlHd') or 
+                            page_info.get('profile_pic_url') or 
+                            page_info.get('profilePictureUrl') or
+                            page_info.get('profilePic') or
+                            ''
+                        )
+                        logger.info(f"📸 Extracted avatar for {username}: {avatar_url[:80] if avatar_url else 'EMPTY'}...")
+                        follower_count = page_info.get('followersCount') or 0
+                        total_posts = page_info.get('postsCount') or len(normalized)
+                        
+                        # Calculate aggregated stats from fetched posts
+                        fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                        fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
+                        fetched_views = sum(v.get('views_count', 0) for v in normalized)
+                        
+                        # Engagement Rate Calculation
+                        engagement_rate = 0.0
+                        if follower_count > 0:
+                            # Instagram engagement = (likes + comments) / followers * 100
+                            engagement_rate = ((fetched_likes + fetched_comments) / follower_count) * 100
+                        
+                        profile_data = {
+                            'username': username,
+                            'display_name': display_name,
+                            'avatar_url': avatar_url,
+                            'follower_count': follower_count,
+                            'total_likes': fetched_likes,  # Sum of likes from fetched posts
+                            'total_videos': len([v for v in normalized if v.get('content_type') in ['Video', 'Reel']]),
+                            'total_posts': total_posts,  # Total posts including photos
+                            'total_views': fetched_views,
+                            'engagement_rate': round(engagement_rate, 2),
+                            'platform': platform_str,
+                            'metadata': {
+                                'is_verified': page_info.get('isVerified', False),
+                                'biography': page_info.get('biography', ''),
+                                'external_url': page_info.get('externalUrl', '')
+                            }
+                        }
+                    else:
+                        # Fallback if no page_info
+                        profile_data = {
+                            'username': username,
+                            'display_name': username,
+                            'avatar_url': '',
+                            'follower_count': 0,
+                            'total_likes': sum(v.get('likes_count', 0) for v in normalized),
+                            'total_videos': len(normalized),
+                            'total_posts': len(normalized),
+                            'total_views': sum(v.get('views_count', 0) for v in normalized),
+                            'engagement_rate': 0.0,
+                            'platform': platform_str
+                        }
                 
+                # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
+                else: 
+                    # authorMeta is sometimes at root, sometimes nested in raw_data
+                    author_meta = first_item.get('authorMeta') or first_item.get('raw_data', {}).get('authorMeta', {})
+                    
+                    # Robust extraction with multiple fallbacks
+                    username = author_meta.get('name') or author_meta.get('uniqueId') or username
+                    display_name = author_meta.get('nickName') or author_meta.get('nickname') or username
+                    
+                    # Avatar strategies
+                    avatar_url = (
+                        author_meta.get('avatarLarger') or 
+                        author_meta.get('avatarMedium') or 
+                        author_meta.get('avatarThumb') or 
+                        author_meta.get('avatar') or 
+                        ''
+                    )
+                    
+                    # Stats strategies
+                    follower_count = int(author_meta.get('fans') or author_meta.get('followerCount') or 0)
+                    total_likes = int(author_meta.get('heart') or author_meta.get('heartCount') or author_meta.get('diggCount') or 0)
+                    total_videos = int(author_meta.get('video') or author_meta.get('videoCount') or len(normalized))
+                    
+                    # Calculate aggregated stats from fetched videos
+                    fetched_views = sum(v.get('views_count', 0) for v in normalized)
+                    fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                    fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
+                    fetched_shares = sum(v.get('shares_count', 0) for v in normalized)
+                    
+                    # Engagement Rate Calculation
+                    engagement_rate = 0.0
+                    if fetched_views > 0:
+                        engagement_rate = ((fetched_likes + fetched_comments + fetched_shares) / fetched_views) * 100
+                    elif follower_count > 0:
+                        engagement_rate = (total_likes / follower_count) * 100
 
-                # Avatar strategies
-
-                avatar_url = (
-
-                    author_meta.get('avatarLarger') or 
-
-                    author_meta.get('avatarMedium') or 
-
-                    author_meta.get('avatarThumb') or 
-
-                    author_meta.get('avatar') or 
-
-                    ''
-
-                )
-
+                    # Extract profile info from authorMeta
+                    profile_data = {
+                        'username': username,
+                        'display_name': display_name,
+                        'avatar_url': avatar_url,
+                        'follower_count': follower_count,
+                        'total_likes': total_likes,
+                        'total_videos': total_videos,
+                        'total_views': fetched_views, # Add calculated views
+                        'engagement_rate': round(engagement_rate, 2), # Add calculated rate
+                        'platform': platform_str
+                    }
                 
-
-                # Stats strategies
-
-                follower_count = int(author_meta.get('fans') or author_meta.get('followerCount') or 0)
-
-                total_likes = int(author_meta.get('heart') or author_meta.get('heartCount') or author_meta.get('diggCount') or 0)
-
-                total_videos = int(author_meta.get('video') or author_meta.get('videoCount') or len(normalized))
-
-                
-
-                # Calculate aggregated stats from fetched videos
-
-                fetched_views = sum(v.get('views_count', 0) for v in normalized)
-
-                fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
-
-                fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
-
-                fetched_shares = sum(v.get('shares_count', 0) for v in normalized)
-
-                
-
-                # Engagement Rate Calculation
-
-                # Formula 1: (Likes + Comments + Shares) / Views * 100 (Engagement per View) -> Good for content performance
-
-                # Formula 2: (Total Likes / Followers) * 100 -> Good for account popularity
-
-                # We'll use Formula 1 based on the fetched batch as it's more dynamic, OR allow Formula 2 if Views are 0.
-
-                
-
-                engagement_rate = 0.0
-
-                if fetched_views > 0:
-
-                    engagement_rate = ((fetched_likes + fetched_comments + fetched_shares) / fetched_views) * 100
-
-                elif follower_count > 0:
-
-                    # Fallback to (Total Likes / Followers) if no view data (which is unlikely if we fetched videos)
-
-                    engagement_rate = (total_likes / follower_count) * 100
-
-
-
-                # Extract profile info from authorMeta
-
-                profile_data = {
-
-                    'username': username,
-
-                    'display_name': display_name,
-
-                    'avatar_url': avatar_url,
-
-                    'follower_count': follower_count,
-
-                    'total_likes': total_likes,
-
-                    'total_videos': total_videos,
-
-                    'total_views': fetched_views, # Add calculated views
-
-                    'engagement_rate': round(engagement_rate, 2), # Add calculated rate
-
-                    'platform': platform_str
-
-                }
-
-                
-
                 logger.info(f"📊 Profile data extracted: {profile_data['follower_count']:,} followers, {profile_data['engagement_rate']}% engagement")
 
 
 
             # Save videos
-
             ordered_videos = []
-
-            if normalized:
-
-                try:
-
-                    saved_videos = scraper.save_videos(normalized)
-
-                    # Map back to preserve order
-
-                    video_id_to_video = {v.video_id: v for v in saved_videos}
-
-                    for norm in normalized:
-
-                        vid = norm.get('video_id')
-
-                        if vid in video_id_to_video:
-
-                            ordered_videos.append(video_id_to_video[vid])
-
-                except Exception as e:
-
-                    logger.error(f"Error saving videos: {e}")
-
-                    # If save fails, just return normalized data for now
-
-                    ordered_videos = normalized
-
-
-
-            videos_serializer = VideoSerializer(ordered_videos, many=True)
-
             
+            if normalized:
+                # Instagram: Skip DB save for now, just return normalized data
+                if platform_str.upper() == 'INSTAGRAM':
+                    logger.info(f"📦 Returning {len(normalized)} Instagram posts (DB save skipped)")
+                    ordered_videos = normalized
+                else:
+                    # Other platforms: Save to DB
+                    try:
+                        saved_videos = scraper.save_videos(normalized)
+                        
+                        # Map back to preserve order
+                        video_id_to_video = {v.video_id: v for v in saved_videos}
+                        
+                        for norm in normalized:
+                            vid = norm.get('video_id')
+                            if vid in video_id_to_video:
+                                ordered_videos.append(video_id_to_video[vid])
+                    
+                    except Exception as e:
+                        logger.error(f"Error saving videos: {e}")
+                        # If save fails, just return normalized data for now
+                        ordered_videos = normalized
 
+            # Serialize videos
+            # For Instagram (dict data), serialize directly without VideoSerializer
+            if platform_str.upper() == 'INSTAGRAM':
+                results_data = ordered_videos  # Already normalized dicts
+            else:
+                # For other platforms (model objects), use VideoSerializer
+                videos_serializer = VideoSerializer(ordered_videos, many=True)
+                results_data = videos_serializer.data
+            
             response_data = {
-
                 'success': True,
-
                 'platform': platform_str,
-
                 'username': username,
-
                 'count': len(ordered_videos),
-
-                'results': videos_serializer.data,
-
+                'results': results_data,
                 'profile': profile_data  # Ensure profile is always in root if available
-
             }
 
                 

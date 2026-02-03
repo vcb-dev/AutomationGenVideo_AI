@@ -249,12 +249,35 @@ APIFY_ACTORS = {
     'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
     'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
+    'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }
 
 # Apify timeout settings (in seconds)
 APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=300)  # 5 minutes
-APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=100)
+APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=10000)
+
+# ==========================================
+# FACEBOOK GRAPH API CONFIGURATION
+# ==========================================
+FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
+FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
+FACEBOOK_ACCESS_TOKEN = env('FACEBOOK_ACCESS_TOKEN', default='')
+
+# ==========================================
+# HEYGEN API CONFIGURATION
+# ==========================================
+HEYGEN_API_KEY = env('HEYGEN_API_KEY', default='')
+HEYGEN_AVATAR_ID = env('HEYGEN_AVATAR_ID', default='')
+HEYGEN_API_URL = env('HEYGEN_API_URL', default='https://api.heygen.com/v2')
+HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/api/heygen/webhook')
+HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
+
+# ==========================================
+# OPENAI API CONFIGURATION
+# ==========================================
+OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+
 
 # ==========================================
 # LEGACY API SETTINGS (Fallback)
@@ -314,3 +337,5 @@ CELERY_BEAT_SCHEDULE = {
 }
 
 
+
+# Reload triggered

@@ -94,6 +94,17 @@ urlpatterns = [
     path('api/', include('video_management.urls')),
 ]
 
+# HeyGen lipsync/motion control endpoints
+from heygen_service import views as heygen_views
+
+urlpatterns += [
+    path('api/heygen/generate-video', heygen_views.generate_video, name='heygen-generate'),
+    path('api/heygen/generate-script', heygen_views.generate_script, name='heygen-generate-script'),
+    path('api/heygen/generate-and-wait', heygen_views.generate_and_wait, name='heygen-generate-wait'),
+    path('api/heygen/status/<str:video_id>', heygen_views.get_video_status, name='heygen-status'),
+    path('api/heygen/voices', heygen_views.list_voices, name='heygen-voices'),
+]
+
 # Serve media files in development
 from django.conf import settings
 from django.conf.urls.static import static

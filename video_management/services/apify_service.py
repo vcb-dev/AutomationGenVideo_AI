@@ -128,19 +128,77 @@ class ApifyScraperService(BaseScraperService):
     def _build_facebook_input(
         self,
         keyword: str,
-        max_results: int = 20
+        max_results: int = 20,
+        username: Optional[str] = None,
+        until_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """Build input for Facebook Apify actor."""
-        return {
-            "searchQuery": keyword,
-            "maxPosts": min(max_results, self.max_results_limit),
-        }
+        input_data = {}
+        if username:
+            # Crawl a specific page/user
+            # Clean username just in case
+            clean_user = username.replace('@', '').strip()
+            
+            # SMART LIMIT: Based strictly on frontend calculation (8 * N days)
+            effective_limit = max_results 
+            
+            if until_date:
+                from datetime import datetime
+                try:
+                    start_date = datetime.strptime(until_date, '%Y-%m-%d')
+                    days_back = (datetime.now() - start_date).days
+                    
+                    if days_back > 0:
+                         # Just log it, we trust the effective_limit from frontend calculation
+                         self.logger.info(f"📊 Date range: {days_back} days → Target {effective_limit} posts (Strict Limit)")
+                except:
+                    pass
+            else:
+                 effective_limit = max_results
+            
+            # If we have a date filter, trust the Frontend calculation.
+            # Strategy: Use strict limit provided by FS (No buffer needed per user request)
+            if until_date:
+                # effective_limit came from frontend (e.g. 24 for 3 days)
+                limit_to_use = min(effective_limit, 300) 
+            else:
+                limit_to_use = effective_limit
+
+            input_data = {
+                "startUrls": [{"url": f"https://www.facebook.com/{clean_user}"}],
+                "resultsLimit": limit_to_use,
+                "maxPostCount": limit_to_use,
+                # Optimize: Focus ONLY on Timeline/Posts
+                "proxyConfiguration": {"useApifyProxy": True},
+                "maxRequestRetries": 1,
+                "maxComments": 0,
+                "scrapeAbout": False,
+                "scrapeReviews": False,
+                "scrapePhotos": False,
+                "scrapeVideos": False, 
+            }
+        else:
+            # Fallback to search query (if supported by actor, or might need different actor)
+            input_data = {
+                "searchQuery": keyword,
+                "maxPosts": min(max_results, self.max_results_limit),
+            }
+            
+        # Add date filtering - only scrape posts recent enough
+        if until_date:
+            # until_date is the Start Date of the selected range (e.g. 2026-01-01)
+            # We tell scraper to stop when it sees a post OLDER than this date.
+            input_data['maxPostDate'] = until_date
+            self.logger.info(f"⏱️ Smart Stop enabled: Scraper will halt at {until_date}")
+            
+        return input_data
     
     def _build_actor_input(
         self,
         keyword: str,
         max_results: int = 20,
-        username: Optional[str] = None
+        username: Optional[str] = None,
+        until_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Build actor input based on platform.
@@ -155,15 +213,27 @@ class ApifyScraperService(BaseScraperService):
         """
         if self.platform == Platform.TIKTOK:
             if username:
-                # For user profile scraping, use different fields
-                # Use the larger value to ensure we get as many videos as possible
-                max_to_fetch = max(max_results, self.max_results_limit)
-                return {
+                # Optimized Fetch Logic (Similar to Facebook)
+                effective_limit = max_results
+                
+                # Use strict limit from FE (days * 8) without extra buffer
+                # User confirmed realistic daily max is ~10 videos
+                limit_to_use = min(effective_limit, 300)
+
+                input_data = {
                     "profiles": [username],
-                    "resultsPerPage": max_to_fetch,
-                    "postsCount": max_to_fetch,  # Some actors use this
-                    "shouldDownloadVideos": False,
+                    "resultsPerPage": limit_to_use,
+                    "postsCount": limit_to_use,
+                    "shouldDownloadVideos": True, 
+                    "shouldDownloadCovers": True, 
                 }
+                
+                # Add date filtering (similar to maxPostDate in Facebook)
+                if until_date:
+                    input_data["oldestPostDate"] = until_date
+                    self.logger.info(f"⏱️ TikTok Smart Stop enabled: Scraper will halt at {until_date}")
+                    
+                return input_data
             return self._build_tiktok_input(keyword, max_results)
         
         elif self.platform == Platform.INSTAGRAM:
@@ -177,7 +247,7 @@ class ApifyScraperService(BaseScraperService):
             return self._build_instagram_input(keyword, max_results)
         
         elif self.platform == Platform.FACEBOOK:
-            return self._build_facebook_input(keyword, max_results)
+            return self._build_facebook_input(keyword, max_results, username, until_date)
         
         elif self.platform == Platform.DOUYIN:
             # Similar to TikTok
@@ -294,10 +364,57 @@ class ApifyScraperService(BaseScraperService):
             self.logger.error(f"Search failed: {str(e)}", exc_info=True)
             raise ScraperException(f"Search failed: {str(e)}")
     
+    def get_page_info(self, username: str) -> Dict[str, Any]:
+        """
+        Get page/profile info using a specialized actor (e.g. facebook-pages-scraper).
+        Currently only implemented for Facebook.
+        """
+        if self.platform != Platform.FACEBOOK:
+            return {}
+
+        try:
+             # fast checking using lightweight scrape if possible
+             actors = getattr(settings, 'APIFY_ACTORS', {})
+             page_actor_id = actors.get('facebook_page', 'apify/facebook-pages-scraper')
+             
+             self.logger.info(f"Fetching Page Info for {username} using {page_actor_id}")
+             
+             # Clean user
+             clean_user = username.replace('@', '').strip()
+             if 'facebook.com' in clean_user:
+                 # Extract username/id if full url given
+                 parts = clean_user.rstrip('/').split('/')
+                 clean_user = parts[-1]
+
+             run_input = {
+                "startUrls": [{"url": f"https://www.facebook.com/{clean_user}"}],
+                "maxItems": 1
+             }
+             
+             # Use the client to call specifically this actor, ignoring self.actor_id which is for posts
+             run = self.client.actor(page_actor_id).call(
+                run_input=run_input,
+                timeout_secs=60 # Short timeout for metadata
+             )
+             
+             if run['status'] == 'SUCCEEDED':
+                 dataset_id = run.get('defaultDatasetId')
+                 if dataset_id:
+                     items = list(self.client.dataset(dataset_id).iterate_items())
+                     if items:
+                         return items[0]
+             
+             return {}
+
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch page info: {e}")
+            return {}
+
     def get_user_videos(
         self,
         username: str,
-        max_results: int = 20
+        max_results: int = 20,
+        until_date: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get videos from a specific user.
@@ -313,7 +430,8 @@ class ApifyScraperService(BaseScraperService):
             actor_input = self._build_actor_input(
                 keyword="",  # Not used for user searches
                 max_results=max_results,
-                username=username
+                username=username,
+                until_date=until_date
             )
             results = self.run_actor(actor_input)
             
@@ -352,26 +470,28 @@ class ApifyScraperService(BaseScraperService):
         # Video ID
         video_id = data.get('id', '')
         
-        # Author info - in authorMeta object
-        author_meta = data.get('authorMeta', {})
-        author_username = author_meta.get('name', '') or author_meta.get('uniqueId', '')
+        # Author info - support multiple formats
+        author_meta = data.get('authorMeta', {}) or data.get('author', {})
+        author_username = author_meta.get('name', '') or author_meta.get('uniqueId', '') or author_meta.get('unique_id', '')
         author_name = author_meta.get('nickname', '') or author_username
         
-        # Stats - try root first, then 'stats' object
-        stats = data.get('stats', {})
-        likes_count = data.get('diggCount') or stats.get('diggCount', 0)
-        views_count = data.get('playCount') or stats.get('playCount', 0)
-        comments_count = data.get('commentCount') or stats.get('commentCount', 0)
-        shares_count = data.get('shareCount') or stats.get('shareCount', 0)
+        # Stats - try root first, then 'stats', then 'statistics' object
+        stats = data.get('stats', {}) or data.get('statistics', {})
+        likes_count = data.get('diggCount') or stats.get('diggCount') or stats.get('digg_count', 0)
+        views_count = data.get('playCount') or stats.get('playCount') or stats.get('play_count', 0)
+        comments_count = data.get('commentCount') or stats.get('commentCount') or stats.get('comment_count', 0)
+        shares_count = data.get('shareCount') or stats.get('shareCount') or stats.get('share_count', 0)
         
         # URLs
         video_url = data.get('webVideoUrl', '')
+        if not video_url and author_username and video_id:
+             video_url = f"https://www.tiktok.com/@{author_username}/video/{video_id}"
         
-        # Download URL - from videoMeta or mediaUrls
+        # Download URL
         download_url = ''
-        video_meta = data.get('videoMeta', {})
+        video_meta = data.get('videoMeta', {}) or data.get('video', {})
         if video_meta and isinstance(video_meta, dict):
-            download_url = video_meta.get('downloadAddr', '') or video_meta.get('playAddr', '')
+             download_url = video_meta.get('downloadAddr', '') or video_meta.get('playAddr', '') or video_meta.get('play_addr', '')
         
         if not download_url:
             media_urls = data.get('mediaUrls', [])
@@ -398,11 +518,15 @@ class ApifyScraperService(BaseScraperService):
         music_title = music_meta.get('musicName', '') if music_meta else ''
         music_author = music_meta.get('musicAuthor', '') if music_meta else ''
         
+        # Duration extraction
+        duration = data.get('videoMeta', {}).get('duration', 0)
+        
         # Published time
         create_time = data.get('createTime') or data.get('createTimeISO')
         
         return {
             'video_id': str(video_id),
+            'duration': duration, # Add duration to normalized data
             'title': data.get('text', ''),
             'description': data.get('text', ''),
             'author_username': author_username,
@@ -463,22 +587,151 @@ class ApifyScraperService(BaseScraperService):
     
     def _normalize_facebook_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize Facebook data."""
+        # Clean ID
+        post_id = data.get('postId') or data.get('id', '')
+        
+        # Stats
+        likes = data.get('likes', 0)
+        comments = data.get('comments', 0)
+        shares = data.get('shares', 0)
+        
+        # Parse 'shares' if it's a dict (sometimes Apify returns { count: 123 }) or int
+        if isinstance(shares, dict):
+            shares = shares.get('count', 0)
+        
+        # User Info
+        user_data = data.get('user', {})
+        author_username = ''
+        author_name = ''
+        
+        if isinstance(user_data, dict):
+            author_username = user_data.get('username') or user_data.get('id', '')
+            author_name = user_data.get('name', '')
+        
+        # Fallback for flat structure or missing user object
+        if not author_username:
+             author_username = data.get('postAuthor', '') or data.get('pageName', '')
+        if not author_name:
+             author_name = data.get('postAuthor', '') or data.get('pageName', '')
+             
+        # Extract from URL if still empty
+        if not author_username:
+            post_url = data.get('url') or data.get('postUrl', '')
+            if 'facebook.com/' in post_url:
+                try:
+                    parts = post_url.split('facebook.com/')[1].split('/')
+                    if parts:
+                        author_username = parts[0]
+                except:
+                    pass
+
+        # Media (Video/Image)
+        video_url = data.get('videoUrl', '')
+        
+        # THUMBNAIL EXTRACTION STRATEGY
+        # 1. Direct keys
+        thumbnail_url = (
+            data.get('image') or 
+            data.get('imageUrl') or 
+            data.get('thumbnail') or 
+            data.get('fullImage') or
+            ''
+        )
+
+        # 2. Images list (often contains high-res photo URL)
+        if not thumbnail_url and data.get('images') and isinstance(data.get('images'), list):
+            if len(data['images']) > 0:
+                thumbnail_url = data['images'][0]
+
+        # 3. Attachments (common for link previews or album covers)
+        if not thumbnail_url and data.get('attachments') and isinstance(data.get('attachments'), list):
+            for att in data['attachments']:
+                if att.get('media', {}).get('image', {}).get('src'):
+                    thumbnail_url = att['media']['image']['src']
+                    break
+                    
+        # 4. Preferred Thumbnail (Common for videos at root)
+        if not thumbnail_url and data.get('preferred_thumbnail'):
+             pref = data.get('preferred_thumbnail')
+             if isinstance(pref, dict):
+                 if pref.get('image') and pref['image'].get('uri'):
+                     thumbnail_url = pref['image']['uri']
+        
+        # Determine if it's a video
+        # Apify fb scraper often puts isVideo=True at root
+        is_video = data.get('isVideo', False)
+
+        # Detect from URL if it's a Reel
+        if not is_video and ('/reel/' in post_url or '/videos/' in post_url):
+            is_video = True
+            
+        # Detect if videoUrl exists at root
+        if not is_video and (data.get('videoUrl') or data.get('video_url')):
+            is_video = True
+            video_url = data.get('videoUrl') or data.get('video_url') or video_url
+
+        # 5. Advanced "media" list Extraction
+        if data.get('media'):
+            for m in data.get('media', []):
+                # Check for Video
+                # Some actors use 'type': 'video', others might use GraphQL types
+                is_media_video = (m.get('type') == 'video' or m.get('__typename') == 'Video')
+                
+                if is_media_video:
+                    is_video = True
+                    video_url = m.get('url', '') or m.get('playable_url', '') or video_url
+                    
+                    # Priority to video thumbnail if available
+                    vid_thumb = m.get('thumbnail', '')
+                    if not vid_thumb and m.get('thumbnailImage'):
+                         vid_thumb = m.get('thumbnailImage', {}).get('uri', '')
+                    
+                    if vid_thumb:
+                        thumbnail_url = vid_thumb
+                    break # Focus on the video content
+                
+                # Check for Photo
+                is_photo = (m.get('__typename') == 'Photo' or m.get('__isMedia') == 'Photo' or m.get('type') == 'photo')
+                if is_photo and not thumbnail_url:
+                    # Photo usually has thumbnail or image.uri
+                    thumbnail_url = m.get('thumbnail') or m.get('image', {}).get('uri') or m.get('src') or m.get('url', '')
+
+
+        # Fallback: if videoUrl exists, it's a video
+        if video_url:
+            is_video = True
+            
+        # IMPORTANT: Inject into raw_data so it persists in DB
+        data['is_video_derived'] = is_video
+
+        # Construct Web URL (Permalink)
+        permalink = data.get('url') or data.get('postUrl') or ''
+        # If no URL but we have postId (and maybe username), construct it
+        if not permalink and post_id:
+            # Prefer username, fallback to ID, fallback to 'watch' format if video
+            user_handle = author_username or data.get('pageName') or 'watch'
+            if is_video:
+                 permalink = f"https://www.facebook.com/{user_handle}/videos/{post_id}/"
+            else:
+                 permalink = f"https://www.facebook.com/{user_handle}/posts/{post_id}/"
+
         return {
-            'video_id': data.get('postId') or data.get('id', ''),
-            'title': data.get('text', ''),
-            'description': data.get('text', ''),
-            'author_username': data.get('postAuthor', ''),
-            'author_name': data.get('postAuthor', ''),
-            'likes_count': data.get('likes', 0),
-            'views_count': data.get('views', 0),
-            'comments_count': data.get('comments', 0),
-            'shares_count': data.get('shares', 0),
-            'video_url': data.get('postUrl', ''),
-            'download_url': data.get('videoUrl', ''),
-            'thumbnail_url': data.get('image', ''),
-            'published_at': self._parse_timestamp(data.get('time')),
+            'video_id': str(post_id),
+            'title': data.get('text', '') or data.get('message', '') or 'No Content',
+            'description': data.get('text', '') or data.get('message', ''),
+            'author_username': str(author_username),
+            'author_name': str(author_name),
+            'likes_count': int(likes) if isinstance(likes, (int, float, str)) and str(likes).isdigit() else 0,
+            'views_count': int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or 0),
+            'comments_count': int(comments) if isinstance(comments, (int, float, str)) and str(comments).isdigit() else 0,
+            'shares_count': int(shares) if isinstance(shares, (int, float, str)) and str(shares).isdigit() else 0,
+            'video_url': permalink, # Normalized Web URL
+            'download_url': video_url, # Direct file URL
+            'thumbnail_url': thumbnail_url,
+            'published_at': self._parse_timestamp(data.get('time') or data.get('timestamp')),
             'hashtags': [],
             'music_info': {},
+            'is_video': is_video, # Keep explicit flag for immediate usage
             'raw_data': data
         }
     
@@ -500,7 +753,7 @@ class ApifyScraperService(BaseScraperService):
             if isinstance(timestamp, datetime):
                 return timestamp
             
-            # If Unix timestamp (integer)
+            # If Unix timestamp (integer or float)
             if isinstance(timestamp, (int, float)):
                 return datetime.fromtimestamp(timestamp)
             

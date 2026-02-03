@@ -16,7 +16,6 @@ services:
     command: python manage.py runserver 0.0.0.0:8000
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
   worker:
     build: .
     volumes:
