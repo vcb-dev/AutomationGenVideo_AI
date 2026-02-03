@@ -7,9 +7,11 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.cache import cache
-from ..services.deep_learning_fingerprint_service import get_fingerprint_service
 import os
 import logging
+
+# get_fingerprint_service (và torch) chỉ import khi gọi endpoint duplicate-detection,
+# tránh lỗi c10.dll lúc Django khởi động trên Windows.
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +50,9 @@ def generate_fingerprint(request):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Get fingerprint service
+        from ..services.deep_learning_fingerprint_service import get_fingerprint_service
         service = get_fingerprint_service()
         
-        # Generate fingerprint
         logger.info(f"Generating fingerprint for: {video_path}")
         fingerprint = service.generate_fingerprint(video_path)
         
@@ -108,10 +109,9 @@ def check_duplicate(request):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Get fingerprint service
+        from ..services.deep_learning_fingerprint_service import get_fingerprint_service
         service = get_fingerprint_service()
         
-        # Extract features from new video
         logger.info(f"Extracting features from: {video_path}")
         new_features = service.extract_features(video_path)
         
@@ -201,10 +201,9 @@ def compare_videos(request):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Get fingerprint service
+        from ..services.deep_learning_fingerprint_service import get_fingerprint_service
         service = get_fingerprint_service()
         
-        # Extract features from both videos
         logger.info(f"Comparing videos: {video1_path} vs {video2_path}")
         features1 = service.extract_features(video1_path)
         features2 = service.extract_features(video2_path)

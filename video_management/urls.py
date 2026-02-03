@@ -26,6 +26,7 @@ from .views.duplicate_detection_views import (
     check_duplicate,
     compare_videos,
 )
+from .views.mix_video_views import mix_videos, mix_status
 
 app_name = 'video_management'
 
@@ -44,9 +45,9 @@ urlpatterns = [
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),
     
-    # --- NEW ENDPOINT HERE ---
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
-    # -------------------------
+    path('videos/mix/', mix_videos, name='mix-videos'),
+    path('videos/mix/status/<str:progress_id>/', mix_status, name='mix-status'),
     
     # Duplicate Detection endpoints
     path('duplicate-detection/generate-fingerprint/', generate_fingerprint, name='generate-fingerprint'),

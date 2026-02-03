@@ -286,6 +286,15 @@ SEARCH_CACHE_TTL = env.int('SEARCH_CACHE_TTL', default=3600)  # 1 hour
 # Proxy settings (optional, for requests through proxy)
 PROXY_URL = env('PROXY_URL', default='')
 
+# FFmpeg path for Mix Video (nếu FFmpeg không có trong PATH, đặt đường dẫn đầy đủ, ví dụ: C:/ffmpeg/bin/ffmpeg.exe)
+FFMPEG_PATH = env('FFMPEG_PATH', default='')
+# FFprobe path (nếu không đặt, sẽ suy từ FFMPEG_PATH; đặt riêng nếu ffprobe ở thư mục khác)
+FFPROBE_PATH = env('FFPROBE_PATH', default='')
+
+# Mix Video: tỉ lệ khung hình output (width px; height=0 thì tự tính theo width giữ tỉ lệ gốc)
+MIX_VIDEO_OUTPUT_WIDTH = env.int('MIX_VIDEO_OUTPUT_WIDTH', default=720)
+MIX_VIDEO_OUTPUT_HEIGHT = env.int('MIX_VIDEO_OUTPUT_HEIGHT', default=0)  # 0 = auto (scale theo width)
+
 # Telegram settings
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
