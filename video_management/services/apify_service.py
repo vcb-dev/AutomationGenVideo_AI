@@ -220,11 +220,18 @@ class ApifyScraperService(BaseScraperService):
                 # User confirmed realistic daily max is ~10 videos
                 limit_to_use = min(effective_limit, 300)
 
+                # OPTIMIZATION: If fetching small batch (e.g. Add Channel), disable video checking/downloading
+                # This makes the initial scan much faster (seconds instead of minutes)
+                should_download_videos = True
+                if max_results <= 10:
+                    should_download_videos = False
+                
                 input_data = {
                     "profiles": [username],
                     "resultsPerPage": limit_to_use,
                     "postsCount": limit_to_use,
-                    "shouldDownloadVideos": True, 
+                    "maxItems": limit_to_use, # Explicitly limit items
+                    "shouldDownloadVideos": should_download_videos, 
                     "shouldDownloadCovers": True, 
                 }
                 

@@ -1,37 +1,43 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bullseye
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV WORKDIR=/app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
-# libgl1-mesa-glx and libglib2.0-0 are required for cv2
-RUN apt-get update && apt-get install -y \
+WORKDIR /app
+
+# Install system dependencies in one layer and clean up
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     libgl1 \
     libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+    ffmpeg \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-WORKDIR /app
+# Copy only requirements first for better caching
+COPY requirements.txt requirements-duplicate-detection.txt ./
 
-# Install Python dependencies
-COPY requirements.txt .
-COPY requirements-duplicate-detection.txt .
+# Install PyTorch CPU-only (smaller)
+# Split into separate layer to avoid timeout/OOM during build
+RUN pip install --no-cache-dir --default-timeout=1000 \
+    torch==2.0.0 torchvision==0.15.0 \
+    --index-url https://download.pytorch.org/whl/cpu
 
-# Install CPU-only torch first to save download time and image size
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install other dependencies
+RUN pip install --no-cache-dir -r requirements.txt && \
+    find /usr/local/lib/python3.11/site-packages -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11/site-packages -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /root/.cache/pip
 
-RUN pip install --no-cache-dir -r requirements.txt
-# RUN pip install --no-cache-dir -r requirements-duplicate-detection.txt
-
-# Copy project
+# Copy project files
 COPY . .
 
-# Make scripts executable
-RUN chmod +x manage.py
-RUN chmod +x start.sh
+# Make scripts executable in one layer
+RUN chmod +x manage.py start.sh
 
-# Run with Gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "core.wsgi:application"]
+# Run with Gunicorn
+CMD sh -c "python manage.py migrate --noinput && gunicorn --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 3600 core.wsgi:application"

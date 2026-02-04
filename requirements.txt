@@ -15,6 +15,9 @@ redis>=5.0.0
 requests>=2.31.0
 httpx>=0.27.0
 
+# OpenAI API
+openai>=1.0.0
+
 # Apify Client for Scraping
 apify-client>=1.7.0
 
@@ -39,10 +42,11 @@ gunicorn>=21.2.0
 python-dateutil>=2.8.2
 
 # Deep Learning & Video Processing
-torch>=2.0.0
-torchvision>=0.15.0
-opencv-python>=4.8.0
-numpy>=1.24.0
+# Pin specific versions for compatibility
+numpy==1.24.3
+torch==2.0.0
+torchvision==0.15.0
+opencv-python-headless==4.8.1.78
 pillow>=10.0.0
 
 # HeyGen API (AI Avatar & Lipsync)
@@ -50,3 +54,6 @@ pillow>=10.0.0
 aiohttp>=3.9.0
 ffmpeg-python>=0.2.0
 moviepy>=1.0.3
+
+# Video Download & Analysis
+yt-dlp>=2023.10.0

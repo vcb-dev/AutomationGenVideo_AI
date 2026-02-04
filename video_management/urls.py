@@ -35,6 +35,7 @@ from .views.facebook_analysis_views import (
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
+from .views.recent_analysis_views import analyze_recent_videos
 
 app_name = 'video_management'
 
@@ -65,6 +66,7 @@ urlpatterns = [
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
     path('channels/check-by-username/', ChannelCheckByUsernameView.as_view(), name='channel-check-by-username'),
+    path('channels/analyze-recent/', analyze_recent_videos, name='analyze-recent-videos'),
     path('channels/<int:pk>/', ChannelDetailView.as_view(), name='channel-detail'),
     path('channels/<int:pk>/check/', ChannelCheckView.as_view(), name='channel-check'),
     

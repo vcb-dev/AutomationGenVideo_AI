@@ -8,37 +8,55 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.core.cache import cache
 from ..services.deep_learning_fingerprint_service import get_fingerprint_service
+import tempfile
+import shutil
 import os
 import logging
 
 logger = logging.getLogger(__name__)
 
+def save_uploaded_file(uploaded_file):
+    """Save uploaded file to temp path"""
+    fd, path = tempfile.mkstemp(suffix='.mp4')
+    try:
+        with os.fdopen(fd, 'wb') as tmp:
+            # Handle both chunked and non-chunked uploads
+            if hasattr(uploaded_file, 'chunks'):
+                for chunk in uploaded_file.chunks():
+                    tmp.write(chunk)
+            else:
+                # For small files that are fully in memory
+                tmp.write(uploaded_file.read())
+        return path
+    except Exception as e:
+        # Clean up temp file on error
+        try:
+            os.close(fd)
+            os.unlink(path)
+        except:
+            pass
+        raise e
 
 @api_view(['POST'])
 def generate_fingerprint(request):
     """
     Generate deep learning fingerprint for a video
-    
-    POST /api/ai/duplicate-detection/generate-fingerprint
-    Body: {
-        "video_path": "/path/to/video.mp4"
-    }
-    
-    Returns: {
-        "feature_vector": [512 floats],
-        "duration_seconds": 120,
-        "frame_count": 3600,
-        "resolution": "1920x1080",
-        "method": "deep_learning",
-        "model": "r2plus1d_18"
-    }
+    Supports both 'video_path' (local) and 'video_file' (upload)
     """
+    temp_path = None
     try:
         video_path = request.data.get('video_path')
         
+        # Priority: Check for file upload
+        if 'video_file' in request.FILES:
+            upload = request.FILES['video_file']
+            temp_path = save_uploaded_file(upload)
+            video_path = temp_path
+            logger.info(f"Received file upload. Saved to temp: {temp_path}")
+        
         if not video_path:
             return Response(
-                {'error': 'video_path is required'},
+                {'error': 'video_path or video_file is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -65,6 +83,14 @@ def generate_fingerprint(request):
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+    finally:
+        # Cleanup temp file
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                logger.info(f"Cleaned up temp file: {temp_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temp file: {e}")
 
 
 from ..models import ScrapedVideo, Platform
@@ -73,18 +99,44 @@ from ..models import ScrapedVideo, Platform
 def check_duplicate(request):
     """
     Check if a video is duplicate of existing videos (Internal or Scraped)
+    Supports both 'video_path' (local) and 'video_file' (upload)
     """
+    temp_path = None
     try:
         video_path = request.data.get('video_path')
         existing_videos = request.data.get('existing_videos', [])
         check_source = request.data.get('check_source', 'internal')
         channel_info = request.data.get('channel_info', {})
         
+        # Parse JSON fields if they are strings (Multipart/Form-data support)
+        import json
+        if isinstance(channel_info, str):
+            try:
+                channel_info = json.loads(channel_info)
+            except Exception:
+                logger.warning(f"Failed to parse channel_info JSON: {channel_info}")
+                channel_info = {}
+                
+        if isinstance(existing_videos, str):
+            try:
+                existing_videos = json.loads(existing_videos)
+            except Exception:
+                existing_videos = []
+
+        # Priority: Check for file upload
+        if 'video_file' in request.FILES:
+            upload = request.FILES['video_file']
+            temp_path = save_uploaded_file(upload)
+            video_path = temp_path
+            logger.info(f"Received file upload. Saved to temp: {temp_path}")
+        
         if not video_path:
-            return Response({'error': 'video_path is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'video_path or video_file is required'}, status=status.HTTP_400_BAD_REQUEST)
         
         if not os.path.exists(video_path):
             return Response({'error': f'Video file not found: {video_path}'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # ... logic continues ...
         
         # Get fingerprint service
         service = get_fingerprint_service()
