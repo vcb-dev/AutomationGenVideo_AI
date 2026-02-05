@@ -38,9 +38,9 @@ class SearchRequestSerializer(serializers.Serializer):
     max_results = serializers.IntegerField(
         default=20,
         min_value=1,
-        max_value=100,
+        max_value=10000,
         required=False,
-        help_text="Maximum number of results (1-100)"
+        help_text="Maximum number of results (1-10000)"
     )
     use_cache = serializers.BooleanField(
         default=True,

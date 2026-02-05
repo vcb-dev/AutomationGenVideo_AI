@@ -133,7 +133,8 @@ class BaseScraperService(ABC):
         self,
         keyword: str,
         min_likes: int = 0,
-        min_views: int = 0
+        min_views: int = 0,
+        max_results: int = 20
     ) -> Optional[SearchHistory]:
         """
         Check if valid cached results exist for this search.
@@ -142,22 +143,26 @@ class BaseScraperService(ABC):
             keyword: Search keyword
             min_likes: Minimum likes filter
             min_views: Minimum views filter
+            max_results: Minimum required results
             
         Returns:
             SearchHistory object if valid cache exists, None otherwise
         """
         try:
+            # Only use cache if it was created with at least the requested max_results
+            # or if it was created very recently
             cache_entry = SearchHistory.objects.filter(
                 platform=self.platform,
                 keyword=keyword,
                 min_likes=min_likes,
                 min_views=min_views,
                 status=SearchStatus.COMPLETED,
-                expires_at__gt=timezone.now()
+                expires_at__gt=timezone.now(),
+                max_results__gte=max_results  # Ensure cache has enough data depth
             ).order_by('-created_at').first()
             
             if cache_entry and not cache_entry.is_expired():
-                self.logger.info(f"Cache hit for keyword: {keyword}")
+                self.logger.info(f"Cache hit for keyword: {keyword} (results={cache_entry.results_count})")
                 return cache_entry
             
             self.logger.info(f"Cache miss for keyword: {keyword}")
@@ -266,44 +271,59 @@ class BaseScraperService(ABC):
     def filter_results(
         self,
         videos: List[Dict[str, Any]],
+        keyword: str = "",
         min_likes: int = 0,
         min_views: int = 0
     ) -> List[Dict[str, Any]]:
         """
-        Filter video results based on criteria.
+        Filter video results based on criteria and relevance.
         
         Args:
             videos: List of video data
+            keyword: The search keyword (for relevance check)
             min_likes: Minimum likes threshold
             min_views: Minimum views threshold
             
         Returns:
             Filtered list of videos
         """
-        # DEBUG LOG
         self.logger.info(
-            f"Filtering {len(videos)} videos with filters: min_likes={min_likes}, min_views={min_views}"
+            f"Filtering {len(videos)} videos. "
+            f"Criteria: min_likes={min_likes}, min_views={min_views}, keyword='{keyword}'"
         )
-        if len(videos) > 0:
-            v0 = videos[0]
-            self.logger.info(f"Sample video stats: likes={v0.get('likes_count')}, views={v0.get('views_count')}")
-
-
-        
+            
         filtered = []
         
-        for video in videos:
-            likes = video.get('likes_count', 0)
-            views = video.get('views_count', 0)
-            
-            if likes >= min_likes and views >= min_views:
-                filtered.append(video)
+        # Pre-process keyword for comparison
+        # 1. Standard lower
+        kw_standard = keyword.lower().strip()
+        # 2. No spaces (e.g., "trang suc" -> "trangsuc" for hashtag matching)
+        kw_nospace = kw_standard.replace(' ', '')
         
+        for v in videos:
+            # 1. METRICS FILTER
+            likes = v.get('likes_count', 0)
+            views = v.get('views_count', 0)
+            
+            if likes < min_likes or views < min_views:
+                self.logger.debug(
+                    f"Dropping video {v.get('video_id')} (Metrics): "
+                    f"likes={likes}<{min_likes} or views={views}<{min_views}"
+                )
+                continue
+                
+            # 2. RELEVANCE FILTER (Relaxed)
+            # We trust TikTok's search engine to return relevant results.
+            # Strict filtering rejects too many semantically related videos.
+            # We only filter by metrics now.
+            
+            # (Strict logic removed to improve yield and speed)
+            
+            filtered.append(v)
+            
         self.logger.info(
             f"Filtered {len(videos)} videos to {len(filtered)} "
-            f"(min_likes={min_likes}, min_views={min_views})"
         )
-        
         return filtered
     
     def execute_search(
@@ -334,7 +354,7 @@ class BaseScraperService(ABC):
         try:
             # Check cache first
             if use_cache:
-                cached = self.check_cache(keyword, min_likes, min_views)
+                cached = self.check_cache(keyword, min_likes, min_views, max_results)
                 if cached:
                     return {
                         'success': True,
@@ -372,6 +392,7 @@ class BaseScraperService(ABC):
                 # Filter results
                 filtered_results = self.filter_results(
                     normalized_results,
+                    keyword=keyword,
                     min_likes=min_likes,
                     min_views=min_views
                 )

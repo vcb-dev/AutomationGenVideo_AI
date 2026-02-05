@@ -250,11 +250,12 @@ APIFY_ACTORS = {
     'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
     'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
+    'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='moJalo4813/facebook-search-scraper'),
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }
 
 # Apify timeout settings (in seconds)
-APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=300)  # 5 minutes
+APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=900)  # 15 minutes
 APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=10000)
 
 # ==========================================

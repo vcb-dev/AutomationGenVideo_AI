@@ -13,7 +13,7 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/video_production_ai
       - CELERY_BROKER_URL=redis://host.docker.internal:6379/0
       - CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/0
-    command: python manage.py runserver 0.0.0.0:8000
+    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
   worker:

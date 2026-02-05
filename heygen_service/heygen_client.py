@@ -97,8 +97,9 @@ class HeyGenClient:
                 {
                     "character": {
                         "type": "avatar",
-                        "avatar_id": request.avatar_id,
-                        "avatar_style": request.avatar_style or "normal"
+                        "avatar_id": request.avatar_id
+                        # Note: avatar_style is NOT supported in V2 API
+                        # Only use for circle crop avatars if needed
                     },
                     "voice": self._build_voice_payload(request.voice_settings),
                     "background": self._build_background_payload(request)
@@ -132,15 +133,17 @@ class HeyGenClient:
                 response_data = await response.json()
                 
                 if response.status != 200:
+                    logger.error(f"HeyGen Raw Error Response: {response_data}")
                     error_msg = response_data.get("error", {}).get("message", "Unknown error")
-                    logger.error(f"HeyGen API error: {error_msg}")
                     
-                    # If error suggests avatar not found, try Talking Photo method
-                    # DISABLE FALLBACK FOR NOW to verify standard avatar works
-                    # if "not found" in error_msg.lower() or "available" in error_msg.lower() or "exist" in error_msg.lower():
-                    #     logger.info("Avatar not found as standard avatar. Retrying as Talking Photo...")
-                    #     return await self.create_talking_photo_video(request)
-                        
+                    # FALLBACK STRATEGY:
+                    # If the standard Avatar API fails for ANY reason (except Auth), 
+                    # we assume it might be a Talking Photo ID and try that endpoint.
+                    # This covers 'renderType', 'not found', 'invalid character', etc.
+                    if response.status != 401 and response.status != 403:
+                         logger.warning(f"Standard generation failed: '{error_msg}'. Retrying as Talking Photo...")
+                         return await self.create_talking_photo_video(request)
+
                     raise Exception(f"HeyGen API error: {error_msg}")
                 
                 # Parse response
