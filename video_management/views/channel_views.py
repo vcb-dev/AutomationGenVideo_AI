@@ -10,7 +10,6 @@ from rest_framework import generics
 from ..models import TrackedChannel, Platform, ScrapedVideo
 from ..serializers import TrackedChannelSerializer
 from ..services.apify_service import create_scraper
-from ..services.deep_learning_fingerprint_service import get_fingerprint_service
 
 logger = logging.getLogger(__name__)
 

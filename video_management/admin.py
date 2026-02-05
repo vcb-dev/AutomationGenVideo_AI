@@ -6,7 +6,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from .models import SearchHistory, ScrapedVideo, TrackedChannel, VideoCollection, CollectionVideo
+from .models import SearchHistory, ScrapedVideo, TrackedChannel, VideoCollection, CollectionVideo, FacebookPageCache
 
 
 @admin.register(SearchHistory)
@@ -372,6 +372,96 @@ class CollectionVideoAdmin(admin.ModelAdmin):
             obj.video.author_username
         )
     video_preview.short_description = 'Video'
+
+
+@admin.register(FacebookPageCache)
+class FacebookPageCacheAdmin(admin.ModelAdmin):
+    """Admin interface for FacebookPageCache model."""
+    
+    list_display = [
+        'username',
+        'page_name',
+        'followers_count',
+        'likes_count',
+        'cache_status',
+        'last_fetched_at',
+        'expires_at',
+    ]
+    search_fields = ['username', 'page_name']
+    readonly_fields = [
+        'last_fetched_at',
+        'created_at',
+        'updated_at',
+        'cache_age_display',
+    ]
+    fieldsets = (
+        ('Page Info', {
+            'fields': ('username', 'page_name', 'avatar_url')
+        }),
+        ('Statistics', {
+            'fields': ('followers_count', 'likes_count', 'verified')
+        }),
+        ('Additional Info', {
+            'fields': ('page_description', 'page_category'),
+            'classes': ('collapse',)
+        }),
+        ('Cache Control', {
+            'fields': ('expires_at', 'last_fetched_at', 'cache_age_display')
+        }),
+        ('Raw Data', {
+            'fields': ('raw_data',),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    date_hierarchy = 'last_fetched_at'
+    actions = ['refresh_cache', 'clear_expired']
+    
+    def cache_status(self, obj):
+        """Display cache status with badge."""
+        if obj.is_expired():
+            return format_html(
+                '<span style="color: red; font-weight: bold;">❌ Expired</span>'
+            )
+        from django.utils import timezone
+        remaining = obj.expires_at - timezone.now()
+        hours = int(remaining.total_seconds() / 3600)
+        return format_html(
+            '<span style="color: green; font-weight: bold;">✅ Valid ({} hrs left)</span>',
+            hours
+        )
+    cache_status.short_description = 'Cache Status'
+    
+    def cache_age_display(self, obj):
+        """Display how long ago data was fetched."""
+        from django.utils import timezone
+        age = timezone.now() - obj.last_fetched_at
+        hours = int(age.total_seconds() / 3600)
+        return f"{hours} hours ago"
+    cache_age_display.short_description = 'Cache Age'
+    
+    def refresh_cache(self, request, queryset):
+        """Refresh cache for selected entries."""
+        count = 0
+        for obj in queryset:
+            obj.refresh_expiry()
+            count += 1
+        self.message_user(request, f'{count} cache entry(ies) refreshed.')
+    refresh_cache.short_description = 'Refresh cache expiry'
+    
+    def clear_expired(self, request, queryset):
+        """Clear expired cache entries."""
+        count = 0
+        for obj in queryset:
+            if obj.is_expired():
+                obj.delete()
+                count += 1
+        self.message_user(request, f'{count} expired cache entry(ies) cleared.')
+    clear_expired.short_description = 'Clear expired entries'
+
 
 
 # Customize admin site

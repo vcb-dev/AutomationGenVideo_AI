@@ -250,7 +250,8 @@ APIFY_ACTORS = {
     'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
     'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
-    'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='moJalo4813/facebook-search-scraper'),
+    'facebook_hashtag': env('APIFY_ACTOR_FACEBOOK_HASHTAG', default='apify/facebook-hashtag-scraper'),  # For keyword/hashtag search
+    'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='powerai~facebook-post-search-scraper'),  # DEPRECATED: Returns 503
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }
 

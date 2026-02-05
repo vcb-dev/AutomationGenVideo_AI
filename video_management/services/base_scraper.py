@@ -306,10 +306,10 @@ class BaseScraperService(ABC):
             views = v.get('views_count', 0)
             
             if likes < min_likes or views < min_views:
-                self.logger.debug(
-                    f"Dropping video {v.get('video_id')} (Metrics): "
-                    f"likes={likes}<{min_likes} or views={views}<{min_views}"
-                )
+                if likes < min_likes:
+                    self.logger.debug(f"Dropping video {v.get('video_id')}: Likes {likes} < {min_likes}")
+                elif views < min_views:
+                    self.logger.debug(f"Dropping video {v.get('video_id')}: Views {views} < {min_views}")
                 continue
                 
             # 2. RELEVANCE FILTER (Relaxed)
