@@ -32,14 +32,11 @@ from .views.facebook_analysis_views import (
     get_available_methods,
     detect_facebook_type,
 )
-<<<<<<< HEAD
 from .views.mix_video_views import mix_videos, mix_status
-=======
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.recent_analysis_views import analyze_recent_videos
->>>>>>> 5ae439006276f51152fde1bbb1dc26a9efd6d39c
 
 app_name = 'video_management'
 

@@ -1,19 +1,3 @@
-"""
-API View: Mix 7 phần video thành 1 video A4 (FFmpeg).
-Mỗi phần đều 5 giây.
-
-Phần 1: video 5s
-Phần 2: video 5s
-Phần 3: 2 video ghép trên/dưới, tổng 5s
-Phần 4: 2 video ghép trên/dưới, tổng 5s
-Phần 5: 2 video ghép trên/dưới, tổng 5s
-Phần 6: video 5s
-Phần 7: video 5s
-
-Cần đúng 10 file video (thứ tự: 1, 2, 3_trên, 3_dưới, 4_trên, 4_dưới, 5_trên, 5_dưới, 6, 7).
-Sử dụng FFmpeg (subprocess), không dùng MoviePy.
-"""
-
 import os
 import re
 import random
@@ -207,6 +191,30 @@ def _get_duration(path: str) -> Optional[float]:
     return None
 
 
+def _has_audio(path: str) -> bool:
+    """Kiểm tra file video có luồng audio không."""
+    cmd = _get_ffprobe_cmd()
+    abs_path = os.path.abspath(path)
+    if not os.path.isfile(abs_path):
+        return False
+    try:
+        # Kiểm tra ffprobe tồn tại trước khi gọi
+        if cmd != "ffprobe" and not os.path.isfile(cmd):
+            return False
+            
+        result = subprocess.run(
+            [cmd, "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", abs_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATION_FLAGS,
+            text=True,
+            timeout=10
+        )
+        return bool(result.stdout.strip())
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def _max_segments_per_file(duration: float, segment_len: int) -> int:
     """Số đoạn không chồng lấn (segment_len giây) có thể lấy từ video duration giây."""
     if duration < segment_len:
@@ -312,29 +320,47 @@ def _run_ffmpeg(args: List[str], timeout: int = 600, step_name: Optional[str] = 
 def _trim_single_to_file(
     input_path: str,
     output_path: str,
-    duration_sec: int,
+    duration_sec: float,
     width: int,
     height: int,
     start_sec: float = 0,
+    keep_audio: bool = False,
     step_name: Optional[str] = None,
 ) -> Tuple[bool, str]:
     # Thêm fps=30 để đồng bộ tốc độ khung hình
     # Thêm setsar=1 để ép pixel vuông (1:1) tránh lỗi concat do lệch SAR
-    vf = f"{_scale_filter(width, height)},fps=30,setsar=1,setpts=PTS-STARTPTS"
+    # Buộc dùng yuv420p để tránh lỗi profile/level khi nối
+    vf = f"{_scale_filter(width, height)},fps=30,setsar=1,format=yuv420p,setpts=PTS-STARTPTS"
+    
+    # Kiểm tra audio nếu muốn giữ
+    use_source_audio = keep_audio and _has_audio(input_path)
+
     args = [
         "-ss", str(start_sec),
-        "-t", str(duration_sec),
         "-i", input_path,
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t", str(duration_sec),
         "-vf", vf,
+        "-map", "0:v:0",
+    ]
+    
+    if use_source_audio:
+        # Lấy audio từ source, nếu lệch độ dài thì sẽ tự trim theo -t
+        args.extend(["-map", "0:a:0"])
+    else:
+        # Luôn dùng audio im lặng để đồng nhất các phần khi concat
+        args.extend(["-map", "1:a"])
+
+    args.extend([
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-c:a", "aac",
         "-ar", "44100",
-        "-ac", "2", # Ép 2 kênh audio
+        "-ac", "2",
+        "-video_track_timescale", "15360",
         "-map_metadata", "-1",
-        # Xóa bỏ video_track_timescale nếu không cần thiết hoặc để mặc định
         output_path,
-    ]
+    ])
     return _run_ffmpeg(args, step_name=step_name)
 
 
@@ -342,7 +368,7 @@ def _stack_two_to_file(
     path_top: str,
     path_bottom: str,
     output_path: str,
-    duration_sec: int,
+    duration_sec: float,
     width: int,
     height: int,
     start_top: float = 0,
@@ -363,7 +389,6 @@ def _stack_two_to_file(
     # Kích thước vùng giao thoa (overlap)
     overlap = 50 
     
-    
     scale_top = _scale_to_width_then_pad(width, top_h + overlap)
     scale_bottom = _scale_to_width_then_pad(width, bottom_h + overlap)
     
@@ -372,33 +397,28 @@ def _stack_two_to_file(
         f"geq=lum='p(X,Y)':a='if(gte(Y,H-{overlap}),255*(H-Y)/{overlap},255)',"
         f"setpts=PTS-STARTPTS[top];"
         
-        f"[1:v]{scale_bottom},fps=30,setsar=1,"
+        f"[1:v]{scale_bottom},fps=30,setsar=1,format=yuva420p,"
         f"pad={width}:{height}:0:{top_h - overlap},"
         f"setpts=PTS-STARTPTS[bot];"
         
-        "[bot][top]overlay=0:0:format=auto,setpts=PTS-STARTPTS[v]"
+        "[bot][top]overlay=0:0:format=auto,format=yuv420p,setpts=PTS-STARTPTS[v]"
     )
     # Thêm audio im lặng để concat không lỗi khi các đoạn single có audio
     args = [
         "-ss", str(start_top),
-        "-t", str(duration_sec),
         "-i", path_top,
         "-ss", str(start_bottom),
-        "-t", str(duration_sec),
         "-i", path_bottom,
-        "-f", "lavfi", "-t", str(duration_sec),
-        "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-t", str(duration_sec),
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "2:a",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-c:a", "aac", "-ar", "44100",
-        "-t", str(duration_sec),
+        "-video_track_timescale", "15360",
         output_path,
     ]
-    return _run_ffmpeg(args, step_name=step_name)
-
-
     return _run_ffmpeg(args, step_name=step_name)
 
 
@@ -434,7 +454,11 @@ def _concat_files(part_files: List[str], output_path: str, step_name: Optional[s
             "-f", "concat",
             "-safe", "0",
             "-i", list_file,
-            "-c", "copy",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-c:a", "aac",
+            "-ar", "44100",
+            "-ac", "2",
             output_path
         ]
         return _run_ffmpeg(args, step_name=step_name)
@@ -451,10 +475,12 @@ def _build_one_mix(
     width: int,
     height: int,
     durations: List[float],
+    audio_path: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """
     Tạo 1 video mix từ 10 input.
     durations: list 7 float cho 7 phần.
+    Nếu audio_path có, nó chỉ được gắn cho 6 phần đầu.
     """
     if len(input_paths) != REQUIRED_FILES or len(starts) != REQUIRED_FILES:
         return False, f"Cần đúng {REQUIRED_FILES} file và {REQUIRED_FILES} start."
@@ -466,13 +492,13 @@ def _build_one_mix(
         if height % 2:
             height += 1
 
-    temp_dir = tempfile.mkdtemp(prefix="mix_ffmpeg_")
+    temp_dir = tempfile.mkdtemp(prefix="mix_step_")
     part_files = []
     try:
         for i in range(7):
             part_files.append(os.path.join(temp_dir, f"seg_{i}.mp4"))
 
-        # Part 1: Folders 0
+        # Part 1: Folder 0
         ok, err = _trim_single_to_file(
             input_paths[0], part_files[0], durations[0], width, height, start_sec=starts[0], step_name="trim part 1"
         )
@@ -511,22 +537,37 @@ def _build_one_mix(
         )
         if not ok: return False, f"Phần 6: {err}"
 
-        # Part 7: Folder 9 (Outrol)
+        # Part 7: Folder 9 (Outrol) - Giữ audio gốc
         ok, err = _trim_single_to_file(
-            input_paths[9], part_files[6], durations[6], width, height, start_sec=starts[9], step_name="trim part 7"
+            input_paths[9], part_files[6], durations[6], width, height, 
+            start_sec=starts[9], keep_audio=True, step_name="trim part 7"
         )
         if not ok: return False, f"Phần 7: {err}"
 
-        ok, err = _concat_files(part_files, output_path, step_name="concat")
-        if not ok: return False, f"Concat: {err}"
+        if audio_path and os.path.exists(audio_path):
+            # Bước A: Nối 6 phần đầu (đang là âm thanh im lặng)
+            intro_silent = os.path.join(temp_dir, "intro_silent.mp4")
+            ok, err = _concat_files(part_files[:6], intro_silent, step_name="concat intro segments")
+            if not ok: return False, f"Nối 6 đoạn đầu: {err}"
+
+            # Bước B: Gắn nhạc vào 6 phần đầu
+            intro_with_music = os.path.join(temp_dir, "intro_music.mp4")
+            ok, err = _replace_audio(intro_silent, audio_path, intro_with_music)
+            if not ok: return False, f"Gắn nhạc intro: {err}"
+
+            # Bước C: Nối Intro (có nhạc) + Outrol (có audio gốc)
+            # Dùng _concat_files có re-encode để khớp các luồng audio khác nhau
+            ok, err = _concat_files([intro_with_music, part_files[6]], output_path, step_name="final join music and outrol")
+            if not ok: return False, f"Nối intro và outrol: {err}"
+        else:
+            # Fallback nếu không có audio_path
+            ok, err = _concat_files(part_files, output_path, step_name="concat all fallback")
+            if not ok: return False, f"Concat: {err}"
+
         return True, ""
     finally:
-        for p in part_files:
-            try:
-                if os.path.exists(p): os.remove(p)
-            except OSError: pass
-        try: os.rmdir(temp_dir)
-        except OSError: pass
+        # Dọn dẹp hết temp_dir (bao gồm cả các file trung gian intro_silent...)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 # Lưu tiến trình mix theo progress_id (khi chạy mix trong thread)
@@ -557,15 +598,20 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
             if not f9_files:
                 raise ValueError("Folder 9 (Outtrol) không có video hợp lệ.")
             
+            # 1. Thu thập dữ liệu cho từng Outtrol (thời lượng, pools...)
+            outtrol_contexts = []
+            total_possible = 0
+            
             for f9 in f9_files:
                 d9 = _get_duration(f9) or 5.0
-                seg_len = max(0.1, (audio_dur - d9) / 6.0)
+                slen = audio_dur / 6.0
                 
-                # Part durations for this specific Outtrol
-                current_part_durs = [seg_len] * 6 + [d9]
+                # Part durations cho Outtrol này
+                part_durs = [slen] * 6 + [d9]
                 
-                # Build pools for Folders 0-8 for this specific seg_len
-                current_pools = []
+                # Xây dựng pools cho Folders 0-8 với slen tương ứng
+                pools = []
+                p_count = 1
                 for i in range(9):
                     f_dir = os.path.join(temp_dir, f"folder_{i}")
                     files_i = [str(p) for p in Path(f_dir).glob("*") if p.suffix.lower() in ALLOWED_EXTENSIONS]
@@ -574,23 +620,49 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
                     
                     folder_segments = []
                     for p_v in files_i:
-                        d_v = _get_duration(p_v) or seg_len
-                        starts = _possible_starts(d_v, int(seg_len))
+                        d_v = _get_duration(p_v) or slen
+                        starts = _possible_starts(d_v, slen)
                         for s in starts:
                             folder_segments.append((p_v, s))
-                    current_pools.append(folder_segments)
+                    pools.append(folder_segments)
+                    p_count *= len(folder_segments)
                 
-                # Thêm Outtrol (Folder 9) là pool 1 file duy nhất
-                current_pools.append([(f9, 0.0)])
+                outtrol_contexts.append({
+                    "f9": f9,
+                    "pools": pools, # Folders 0-8
+                    "part_durs": part_durs,
+                    "possible": p_count
+                })
+                total_possible += p_count
+
+            # 2. Bốc ngẫu nhiên tổ hợp (bao gồm cả Outtrol)
+            used_overall = set()
+            max_tries = num_outputs_cap * 10 
+            tries = 0
+            
+            while len(combinations) < num_outputs_cap and \
+                  len(used_overall) < total_possible and \
+                  tries < max_tries:
                 
-                # Tạo tổ hợp cho Outtrol này
-                # Cảnh báo: num_outputs_cap giới hạn tổng số video cuối cùng
-                for combo in itertools.product(*current_pools):
-                    combinations.append((combo, current_part_durs))
-                    if len(combinations) >= num_outputs_cap:
-                        break
-                if len(combinations) >= num_outputs_cap:
-                    break
+                # Bốc ngẫu nhiên 1 Outtrol
+                ctx = random.choice(outtrol_contexts)
+                
+                # Bốc ngẫu nhiên index cho 9 folder đầu
+                indices = tuple(random.randrange(len(p)) for p in ctx["pools"])
+                
+                # Dấu vân tay = (Đường dẫn Outtrol, indices 0-8)
+                fingerprint = (ctx["f9"], indices)
+                
+                if fingerprint not in used_overall:
+                    used_overall.add(fingerprint)
+                    
+                    # Tạo combo: 9 đoạn đầu + đoạn Outtrol
+                    combo = [ctx["pools"][i][indices[i]] for i in range(9)]
+                    combo.append((ctx["f9"], 0.0))
+                    
+                    combinations.append((tuple(combo), ctx["part_durs"]))
+                
+                tries += 1
         else:
             # Chế độ cũ (10 files đơn) - Giữ logic 5s cho tương thích hoặc fallback
             target_dur = 5.0
@@ -604,7 +676,7 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
             starts = []
             for p_v in input_paths:
                 d_v = _get_duration(p_v) or target_dur
-                s_list = _random_starts(d_v, int(target_dur), 1)
+                s_list = _random_starts(d_v, target_dur, 1)
                 selected_paths.append(p_v)
                 starts.append(s_list[0])
             
@@ -636,17 +708,8 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
             output_filename = f"mixed_{timestamp_str}_{base_id}_{k}.mp4"
             output_path = out_dir / output_filename
             
-            ok, err = _build_one_mix(selected_paths, starts, str(output_path), width, height, durations=part_durs)
+            ok, err = _build_one_mix(selected_paths, starts, str(output_path), width, height, durations=part_durs, audio_path=audio_path)
             
-            if ok and audio_path:
-                final_path = str(output_path).replace(".mp4", "_final.mp4")
-                ok_a, err_a = _replace_audio(str(output_path), audio_path, final_path)
-                if ok_a:
-                    time.sleep(0.2)
-                    os.replace(final_path, output_path)
-                else:
-                    logger.warning("Replace audio failed: %s", err_a)
-
             if not ok:
                 with _mix_progress_lock:
                     _mix_progress[progress_id].update(status="error", error=f"Lỗi ghép video (mix {k + 1}): {err}")
