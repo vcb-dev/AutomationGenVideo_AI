@@ -19,6 +19,10 @@ from .views import (
     # Stats views
     StatsView,
     HealthCheckView,
+    # Mix views
+    mix_videos,
+    mix_status,
+    mix_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
@@ -48,9 +52,10 @@ urlpatterns = [
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),
     
-    # --- NEW ENDPOINT HERE ---
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
-    # -------------------------
+    path('videos/mix/', mix_videos, name='mix-videos'),
+    path('videos/mix/cancel/<str:progress_id>/', mix_cancel, name='mix-cancel'),
+    path('videos/mix/status/<str:progress_id>/', mix_status, name='mix-status'),
     
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
