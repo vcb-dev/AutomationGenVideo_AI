@@ -693,3 +693,68 @@ class TikTokUserCache(BaseModel):
                 data['source'] = 'fresh'
                 return data
         return None
+
+class Voice(BaseModel):
+    """
+    Store custom and system voices for TTS/Lipsync.
+    """
+    name = models.CharField(
+        max_length=255,
+        help_text="Friendly name of the voice"
+    )
+    voice_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="Provider-specific voice ID (e.g., HeyGen ID)"
+    )
+    provider = models.CharField(
+        max_length=50,
+        default='heygen',
+        help_text="Voice provider (heygen, elevenlabs, etc.)"
+    )
+    is_cloned = models.BooleanField(
+        default=False,
+        help_text="Whether this is a cloned voice from a user"
+    )
+    is_system = models.BooleanField(
+        default=False,
+        help_text="Whether this is a default system voice"
+    )
+    language = models.CharField(
+        max_length=10,
+        default='vi',
+        help_text="Language code (vi, en, etc.)"
+    )
+    gender = models.CharField(
+        max_length=20,
+        choices=[('male', 'Male'), ('female', 'Female')],
+        blank=True,
+        null=True
+    )
+    sample_audio_url = models.URLField(
+        blank=True,
+        null=True,
+        help_text="URL to sample audio of this voice"
+    )
+    
+    # Optional: Link to original scraped video if cloned from KOC
+    source_video = models.ForeignKey(
+        ScrapedVideo,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='derived_voices',
+        help_text="Source video this voice was cloned from"
+    )
+
+    class Meta:
+        verbose_name = "Voice"
+        verbose_name_plural = "Voices"
+        ordering = ['-is_system', 'name']
+        indexes = [
+            models.Index(fields=['provider', 'is_system']),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.provider})"

@@ -104,6 +104,7 @@ urlpatterns += [
     path('api/heygen/generate-and-wait', heygen_views.generate_and_wait, name='heygen-generate-wait'),
     path('api/heygen/status/<str:video_id>', heygen_views.get_video_status, name='heygen-status'),
     path('api/heygen/voices', heygen_views.list_voices, name='heygen-voices'),
+    path('api/heygen/clone-voice', heygen_views.clone_voice_from_video, name='heygen-clone-voice'),
 ]
 
 # Serve media files in development

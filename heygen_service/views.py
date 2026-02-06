@@ -10,8 +10,15 @@ import json
 import asyncio
 import logging
 from .heygen_client import HeyGenClient, generate_video_from_text
+
+
 from .models import VideoGenerationRequest, VoiceSettings, VideoAspectRatio, VideoQuality
+from video_management.models import Voice
+from video_management.services.voice_extraction_service import VoiceExtractionService
+from video_management.services.elevenlabs_service import ElevenLabsService
 from .ai_writer import AIWriter
+from django.conf import settings
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +139,32 @@ def generate_video(request):
                 'error': 'Invalid aspect_ratio. Must be 16:9, 9:16, or 1:1'
             }, status=400)
         
+
+        # Check if voice is from ElevenLabs (or custom cloned)
+        voice = None
+        voice_settings = None
+        
+        # Try to find voice in DB
+        if voice_id:
+            try:
+                voice = Voice.objects.filter(voice_id=voice_id).first()
+            except Exception:
+                pass
+        
+        # If it's a cloned/ElevenLabs voice, we OLDLY generated audio first.
+        # NOW with HeyGen cloning, we can use the voice_id directly with HeyGen API.
+        if voice and voice.provider == 'elevenlabs':
+             # Legacy support or if we still have old data. 
+             # If we want to fully switch, we might want to warn or just let it fail if key is gone.
+             # But better to just log and try standard flow (which will fail if HeyGen doesn't know this ID)
+             # or just remove this block.
+             # User asked to remove ElevenLabs logic.
+             pass
+        
+        # NOTE: If voice.provider == 'heygen' (our new logic), it falls through to standard flow below
+        # which sends 'voice_id' to HeyGen. This is correct.
+
+
         # Create video generation request
         logger.info(f"Generating video with text: {text[:50]}...")
         
@@ -140,23 +173,42 @@ def generate_video(request):
         asyncio.set_event_loop(loop)
         
         try:
-            response = loop.run_until_complete(
-                generate_video_from_text(
-                    text=text,
-                    voice_id=voice_id,
+            # If we created custom voice settings (audio), we need to pass them constructed
+            # BUT the helper 'generate_video_from_text' expects text+voice_id.
+            # We need to call client.create_video directly if using audio.
+            
+            client = HeyGenClient()
+            
+            if voice_settings and voice_settings.type == 'audio':
+                 req = VideoGenerationRequest(
                     avatar_id=avatar_id,
                     avatar_style=avatar_style,
+                    voice_settings=voice_settings,
                     aspect_ratio=aspect_ratio,
-                    wait_for_completion=False  # Don't wait, return immediately
+                    quality=quality,
+                    background_color=background_color,
+                    title=title or text[:20]
                 )
-            )
+                 response = loop.run_until_complete(client.create_video(req))
+            else:
+                # Standard Text flow
+                response = loop.run_until_complete(
+                    generate_video_from_text(
+                        text=text,
+                        voice_id=voice_id,
+                        avatar_id=avatar_id,
+                        avatar_style=avatar_style,
+                        aspect_ratio=aspect_ratio,
+                        wait_for_completion=False 
+                    )
+                )
             
             return JsonResponse({
                 'success': True,
                 'data': {
                     'video_id': response.video_id,
                     'status': response.status,
-                    'message': 'Video generation started. Use /status endpoint to check progress.'
+                    'message': 'Video generation started use /status endpoint to check progress.'
                 }
             })
             
@@ -328,44 +380,107 @@ def list_voices(request):
         }
     }
     """
-    # Hardcoded voice list (HeyGen doesn't have a voices API)
-    # These are common voice IDs based on HeyGen documentation
-    voices = [
+    # Hardcoded system voices
+    system_voices = [
         {
-            "id": "c6fb81520dcd42e0a02be231046a8639",
+            "voice_id": "c6fb81520dcd42e0a02be231046a8639",
             "name": "Nam Minh (Natural)",
             "language": "vi-VN",
-            "gender": "male"
+            "gender": "male",
+            "provider": "heygen",
+            "is_cloned": False
         },
         {
-            "id": "4286c03d11f44af093e379fc7e2cafa6",
+            "voice_id": "4286c03d11f44af093e379fc7e2cafa6",
             "name": "Chau (Natural)",
             "language": "vi-VN",
-            "gender": "female"
+            "gender": "female",
+            "provider": "heygen",
+            "is_cloned": False
         },
         {
-            "id": "9a247a37f3c04e6aa934171998b9659c",
+            "voice_id": "9a247a37f3c04e6aa934171998b9659c",
             "name": "Hoai (Natural)",
             "language": "vi-VN",
-            "gender": "female"
-        },
-        {
-            "id": "en-US-female-1",
-            "name": "English Female 1",
-            "language": "en-US",
-            "gender": "female"
-        },
-        {
-            "id": "en-US-male-1",
-            "name": "English Male 1",
-            "language": "en-US",
-            "gender": "male"
+            "gender": "female",
+            "provider": "heygen",
+            "is_cloned": False
         }
     ]
+    
+    # Get cloned voices from DB
+    try:
+        db_voices = Voice.objects.all().values(
+            'voice_id', 'name', 'provider', 'is_cloned', 'language', 'gender'
+        )
+        cloned_voices = list(db_voices)
+    except Exception as e:
+        logger.error(f"Error fetching DB voices: {str(e)}")
+        cloned_voices = []
+    
+    # Merge lists
+    all_voices = system_voices + cloned_voices
     
     return JsonResponse({
         'success': True,
         'data': {
-            'voices': voices
+            'voices': all_voices
         }
     })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def clone_voice_from_video(request):
+    """
+    Clone voice from a KOC video URL
+    
+    POST /api/heygen/clone-voice
+    
+    Request Body:
+    {
+        "video_url": "https://tiktok.com/...",
+        "voice_name": "My KOC Voice"
+    }
+    """
+    try:
+        data = json.loads(request.body)
+        video_url = data.get('video_url')
+        voice_name = data.get('voice_name')
+        
+        if not video_url or not voice_name:
+            return JsonResponse({
+                'success': False, 
+                'error': 'video_url and voice_name are required'
+            }, status=400)
+            
+        extractor = VoiceExtractionService()
+        result = extractor.process_koc_voice_and_clone(video_url, voice_name, is_url=True)
+        
+        if result.get('success'):
+            # Save to Database
+            Voice.objects.create(
+                name=voice_name,
+                voice_id=result['voice_id'],
+                provider=result['provider'], # 'elevenlabs'
+                is_cloned=True,
+                language='vi', # Default to Vietnamese for now
+                sample_audio_url=video_url # Store source URL as reference
+            )
+            
+            return JsonResponse({
+                'success': True,
+                'data': result
+            })
+        else:
+            return JsonResponse({
+                'success': False,
+                'error': result.get('error', 'Unknown cloning error')
+            }, status=500)
+            
+    except Exception as e:
+        logger.error(f"Clone Voice API Error: {str(e)}")
+        return JsonResponse({
+            'success': False,
+            'error': str(e)
+        }, status=500)
