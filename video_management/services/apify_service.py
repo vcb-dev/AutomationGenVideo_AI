@@ -7,7 +7,7 @@ Facebook, and Douyin.
 
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from django.conf import settings
 from apify_client import ApifyClient
 from apify_client.clients import ActorClient
@@ -31,17 +31,19 @@ class ApifyScraperService(BaseScraperService):
     platforms in a unified way.
     """
     
-    def __init__(self, platform: Platform):
+    def __init__(self, platform: Platform, search_type: str = 'posts'):
         """
         Initialize Apify scraper.
         
         Args:
             platform: Target platform to scrape
+            search_type: Search type ('posts', 'reels', etc.)
             
         Raises:
             ScraperException: If Apify is not configured
         """
         super().__init__(platform)
+        self.search_type = search_type
         
         # Get Apify configuration
         self.api_token = getattr(settings, 'APIFY_API_TOKEN', '')
@@ -169,14 +171,19 @@ class ApifyScraperService(BaseScraperService):
                 "resultsLimit": limit_to_use,
                 "maxPostCount": limit_to_use,
                 # Optimize: Focus ONLY on Timeline/Posts
-                "proxyConfiguration": {"useApifyProxy": True},
-                "maxRequestRetries": 1,
+                "maxRequestRetries": 3,
                 "maxComments": 0,
                 "scrapeAbout": False,
                 "scrapeReviews": False,
                 "scrapePhotos": False,
-                "scrapeVideos": False, 
-            }
+                "scrapeVideos": False,
+                # Proxy optimization: Ensure Apify Proxy is used effectively
+                "proxyConfiguration": {
+                    "useApifyProxy": True,
+                    "apifyProxyGroups": ["RESIDENTIAL"] # Prefer residential to avoid detection
+                },
+            } 
+
         else:
             # Fallback to search query (if supported by actor, or might need different actor)
             input_data = {
@@ -257,18 +264,20 @@ class ApifyScraperService(BaseScraperService):
             if username:
                 return self._build_facebook_input(keyword, max_results, username, until_date)
             else:
-                # Use Global Search Actor
-                actors = getattr(settings, 'APIFY_ACTORS', {})
-                # Use a specific search actor (e.g., moJalo4813/facebook-search-scraper or similar)
-                # Fallback to the default 'facebook' key if 'facebook_search' not found, 
-                # though strictly speaking standard post scraper doesn't do global search well.
-                self.actor_id = actors.get('facebook_search', 'moJalo4813/facebook-search-scraper')
-                self.logger.info(f"Switching to Facebook Search Scraper ({self.actor_id}) for keyword: {keyword}")
+                # ❌ FACEBOOK KEYWORD SEARCH BLOCKED
+                # Tested 2026-02-05: Even with Residential Proxies, Facebook returns "Page access blocked"
+                # for /search/ URLs without valid Cookies.
+                #
+                # Apify Actors support this ONLY if you provide valid 'cookies'.
+                # Without cookies, we must restrict search to specific Pages/Users.
                 
-                return {
-                    "searchQuery": keyword,
-                    "maxPosts": min(max_results, self.max_results_limit),
-                }
+                raise ScraperException(
+                    "❌ Facebook Search is blocked by Facebook for anonymous requests.\n"
+                    "Even with Residential Proxies, Facebook requires Login (Cookies) to search globally.\n\n"
+                    "✅ SOLUTION:\n"
+                    "1. Use the 'User/Page' search tab (works better for public pages).\n"
+                    "2. Or configure 'APIFY_FACEBOOK_COOKIES' in backend settings (advanced)."
+                )
         
         elif self.platform == Platform.DOUYIN:
             # Similar to TikTok
@@ -355,20 +364,46 @@ class ApifyScraperService(BaseScraperService):
         """
         try:
             actor_input = {}
-            # Special handling for Instagram Hashtag search
+            # Instagram only supports hashtag search (not keyword search in captions)
             if self.platform == Platform.INSTAGRAM and not keyword.startswith('@') and not keyword.startswith('http'):
-                # Switch to hashtag scraper for better results count
-                actors = getattr(settings, 'APIFY_ACTORS', {})
-                self.actor_id = actors.get('instagram_hashtag', 'apify/instagram-hashtag-scraper')
-                self.logger.info(f"Switching to Hashtag Scraper ({self.actor_id}) for keyword: {keyword}")
+                # Use Instagram Hashtag Scraper - only way to search Instagram
+                self.actor_id = 'apify/instagram-hashtag-scraper'
+                self.logger.info(f"Using Instagram Hashtag Scraper for hashtag: {keyword}")
                 
-                # Build specific input for hashtag scraper
+                # Build Instagram explore URL
+                # Remove diacritics for better results (Instagram hashtags are usually ASCII)
+                import unicodedata
                 clean_keyword = keyword.replace('#', '').replace(' ', '').strip()
+                
+                # Normalize Unicode: Remove Vietnamese diacritics
+                # 'trang sức' -> 'trangsuc'
+                normalized = unicodedata.normalize('NFD', clean_keyword)
+                clean_keyword = ''.join(char for char in normalized if unicodedata.category(char) != 'Mn')
+                
+                # If filtering by likes, fetch more results to ensure we have enough after filtering
+                limit_to_fetch = max_results
+                if min_likes > 0:
+                    # Fetch 5x requested amount to account for low quality posts, capped at 100
+                    limit_to_fetch = min(max_results * 5, 100)
+                    self.logger.info(f"Filtering by min_likes={min_likes}, increasing fetch limit from {max_results} to {limit_to_fetch}")
+                
+                # CRITICAL: Use proper input format for instagram-hashtag-scraper
+                # Documentation: https://apify.com/apify/instagram-hashtag-scraper
+                
+                # Dynamic resultsType based on user selection (posts vs reels)
+                # Valid values: "posts", "reels", "stories"
+                # "top_posts" is NOT a valid input parameter, even if we want top posts.
+                # We use "posts" to get general posts.
+                results_type = "reels" if self.search_type == "reels" else "posts"
+                
                 actor_input = {
-                    "hashtags": [clean_keyword],
-                    "resultsLimit": min(max_results, self.max_results_limit),
-                    "searchType": "hashtag"
+                    "hashtags": [clean_keyword],  # Array of hashtags (without #)
+                    "resultsType": results_type,  # Dynamic: 'reels' or 'posts'
+                    "resultsLimit": min(limit_to_fetch, self.max_results_limit),
+                    "searchLimit": min(limit_to_fetch, self.max_results_limit),  # Additional limit parameter
+                    "searchType": "hashtag",  # Explicitly set search type
                 }
+                self.logger.info(f"Using Instagram Hashtag Scraper for '#{clean_keyword}' - resultsType={results_type}, limit={limit_to_fetch}")
             else:
                 # Default input builder
                 actor_input = self._build_actor_input(keyword, max_results)
@@ -571,36 +606,64 @@ class ApifyScraperService(BaseScraperService):
     
     def _normalize_instagram_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize Instagram data."""
+        # DEBUG: Log raw data to understand structure
+        self.logger.info(f"Normalizing Instagram Data. Keys: {list(data.keys())}")
+        
         # Thumbnail fallback logic
         thumbnail = ''
         if data.get('images') and len(data['images']) > 0:
             thumbnail = data['images'][0]
         else:
-            thumbnail = data.get('displayUrl', '') or data.get('thumbnailUrl', '')
+            thumbnail = (
+                data.get('displayUrl') or 
+                data.get('thumbnailUrl') or 
+                data.get('url')  # Sometimes url is the image itself if type is image
+            )
 
         # Author fallback logic
         author_username = data.get('ownerUsername', '')
-        if not author_username and data.get('owner'):
-             author_username = data['owner'].get('username', '')
-             
+        if not author_username:
+            # Try nested objects
+            if data.get('owner'):
+                author_username = data['owner'].get('username', '')
+            elif data.get('user'):
+                 author_username = data['user'].get('username', '')
+        
+        # If still no username, try to extract from 'author' field if it exists
+        if not author_username:
+            author_username = data.get('author', '')
+
         # Normalize stats (ensure int)
-        likes = data.get('likesCount', 0)
-        views = data.get('videoViewCount', 0) or data.get('videoPlayCount', 0)
+        likes = data.get('likesCount') or data.get('likes', 0)
+        views = data.get('videoViewCount') or data.get('videoPlayCount') or data.get('views', 0)
+        comments = data.get('commentsCount') or data.get('comments', 0)
+        
+        # DEBUG: Log raw stats to understand why likes might be 0
+        self.logger.debug(f"Instagram post stats - likesCount: {data.get('likesCount')}, likes: {data.get('likes')}, "
+                         f"videoViewCount: {data.get('videoViewCount')}, commentsCount: {data.get('commentsCount')}")
+
+        # Timestamp logic
+        timestamp_raw = (
+            data.get('timestamp') or 
+            data.get('date') or 
+            data.get('takenAt') or 
+            data.get('taken_at_timestamp')
+        )
 
         return {
             'video_id': data.get('id') or data.get('shortCode', ''),
             'title': data.get('caption', ''),
             'description': data.get('caption', ''),
-            'author_username': author_username,
-            'author_name': data.get('ownerFullName', ''),
+            'author_username': author_username or 'unknown',
+            'author_name': data.get('ownerFullName') or data.get('fullName') or author_username,
             'likes_count': int(likes) if likes else 0,
             'views_count': int(views) if views else 0,
-            'comments_count': data.get('commentsCount', 0),
+            'comments_count': int(comments) if comments else 0,
             'shares_count': 0,  # Instagram doesn't provide this
-            'video_url': data.get('url') or data.get('postUrl', ''),
+            'video_url': data.get('url') or data.get('postUrl', f"https://www.instagram.com/p/{data.get('shortCode')}/") if data.get('shortCode') else '',
             'download_url': data.get('videoUrl', ''),
             'thumbnail_url': thumbnail,
-            'published_at': self._parse_timestamp(data.get('timestamp') or data.get('date')),
+            'published_at': self._parse_timestamp(timestamp_raw),
             'hashtags': data.get('hashtags', []),
             'music_info': {},
             'raw_data': data
@@ -645,6 +708,35 @@ class ApifyScraperService(BaseScraperService):
                         author_username = parts[0]
                 except:
                     pass
+
+        # Robust ID Extraction
+        if not post_id:
+            # Try to extract from URL if API didn't return ID
+            import re
+            url_to_check = data.get('url') or data.get('postUrl') or ''
+            
+            # Match patterns: /posts/123, /videos/123, /reel/123, ?fbid=123, /photo.php?fbid=123
+            id_patterns = [
+                r'/posts/(\d+)',
+                r'/videos/(\d+)',
+                r'/reel/(\d+)',
+                r'fbid=(\d+)',
+                r'/photos/.*?/(\d+)',
+                r'story_fbid=(\d+)',
+                r'/(\d+)/?$' # Numeric ID at end of path
+            ]
+            
+            for pattern in id_patterns:
+                match = re.search(pattern, url_to_check)
+                if match:
+                    post_id = match.group(1)
+                    break
+            
+            # If still no ID but we have URL, create a hash ID to prevent skipping
+            if not post_id and url_to_check:
+                import hashlib
+                post_id = f"hash_{hashlib.md5(url_to_check.encode()).hexdigest()[:16]}"
+                logger.info(f"⚠️ Generated hash ID for post: {post_id} from {url_to_check}")
 
         # Media (Video/Image)
         video_url = data.get('videoUrl', '')
@@ -777,12 +869,39 @@ class ApifyScraperService(BaseScraperService):
             
             # If Unix timestamp (integer or float)
             if isinstance(timestamp, (int, float)):
-                return datetime.fromtimestamp(timestamp)
+                return datetime.fromtimestamp(timestamp, timezone.utc)
             
             # If ISO string
             if isinstance(timestamp, str):
-                from dateutil import parser
-                return parser.parse(timestamp)
+                timestamp_str = timestamp.strip()
+                
+                # Check if string contains only digits (Unix timestamp as string)
+                if timestamp_str.isdigit():
+                    return datetime.fromtimestamp(int(timestamp_str), timezone.utc)
+                
+                # Replace Z with +00:00 for ISO format
+                timestamp_str = timestamp_str.replace('Z', '+00:00')
+                
+                try:
+                    # Try ISO format with timezone
+                    dt = datetime.fromisoformat(timestamp_str)
+                    # Ensure timezone aware
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except:
+                    # Try without microseconds
+                    try:
+                        if '.' in timestamp_str:
+                            timestamp_str = timestamp_str.split('.')[0]
+                        return datetime.fromisoformat(timestamp_str)
+                    except:
+                        # Try common formats
+                        for fmt in ['%Y-%m-%d', '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S']:
+                            try:
+                                return datetime.strptime(timestamp_str.split('+')[0].split('Z')[0], fmt)
+                            except:
+                                continue
             
             return None
             
@@ -809,12 +928,9 @@ def create_scraper(platform: str, search_type: str = 'posts') -> ApifyScraperSer
     try:
         platform_enum = Platform[platform.upper()]
         
-        # Check for specific scraper variants
-        if platform_enum == Platform.INSTAGRAM and search_type == 'reels':
-            from .instagram_reels_scraper import create_instagram_reels_scraper
-            return create_instagram_reels_scraper()
-            
-        return ApifyScraperService(platform_enum)
+        # Note: Instagram Reels functionality is handled by ApifyScraperService
+        # using the _build_instagram_reels_input method - now passing search_type to handle it properly
+        return ApifyScraperService(platform_enum, search_type=search_type)
         
     except KeyError:
         raise ValueError(

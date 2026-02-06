@@ -250,11 +250,14 @@ class ScrapedVideo(BaseModel):
         help_text="List of hashtags"
     )
     
-    # AI Comparison Data
+    
+    # DEPRECATED: Duplicate detection feature has been removed
+    # This field is kept for backward compatibility only
+    # TODO: Remove in future migration
     feature_vector = models.BinaryField(
         null=True, 
         blank=True,
-        help_text="Extracted feature vector for AI comparison"
+        help_text="[DEPRECATED] Extracted feature vector for AI comparison"
     )
     duration = models.FloatField(
         default=0,
@@ -463,3 +466,230 @@ class CollectionVideo(BaseModel):
     def __str__(self) -> str:
         return f"{self.collection.name}: {self.video.video_id}"
 
+
+class FacebookPageCache(BaseModel):
+    """
+    Cache Facebook page metadata to reduce Apify API calls.
+    
+    Stores page information (followers, avatar, etc.) with a 24-hour TTL.
+    This significantly reduces quota usage since page info rarely changes.
+    """
+    # Page identification
+    username = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="Facebook page username or ID"
+    )
+    
+    # Cached page information
+    page_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Display name of the page"
+    )
+    avatar_url = models.URLField(
+        max_length=1000,
+        blank=True,
+        help_text="Profile picture URL"
+    )
+    followers_count = models.BigIntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Number of followers"
+    )
+    likes_count = models.BigIntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Number of page likes"
+    )
+    
+    # Additional metadata
+    page_description = models.TextField(
+        blank=True,
+        help_text="Page description/bio"
+    )
+    page_category = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Page category"
+    )
+    verified = models.BooleanField(
+        default=False,
+        help_text="Whether page is verified"
+    )
+    
+    # Raw data from Apify
+    raw_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Complete raw data from Apify"
+    )
+    
+    # Cache control
+    expires_at = models.DateTimeField(
+        db_index=True,
+        help_text="When this cache entry expires (24h TTL)"
+    )
+    last_fetched_at = models.DateTimeField(
+        auto_now=True,
+        help_text="Last time data was fetched from external API"
+    )
+    
+    class Meta:
+        verbose_name = "Facebook Page Cache"
+        verbose_name_plural = "Facebook Page Caches"
+        ordering = ['-last_fetched_at']
+        indexes = [
+            models.Index(fields=['username', 'expires_at']),
+        ]
+    
+    def __str__(self) -> str:
+        return f"@{self.username} (expires: {self.expires_at})"
+    
+    def is_expired(self) -> bool:
+        """Check if cache entry is expired."""
+        return timezone.now() > self.expires_at
+    
+    def refresh_expiry(self) -> None:
+        """Extend cache expiry by 24 hours from now."""
+        from datetime import timedelta
+        self.expires_at = timezone.now() + timedelta(hours=24)
+        self.save(update_fields=['expires_at', 'last_fetched_at'])
+    
+    @classmethod
+    def get_or_fetch(cls, username: str, fetch_callback=None):
+        """
+        Get cached page info or fetch new data if expired.
+        
+        Args:
+            username: Facebook page username/ID
+            fetch_callback: Function to call if cache is expired or missing.
+                           Should return dict with page info.
+        
+        Returns:
+            dict: Page information
+        """
+        from datetime import timedelta
+        
+        # Try to get from cache
+        try:
+            cache = cls.objects.get(username=username)
+            if not cache.is_expired():
+                # Cache hit - return cached data
+                return {
+                    'username': cache.username,
+                    'name': cache.page_name,
+                    'display_name': cache.page_name,
+                    'avatar_url': cache.avatar_url,
+                    'followers': cache.followers_count,
+                    'likes': cache.likes_count,
+                    'description': cache.page_description,
+                    'category': cache.page_category,
+                    'verified': cache.verified,
+                    'source': 'cache',
+                    'cached_at': cache.last_fetched_at.isoformat()
+                }
+            else:
+                # Cache expired - delete and refetch
+                cache.delete()
+        except cls.DoesNotExist:
+            pass
+        
+        # Cache miss or expired - fetch new data
+        if fetch_callback:
+            page_info = fetch_callback(username)
+            
+            # Store in cache
+            cache = cls.objects.create(
+                username=username,
+                page_name=page_info.get('name', username),
+                avatar_url=page_info.get('avatar_url', ''),
+                followers_count=page_info.get('followers', 0),
+                likes_count=page_info.get('likes', 0),
+                page_description=page_info.get('description', ''),
+                page_category=page_info.get('category', ''),
+                verified=page_info.get('verified', False),
+                raw_data=page_info,
+                expires_at=timezone.now() + timedelta(hours=24)
+            )
+            
+            page_info['source'] = 'fresh_fetch'
+            return page_info
+        
+        # No callback provided - return empty data
+        return {
+            'username': username,
+            'name': username,
+            'display_name': username,
+            'followers': 0,
+            'likes': 0,
+            'source': 'fallback'
+        }
+
+
+class TikTokUserCache(BaseModel):
+    """
+    Stores TikTok user profile information with 24h TTL.
+    """
+    username = models.CharField(max_length=255, unique=True, db_index=True)
+    display_name = models.CharField(max_length=255, blank=True)
+    avatar_url = models.TextField(blank=True, null=True)
+    followers_count = models.BigIntegerField(default=0)
+    likes_count = models.BigIntegerField(default=0) # Total hearts
+    videos_count = models.IntegerField(default=0)
+    
+    raw_data = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField(db_index=True, help_text="Cache expiry 24h")
+    last_fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['username']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.username} (Exp: {self.expires_at})"
+
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+
+    @classmethod
+    def get_or_fetch(cls, username: str, fetch_callback=None):
+        from datetime import timedelta
+        # Cache logic similar to FacebookPageCache
+        try:
+            cache = cls.objects.get(username=username)
+            if not cache.is_expired():
+                return {
+                    'username': cache.username,
+                    'display_name': cache.display_name,
+                    'avatar_url': cache.avatar_url,
+                    'follower_count': cache.followers_count,
+                    'total_likes': cache.likes_count,
+                    'total_videos': cache.videos_count,
+                    'source': 'cache'
+                }
+        except cls.DoesNotExist:
+            pass
+            
+        if fetch_callback:
+            data = fetch_callback(username)
+            if data:
+                expires = timezone.now() + timedelta(hours=24)
+                cls.objects.update_or_create(
+                    username=username,
+                    defaults={
+                        'display_name': data.get('display_name', username),
+                        'avatar_url': data.get('avatar_url', ''),
+                        'followers_count': data.get('follower_count', 0),
+                        'likes_count': data.get('total_likes', 0),
+                        'videos_count': data.get('total_videos', 0),
+                        'raw_data': data,
+                        'expires_at': expires
+                    }
+                )
+                data['source'] = 'fresh'
+                return data
+        return None

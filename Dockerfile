@@ -19,15 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Copy only requirements first for better caching
-COPY requirements.txt requirements-duplicate-detection.txt ./
+COPY requirements.txt ./
 
-# Install PyTorch CPU-only (smaller)
-# Split into separate layer to avoid timeout/OOM during build
-RUN pip install --no-cache-dir --default-timeout=1000 \
-    torch==2.0.0 torchvision==0.15.0 \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install other dependencies
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt && \
     find /usr/local/lib/python3.11/site-packages -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true && \
     find /usr/local/lib/python3.11/site-packages -type d -name "test" -exec rm -rf {} + 2>/dev/null || true && \

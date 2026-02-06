@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 
 from django.utils import timezone
 
-from ..models import SearchHistory, ScrapedVideo, Platform
+from ..models import SearchHistory, ScrapedVideo, Platform, FacebookPageCache
 
 from ..serializers import (
 
@@ -47,6 +47,7 @@ from ..serializers import (
 )
 
 from ..services.apify_service import create_scraper
+from ..services.base_scraper import ScraperException
 
 from ..tasks import search_videos_task
 
@@ -157,77 +158,41 @@ class SearchView(APIView):
         max_results = data.get('max_results', 20)
 
         use_cache = data.get('use_cache', True)
-
         async_mode = data.get('async_mode', False)
-
         search_type = data.get('search_type', 'posts')
-
         
-
+        # Force fresh scraping for Instagram to get latest posts
+        if platform_str.lower() == 'instagram':
+            use_cache = False
+            logger.info("Instagram search: Forcing fresh scrape (use_cache=False)")
+        
         logger.info(
-
             f"Search request: platform={platform_str}, type={search_type}, keyword={keyword}, "
-
             f"min_likes={min_likes}, min_views={min_views}, "
-
-            f"max_results={max_results}, async={async_mode}"
-
+            f"max_results={max_results}, async={async_mode}, use_cache={use_cache}"
         )
-
         
-
         try:
-
             # Async mode - use Celery
-
             if async_mode:
-
                 task = search_videos_task.delay(
-
                     platform=platform_str,
-
                     keyword=keyword,
-
                     min_likes=min_likes,
-
                     min_views=min_views,
-
                     max_results=max_results,
-
                     use_cache=use_cache,
-
                     search_type=search_type
-
                 )
-
                 
-
                 return Response({
-
                     'success': True,
-
                     'async_mode': True,
-
                     'task_id': task.id,
-
                     'message': 'Search task started. Use /api/search/status/{task_id} to check progress.',
-
                     'status_url': f'/api/search/status/{task.id}'
-
                 }, status=status.HTTP_202_ACCEPTED)
-
             
-
-            # Clean DB for fresh results if this is a general search
-            # (As per user request to not save old data and show fresh data only)
-            if not async_mode:
-                 # Optional: Only clean for this specific search or all? 
-                 # User said "refresh lại dữ liệu", implies specific to this search or general cleanup.
-                 # Given "không giới hạn result_limit" request, cleaning table might be heavy if concurrent users exist.
-                 # Safest approach for "personal" feeling: clear previous results for this keyword/platform?
-                 # Or just NOT save to DB at all.
-                 pass
-
             # Sync mode - execute immediately
             scraper = create_scraper(platform_str, search_type=search_type)
             result = scraper.execute_search(
@@ -236,7 +201,7 @@ class SearchView(APIView):
                 min_views=min_views,
                 max_results=max_results,
                 use_cache=use_cache,
-                save_to_db=False  # User requested NOT to save to DB
+                save_to_db=True  # Save to DB for tracking and management
             )
 
             
@@ -616,6 +581,8 @@ class UserVideosView(APIView):
                 
                 # Check for force_refresh flag
                 force_refresh = request.data.get('force_refresh', False)
+                logger.info(f"🔍 FORCE_REFRESH FLAG: {force_refresh} (type: {type(force_refresh)})")
+                logger.info(f"📦 Request data: {request.data}")
                 
                 # SMART CACHING STRATEGY
                 # Step 1: Check DB coverage
@@ -674,7 +641,11 @@ class UserVideosView(APIView):
                 logger.info(f"✅ Found {len(db_videos)} videos in DB (after filtering & deduping).")
                 
                 # SMART DECISION: Analyze coverage
-                if not force_refresh and db_videos:
+                # BUT: If force_refresh is True, ALWAYS fetch new data
+                if force_refresh:
+                    fetch_strategy = "full"
+                    logger.info(f"🔄 Force refresh requested - bypassing cache")
+                elif db_videos:
                     # Check data freshness
                     latest_db_post = db_videos[0].published_at if db_videos else None
                     now = timezone.now()
@@ -708,6 +679,8 @@ class UserVideosView(APIView):
                             logger.info(f"🔄 Full fetch (data is stale)")
                     else:
                         fetch_strategy = "full"
+                else:
+                    fetch_strategy = "full"
                 
                 # Execute strategy
                 if fetch_strategy == "cache_only" and db_videos:
@@ -776,13 +749,24 @@ class UserVideosView(APIView):
                     try:
                         start_dt = dt.strptime(start_date, '%Y-%m-%d')
                         end_dt = dt.strptime(end_date, '%Y-%m-%d')
-                        days_diff = (end_dt - start_dt).days + 1
-                        # Estimate 3-5 posts/day (conservative)
-                        estimated_posts = days_diff * 4
-                        # Cap at 150 for better coverage while managing quota
-                        smart_limit = min(estimated_posts, 150)
-                        logger.info(f"📊 Date range: {days_diff} days → Smart limit: {smart_limit} posts (capped)")
-                    except:
+                        
+                        # FIX: Calculate limit based on distance from NOW into past.
+                        # Apify crawls backwards (Newest -> Oldest).
+                        # If filtering for last month, we must fetch ALL posts from today back to last month.
+                        today = dt.now()
+                        days_from_start = (today - start_dt).days + 2 # +2 buffer
+                        
+                        # Estimate 5 posts/day (avg density)
+                        if days_from_start > 0:
+                            estimated_posts = days_from_start * 5
+                        else:
+                            estimated_posts = ((end_dt - start_dt).days + 1) * 5
+                            
+                        # Cap at higher limit (300) for historical search
+                        smart_limit = min(estimated_posts, 300)
+                        logger.info(f"📊 Historical Search: {days_from_start} days back → Smart limit: {smart_limit} posts")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Date calc error: {e}")
                         smart_limit = 150  # Safe default
                 else:
                     # Full fetch with original logic (but still cap at reasonable limit)
@@ -854,13 +838,20 @@ class UserVideosView(APIView):
                                 'likes': 0
                             }
                             
+                            # Calculate cache age from latest DB entry
+                            age_hours = 0
+                            if normalized:
+                                # created_at is not in normalized dict, use first_vid from DB
+                                if first_vid.created_at:
+                                     age_hours = (timezone.now() - first_vid.created_at).total_seconds() / 3600
+                            
                             return Response({
                                 'results': normalized,
                                 'profile': profile_data,
                                 'total': len(normalized),
                                 'source': 'database_cache_fallback',
                                 'warning': 'Apify monthly limit exceeded. Showing cached data. Please try again next month or upgrade your Apify plan.',
-                                'cache_age_hours': age_hours if latest_db_post else 0
+                                'cache_age_hours': round(age_hours, 1)
                             })
                         else:
                             # No cache available
@@ -869,20 +860,35 @@ class UserVideosView(APIView):
                         # Other error, re-raise
                         raise
                 
-                # Try to fetch page info (non-blocking, optional)
-                # If this fails, we still have posts data
-                try:
-                    logger.info(f"📊 Fetching page metadata...")
-                    page_info = scraper.get_page_info(username)
-                    logger.info(f"✅ Page Info: {page_info.get('followers', 0):,} followers")
-                except Exception as e:
-                    logger.warning(f"⚠️ Page info fetch failed (non-critical): {str(e)[:100]}")
-                    # Use fallback data from posts
-                    page_info = {
-                        'name': username,
-                        'followers': 0,
-                        'likes': 0
-                    }
+                # ✨ SMART PAGE INFO CACHING (24h TTL)
+                # Check cache first to avoid unnecessary Apify calls
+                # This reduces quota usage by ~50% since page info rarely changes
+                def fetch_page_info_from_apify(username_to_fetch):
+                    """Callback to fetch fresh page info from Apify when cache expired."""
+                    try:
+                        logger.info(f"📊 Cache MISS - Fetching fresh page metadata from Apify...")
+                        fresh_info = scraper.get_page_info(username_to_fetch)
+                        logger.info(f"✅ Fresh Page Info: {fresh_info.get('followers', 0):,} followers")
+                        return fresh_info
+                    except Exception as e:
+                        logger.warning(f"⚠️ Apify page fetch failed: {str(e)[:100]}")
+                        return {
+                            'name': username_to_fetch,
+                            'followers': 0,
+                            'likes': 0
+                        }
+                
+                # Use cache-first strategy
+                page_info = FacebookPageCache.get_or_fetch(
+                    username=username,
+                    fetch_callback=fetch_page_info_from_apify
+                )
+                
+                if page_info.get('source') == 'cache':
+                    logger.info(f"💾 Page Info from CACHE (age: {page_info.get('cached_at', 'unknown')})")
+                else:
+                    logger.info(f"🆕 Page Info FRESHLY fetched (now cached for 24h)")
+                
                 
                 # Normalize data
                 if use_graph_api:
@@ -900,8 +906,9 @@ class UserVideosView(APIView):
                 if end_date and normalized:
 
                     try:
-                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                        start_dt = datetime.strptime(start_date, '%Y-%m-%d') if start_date else None
+                        from datetime import datetime as dt
+                        end_dt = dt.strptime(end_date, '%Y-%m-%d')
+                        start_dt = dt.strptime(start_date, '%Y-%m-%d') if start_date else None
                         
                         filtered_normalized = []
                         for post in normalized:
@@ -910,15 +917,15 @@ class UserVideosView(APIView):
                                 try:
                                     # Normalize post_dt to be offset-naive or aware matching the range
                                     post_dt = None
-                                    if isinstance(post_val, datetime):
+                                    if isinstance(post_val, dt):
                                         post_dt = post_val
                                     elif isinstance(post_val, str):
                                         # parsing ISO string
                                         # Replace Z with +00:00 to ensure fromisoformat works
                                         clean_str = post_val.replace('Z', '+00:00')
-                                        post_dt = datetime.fromisoformat(clean_str)
+                                        post_dt = dt.fromisoformat(clean_str)
                                     elif isinstance(post_val, (int, float)):
-                                        post_dt = datetime.fromtimestamp(post_val)
+                                        post_dt = dt.fromtimestamp(post_val)
                                     
                                     if post_dt:
                                         # Make naive for comparison to start_dt/end_dt (which are naive from strptime)
@@ -1292,10 +1299,18 @@ class UserVideosView(APIView):
                 # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
                 else: 
                     # authorMeta is sometimes at root, sometimes nested in raw_data
-                    author_meta = first_item.get('authorMeta') or first_item.get('raw_data', {}).get('authorMeta', {})
+                    raw = first_item
+                    # DEBUG LOGS
+                    logger.info(f"🔍 TikTok Raw Item Keys: {list(raw.keys())}")
+                    if raw.get('authorMeta'):
+                        logger.info(f"👤 authorMeta: {raw.get('authorMeta')}")
+                    if raw.get('authorStats'):
+                         logger.info(f"📊 authorStats: {raw.get('authorStats')}")
+                    
+                    author_meta = raw.get('authorMeta') or raw.get('author') or raw.get('raw_data', {}).get('authorMeta') or {}
                     
                     # Robust extraction with multiple fallbacks
-                    username = author_meta.get('name') or author_meta.get('uniqueId') or username
+                    username = author_meta.get('name') or author_meta.get('uniqueId') or author_meta.get('unique_id') or username
                     display_name = author_meta.get('nickName') or author_meta.get('nickname') or username
                     
                     # Avatar strategies
@@ -1307,10 +1322,12 @@ class UserVideosView(APIView):
                         ''
                     )
                     
-                    # Stats strategies
-                    follower_count = int(author_meta.get('fans') or author_meta.get('followerCount') or 0)
-                    total_likes = int(author_meta.get('heart') or author_meta.get('heartCount') or author_meta.get('diggCount') or 0)
-                    total_videos = int(author_meta.get('video') or author_meta.get('videoCount') or len(normalized))
+                    # Stats strategies - Check authorMeta first, then authorStats if exists
+                    author_stats = raw.get('authorStats') or author_meta # sometimes stats are separate
+                    
+                    follower_count = int(author_stats.get('fans') or author_stats.get('followerCount') or author_stats.get('followers') or 0)
+                    total_likes = int(author_stats.get('heart') or author_stats.get('heartCount') or author_stats.get('diggCount') or 0)
+                    total_videos = int(author_stats.get('video') or author_stats.get('videoCount') or len(normalized))
                     
                     # Calculate aggregated stats from fetched videos
                     fetched_views = sum(v.get('views_count', 0) for v in normalized)
@@ -1337,6 +1354,28 @@ class UserVideosView(APIView):
                         'engagement_rate': round(engagement_rate, 2), # Add calculated rate
                         'platform': platform_str
                     }
+                    
+                    # Save to TikTokUserCache
+                    try:
+                        from ..models import TikTokUserCache
+                        from django.utils import timezone
+                        from datetime import timedelta
+                        
+                        TikTokUserCache.objects.update_or_create(
+                            username=username,
+                            defaults={
+                                'display_name': display_name,
+                                'avatar_url': avatar_url,
+                                'followers_count': follower_count,
+                                'likes_count': total_likes,
+                                'videos_count': total_videos,
+                                'raw_data': profile_data,
+                                'expires_at': timezone.now() + timedelta(hours=24)
+                            }
+                        )
+                        logger.info(f"💾 Saved TikTok profile to cache: {username}")
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to save TikTok cache: {e}")
                 
                 logger.info(f"📊 Profile data extracted: {profile_data['follower_count']:,} followers, {profile_data['engagement_rate']}% engagement")
 

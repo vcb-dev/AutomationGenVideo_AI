@@ -95,14 +95,6 @@ gunicorn>=21.2.0
 # Utilities
 python-dateutil>=2.8.2
 
-# Deep Learning & Video Processing
-# Pin specific versions for compatibility
-numpy==1.24.3
-torch==2.0.0
-torchvision==0.15.0
-opencv-python-headless==4.8.1.78
-pillow>=10.0.0
-
 # HeyGen API (AI Avatar & Lipsync)
 # Official SDK not available, using requests + custom wrapper
 aiohttp>=3.9.0
