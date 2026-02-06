@@ -476,12 +476,16 @@ def _build_one_mix(
     height: int,
     durations: List[float],
     audio_path: Optional[str] = None,
+    check_cancellation: Optional[callable] = None,
 ) -> Tuple[bool, str]:
     """
     Tạo 1 video mix từ 10 input.
     durations: list 7 float cho 7 phần.
     Nếu audio_path có, nó chỉ được gắn cho 6 phần đầu.
     """
+    if check_cancellation and check_cancellation():
+        return False, "cancelled"
+
     if len(input_paths) != REQUIRED_FILES or len(starts) != REQUIRED_FILES:
         return False, f"Cần đúng {REQUIRED_FILES} file và {REQUIRED_FILES} start."
     if len(durations) != 7:
@@ -498,17 +502,21 @@ def _build_one_mix(
         for i in range(7):
             part_files.append(os.path.join(temp_dir, f"seg_{i}.mp4"))
 
+        if check_cancellation and check_cancellation(): return False, "cancelled"
+        
         # Part 1: Folder 0
         ok, err = _trim_single_to_file(
             input_paths[0], part_files[0], durations[0], width, height, start_sec=starts[0], step_name="trim part 1"
         )
         if not ok: return False, f"Phần 1: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 2: Folder 1
         ok, err = _trim_single_to_file(
             input_paths[1], part_files[1], durations[1], width, height, start_sec=starts[1], step_name="trim part 2"
         )
         if not ok: return False, f"Phần 2: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 3: Folders 2, 3
         ok, err = _stack_two_to_file(
@@ -516,6 +524,7 @@ def _build_one_mix(
             start_top=starts[2], start_bottom=starts[3], step_name="stack part 3",
         )
         if not ok: return False, f"Phần 3: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 4: Folders 4, 5
         ok, err = _stack_two_to_file(
@@ -523,6 +532,7 @@ def _build_one_mix(
             start_top=starts[4], start_bottom=starts[5], step_name="stack part 4",
         )
         if not ok: return False, f"Phần 4: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 5: Folders 6, 7
         ok, err = _stack_two_to_file(
@@ -530,12 +540,14 @@ def _build_one_mix(
             start_top=starts[6], start_bottom=starts[7], step_name="stack part 5",
         )
         if not ok: return False, f"Phần 5: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 6: Folder 8
         ok, err = _trim_single_to_file(
             input_paths[8], part_files[5], durations[5], width, height, start_sec=starts[8], step_name="trim part 6"
         )
         if not ok: return False, f"Phần 6: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         # Part 7: Folder 9 (Outrol) - Giữ audio gốc
         ok, err = _trim_single_to_file(
@@ -543,22 +555,26 @@ def _build_one_mix(
             start_sec=starts[9], keep_audio=True, step_name="trim part 7"
         )
         if not ok: return False, f"Phần 7: {err}"
+        if check_cancellation and check_cancellation(): return False, "cancelled"
 
         if audio_path and os.path.exists(audio_path):
             # Bước A: Nối 6 phần đầu (đang là âm thanh im lặng)
             intro_silent = os.path.join(temp_dir, "intro_silent.mp4")
             ok, err = _concat_files(part_files[:6], intro_silent, step_name="concat intro segments")
             if not ok: return False, f"Nối 6 đoạn đầu: {err}"
+            if check_cancellation and check_cancellation(): return False, "cancelled"
 
             # Bước B: Gắn nhạc vào 6 phần đầu
             intro_with_music = os.path.join(temp_dir, "intro_music.mp4")
             ok, err = _replace_audio(intro_silent, audio_path, intro_with_music)
             if not ok: return False, f"Gắn nhạc intro: {err}"
+            if check_cancellation and check_cancellation(): return False, "cancelled"
 
             # Bước C: Nối Intro (có nhạc) + Outrol (có audio gốc)
             # Dùng _concat_files có re-encode để khớp các luồng audio khác nhau
             ok, err = _concat_files([intro_with_music, part_files[6]], output_path, step_name="final join music and outrol")
             if not ok: return False, f"Nối intro và outrol: {err}"
+            if check_cancellation and check_cancellation(): return False, "cancelled"
         else:
             # Fallback nếu không có audio_path
             ok, err = _concat_files(part_files, output_path, step_name="concat all fallback")
@@ -695,6 +711,12 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
         base_id = uuid.uuid4().hex[:12]
 
         for k, (combo_data, part_durs) in enumerate(combinations):
+            # Check for cancellation
+            with _mix_progress_lock:
+                if _mix_progress.get(progress_id, {}).get("status") == "cancelled":
+                    logger.info("Mix task %s cancelled by user.", progress_id)
+                    return
+
             # Với mode folders, combo_data là danh sách (path, start)
             # Với mode cũ, combo_data là (paths, starts)
             if folders_mode:
@@ -708,9 +730,20 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
             output_filename = f"mixed_{timestamp_str}_{base_id}_{k}.mp4"
             output_path = out_dir / output_filename
             
-            ok, err = _build_one_mix(selected_paths, starts, str(output_path), width, height, durations=part_durs, audio_path=audio_path)
+            def check_cancel():
+                with _mix_progress_lock:
+                    return _mix_progress.get(progress_id, {}).get("status") == "cancelled"
+
+            ok, err = _build_one_mix(
+                selected_paths, starts, str(output_path), width, height, 
+                durations=part_durs, audio_path=audio_path,
+                check_cancellation=check_cancel
+            )
             
             if not ok:
+                if err == "cancelled":
+                    logger.info("Mix task %s cancelled mid-build.", progress_id)
+                    return
                 with _mix_progress_lock:
                     _mix_progress[progress_id].update(status="error", error=f"Lỗi ghép video (mix {k + 1}): {err}")
                 return
@@ -823,3 +856,17 @@ def mix_status(request, progress_id: str):
             status=status.HTTP_404_NOT_FOUND,
         )
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def mix_cancel(request, progress_id: str):
+    """POST: Huỷ bỏ quá trình mix video."""
+    with _mix_progress_lock:
+        if progress_id in _mix_progress:
+            if _mix_progress[progress_id]["status"] == "processing":
+                _mix_progress[progress_id]["status"] = "cancelled"
+                _mix_progress[progress_id]["error"] = "Quá trình đã bị huỷ bởi người dùng."
+                return Response({"message": "Đã gửi yêu cầu huỷ bỏ."}, status=status.HTTP_200_OK)
+            return Response({"message": "Quá trình không ở trạng thái có thể huỷ."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    return Response({"error": "progress_id không tồn tại."}, status=status.HTTP_404_NOT_FOUND)

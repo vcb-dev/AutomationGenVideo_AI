@@ -19,6 +19,11 @@ from .stats_views import (
     StatsView,
     HealthCheckView,
 )
+from .mix_video_views import (
+    mix_videos,
+    mix_status,
+    mix_cancel,
+)
 
 __all__ = [
     # Search views
@@ -35,4 +40,8 @@ __all__ = [
     # Stats views
     'StatsView',
     'HealthCheckView',
+    # Mix views
+    'mix_videos',
+    'mix_status',
+    'mix_cancel',
 ]

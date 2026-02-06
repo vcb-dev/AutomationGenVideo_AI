@@ -19,6 +19,10 @@ from .views import (
     # Stats views
     StatsView,
     HealthCheckView,
+    # Mix views
+    mix_videos,
+    mix_status,
+    mix_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
@@ -27,7 +31,6 @@ from .views.facebook_analysis_views import (
     get_available_methods,
     detect_facebook_type,
 )
-from .views.mix_video_views import mix_videos, mix_status
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
@@ -51,6 +54,7 @@ urlpatterns = [
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     path('videos/mix/', mix_videos, name='mix-videos'),
+    path('videos/mix/cancel/<str:progress_id>/', mix_cancel, name='mix-cancel'),
     path('videos/mix/status/<str:progress_id>/', mix_status, name='mix-status'),
     
     # Channel endpoints
