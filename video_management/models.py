@@ -758,3 +758,462 @@ class Voice(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.provider})"
+
+
+class ContentType(models.TextChoices):
+    """Content types based on marketing strategy."""
+    A1_TRAFFIC = 'A1', 'Traffic (Viral Content)'
+    A2_KNOWLEDGE = 'A2', 'Knowledge (Educational)'
+    A3_CREDIBILITY = 'A3', 'Credibility (Trust Building)'
+    A4_CONVERSION = 'A4', 'Conversion (Sales)'
+    A5_COMBINED = 'A5', 'Combined (All Types)'
+
+
+class GeneratedContent(BaseModel):
+    """
+    Store AI-generated content scripts based on viral videos.
+    Each generated content is derived from a source video and follows
+    a specific content type (A1-A5) strategy.
+    """
+    source_video = models.ForeignKey(
+        ScrapedVideo,
+        on_delete=models.CASCADE,
+        related_name='generated_contents',
+        help_text="Original viral video this content is based on"
+    )
+    
+    content_type = models.CharField(
+        max_length=2,
+        choices=ContentType.choices,
+        help_text="Content strategy type (A1-A5)"
+    )
+    
+    # Generated script
+    title = models.CharField(
+        max_length=500,
+        help_text="Generated video title"
+    )
+    
+    script = models.TextField(
+        help_text="Full generated script/content"
+    )
+    
+    # Script structure breakdown
+    hook = models.TextField(
+        blank=True,
+        help_text="Hook section (0-3s)"
+    )
+    
+    problem = models.TextField(
+        blank=True,
+        help_text="Problem section"
+    )
+    
+    solution = models.TextField(
+        blank=True,
+        help_text="Solution section"
+    )
+    
+    cta = models.TextField(
+        blank=True,
+        help_text="Call-to-action section"
+    )
+    
+    # Metadata
+    estimated_duration = models.IntegerField(
+        default=30,
+        help_text="Estimated video duration in seconds"
+    )
+    
+    word_count = models.IntegerField(
+        default=0,
+        help_text="Total word count"
+    )
+    
+    # AI generation info
+    ai_model = models.CharField(
+        max_length=50,
+        default='gpt-4',
+        help_text="AI model used for generation"
+    )
+    
+    prompt_used = models.TextField(
+        blank=True,
+        help_text="Prompt template used"
+    )
+    
+    # Status
+    is_approved = models.BooleanField(
+        default=False,
+        help_text="Whether this content is approved for use"
+    )
+    
+    notes = models.TextField(
+        blank=True,
+        help_text="Additional notes or edits"
+    )
+
+    class Meta:
+        verbose_name = "Generated Content"
+        verbose_name_plural = "Generated Contents"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['content_type', 'is_approved']),
+            models.Index(fields=['source_video', 'content_type']),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.get_content_type_display()}: {self.title[:50]}"
+
+
+class ProductList(BaseModel):
+    """
+    Store uploaded product catalog files.
+    Users can upload Excel files containing their product inventory.
+    """
+    name = models.CharField(
+        max_length=255,
+        help_text="Name of the product list"
+    )
+    
+    file_name = models.CharField(
+        max_length=500,
+        help_text="Original uploaded file name"
+    )
+    
+    file_path = models.CharField(
+        max_length=1000,
+        help_text="Path to stored file"
+    )
+    
+    total_products = models.IntegerField(
+        default=0,
+        help_text="Total number of products in this list"
+    )
+    
+    description = models.TextField(
+        blank=True,
+        help_text="Optional description of this product list"
+    )
+    
+    class Meta:
+        verbose_name = "Product List"
+        verbose_name_plural = "Product Lists"
+        ordering = ['-created_at']
+    
+    def __str__(self) -> str:
+        return f"{self.name} ({self.total_products} products)"
+
+
+class Product(BaseModel):
+    """
+    Individual product from uploaded catalog.
+    Parsed from Excel files and stored for content generation.
+    """
+    product_list = models.ForeignKey(
+        ProductList,
+        on_delete=models.CASCADE,
+        related_name='products',
+        help_text="Product list this product belongs to"
+    )
+    
+    # Product information
+    name = models.CharField(
+        max_length=500,
+        help_text="Product name"
+    )
+    
+    category = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Product category (e.g., Nhẫn, Dây chuyền, Vòng tay)"
+    )
+    
+    price = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Product price"
+    )
+    
+    description = models.TextField(
+        blank=True,
+        help_text="Product description"
+    )
+    
+    highlights = models.TextField(
+        blank=True,
+        help_text="Key features/highlights"
+    )
+    
+    sku = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Stock Keeping Unit / Product code"
+    )
+    
+    # Additional metadata from Excel
+    raw_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="All columns from Excel row"
+    )
+    
+    class Meta:
+        verbose_name = "Product"
+        verbose_name_plural = "Products"
+        ordering = ['product_list', 'category', 'name']
+        indexes = [
+            models.Index(fields=['product_list', 'category']),
+            models.Index(fields=['name']),
+        ]
+    
+    def __str__(self) -> str:
+        return f"{self.name} ({self.category})"
+
+
+class IndexedVideo(BaseModel):
+    """
+    NEW: Index of source videos from network storage for Smart Pre-processing.
+    Stores only metadata (no file copying) for fast mix operations.
+    """
+    file_path = models.CharField(
+        max_length=1000,
+        unique=True,
+        db_index=True,
+        help_text="Absolute path to video file (network or local)"
+    )
+    
+    # Folder classification for mix-video (10-slot formula)
+    folder_type = models.CharField(
+        max_length=50,
+        db_index=True,
+        help_text="Folder type: Sản phẩm, HuyK, Chế tác, etc."
+    )
+    
+    # Video metadata
+    duration = models.FloatField(
+        help_text="Video duration in seconds"
+    )
+    
+    file_size = models.BigIntegerField(
+        help_text="File size in bytes"
+    )
+    
+    has_audio = models.BooleanField(
+        default=False,
+        help_text="Whether video has audio stream"
+    )
+    
+    width = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Video width in pixels"
+    )
+    
+    height = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Video height in pixels"
+    )
+    
+    # Usage tracking
+    last_used_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Last time this video was used in a mix"
+    )
+    
+    use_count = models.IntegerField(
+        default=0,
+        help_text="Number of times this video has been used"
+    )
+    
+    # File validation
+    modified_time = models.DateTimeField(
+        help_text="File last modified timestamp"
+    )
+    
+    is_available = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Whether file still exists and is accessible"
+    )
+    
+    class Meta:
+        verbose_name = "Indexed Video"
+        verbose_name_plural = "Indexed Videos"
+        ordering = ['-last_used_at']
+        indexes = [
+            models.Index(fields=['folder_type', 'is_available', '-last_used_at']),
+            models.Index(fields=['folder_type', 'duration']),
+        ]
+    
+    def __str__(self) -> str:
+        return f"{self.folder_type}: {self.file_path[-50:]} ({self.duration:.1f}s)"
+
+
+class VideoClipCache(BaseModel):
+    """
+    NEW: Cache for pre-generated video clips (Lazy Loading).
+    Stores short clips (5-10s) extracted from IndexedVideo for instant mixing.
+    """
+    source_video = models.ForeignKey(
+        IndexedVideo,
+        on_delete=models.CASCADE,
+        related_name='clips',
+        help_text="Source video this clip was extracted from"
+    )
+    
+    clip_path = models.CharField(
+        max_length=1000,
+        unique=True,
+        db_index=True,
+        help_text="Path to cached clip file"
+    )
+    
+    # Clip properties
+    start_time = models.FloatField(
+        help_text="Start time in source video (seconds)"
+    )
+    
+    duration = models.FloatField(
+        help_text="Clip duration in seconds"
+    )
+    
+    file_size = models.BigIntegerField(
+        help_text="Clip file size in bytes"
+    )
+    
+    # Cache management
+    last_accessed_at = models.DateTimeField(
+        auto_now=True,
+        db_index=True,
+        help_text="Last time this clip was accessed (LRU)"
+    )
+    
+    access_count = models.IntegerField(
+        default=0,
+        help_text="Number of times this clip has been used"
+    )
+    
+    # Generation metadata
+    generated_with_gpu = models.BooleanField(
+        default=False,
+        help_text="Whether this clip was generated with GPU acceleration"
+    )
+    
+    generation_time = models.FloatField(
+        default=0.0,
+        help_text="Time taken to generate this clip (seconds)"
+    )
+    
+    class Meta:
+        verbose_name = "Video Clip Cache"
+        verbose_name_plural = "Video Clip Caches"
+        ordering = ['-last_accessed_at']
+        indexes = [
+            models.Index(fields=['source_video', '-last_accessed_at']),
+            models.Index(fields=['-last_accessed_at']),  # For LRU cleanup
+            models.Index(fields=['clip_path']),
+        ]
+    
+    def __str__(self) -> str:
+        return f"Clip from {self.source_video.folder_type} ({self.duration:.1f}s)"
+
+
+class LocalVideoFile(BaseModel):
+    """
+    DEPRECATED: Use IndexedVideo and VideoClipCache instead.
+    Cache local video file metadata for mix-video feature.
+    Stores file path, duration, size, and modified time to avoid repeated ffprobe calls.
+    Cache is invalidated when file size or mtime changes.
+    """
+    file_path = models.CharField(
+        max_length=1000,
+        unique=True,
+        db_index=True,
+        help_text="Absolute path to video file"
+    )
+    
+    # File metadata for cache invalidation
+    file_size = models.BigIntegerField(
+        help_text="File size in bytes"
+    )
+    
+    modified_time = models.DateTimeField(
+        db_index=True,
+        help_text="File last modified timestamp"
+    )
+    
+    # Video metadata
+    duration = models.FloatField(
+        help_text="Video duration in seconds"
+    )
+    
+    has_audio = models.BooleanField(
+        default=False,
+        help_text="Whether video has audio stream"
+    )
+    
+    # Optional video properties
+    width = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Video width in pixels"
+    )
+    
+    height = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Video height in pixels"
+    )
+    
+    # Cache metadata
+    folder_name = models.CharField(
+        max_length=500,
+        db_index=True,
+        blank=True,
+        help_text="Parent folder name for quick filtering"
+    )
+    
+    last_accessed_at = models.DateTimeField(
+        auto_now=True,
+        help_text="Last time this cache entry was accessed"
+    )
+    
+    class Meta:
+        verbose_name = "Local Video File Cache"
+        verbose_name_plural = "Local Video File Caches"
+        ordering = ['-last_accessed_at']
+        indexes = [
+            models.Index(fields=['folder_name', 'duration']),
+            models.Index(fields=['file_path', 'modified_time']),
+            models.Index(fields=['-last_accessed_at']),
+        ]
+    
+    def __str__(self) -> str:
+        return f"{self.file_path} ({self.duration:.1f}s)"
+    
+    def is_valid(self) -> bool:
+        """Check if cache is still valid (file exists and not modified)."""
+        import os
+        from datetime import datetime
+        
+        if not os.path.exists(self.file_path):
+            return False
+        
+        try:
+            stat = os.stat(self.file_path)
+            # Compare file size and mtime
+            if stat.st_size != self.file_size:
+                return False
+            
+            file_mtime = datetime.fromtimestamp(stat.st_mtime)
+            # Allow 1 second tolerance for filesystem timestamp precision
+            time_diff = abs((file_mtime - self.modified_time).total_seconds())
+            return time_diff < 1.0
+        except (OSError, IOError):
+            return False

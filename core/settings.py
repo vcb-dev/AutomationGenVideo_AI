@@ -281,6 +281,11 @@ HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 
 # ==========================================
+# GOOGLE GEMINI API CONFIGURATION
+# ==========================================
+GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# ==========================================
 # ELEVENLABS API CONFIGURATION
 # ==========================================
 ELEVENLABS_API_KEY = env('ELEVENLABS_API_KEY', default='')

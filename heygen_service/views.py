@@ -15,7 +15,8 @@ from .heygen_client import HeyGenClient, generate_video_from_text
 from .models import VideoGenerationRequest, VoiceSettings, VideoAspectRatio, VideoQuality
 from video_management.models import Voice
 from video_management.services.voice_extraction_service import VoiceExtractionService
-from video_management.services.elevenlabs_service import ElevenLabsService
+from openai import OpenAI
+# from video_management.services.elevenlabs_service import ElevenLabsService
 from .ai_writer import AIWriter
 from django.conf import settings
 import os
@@ -407,6 +408,16 @@ def list_voices(request):
             "is_cloned": False
         }
     ]
+
+    # OpenAI Voices
+    openai_voices = [
+        {"voice_id": "alloy", "name": "Alloy (OpenAI - Neutral)", "language": "mul", "gender": "neutral", "provider": "openai", "is_cloned": False},
+        {"voice_id": "echo", "name": "Echo (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False},
+        {"voice_id": "fable", "name": "Fable (OpenAI - British)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False},
+        {"voice_id": "onyx", "name": "Onyx (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False},
+        {"voice_id": "nova", "name": "Nova (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False},
+        {"voice_id": "shimmer", "name": "Shimmer (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False},
+    ]
     
     # Get cloned voices from DB
     try:
@@ -419,7 +430,9 @@ def list_voices(request):
         cloned_voices = []
     
     # Merge lists
-    all_voices = system_voices + cloned_voices
+    # all_voices = system_voices + openai_voices + cloned_voices 
+    # User requested HeyGen voices only for now (or at least prioritize them)
+    all_voices = system_voices + openai_voices + cloned_voices
     
     return JsonResponse({
         'success': True,
@@ -484,3 +497,88 @@ def clone_voice_from_video(request):
             'success': False,
             'error': str(e)
         }, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+@csrf_exempt
+@require_http_methods(["POST"])
+def generate_audio(request):
+    """
+    Generate audio (TTS) for preview.
+    Supports OpenAI and HeyGen (via video extraction).
+    """
+    try:
+        data = json.loads(request.body)
+        text = data.get('text')
+        voice_id = data.get('voice_id')
+        
+        if not text:
+             return JsonResponse({'success': False, 'error': 'Text is required'}, status=400)
+        
+        import uuid
+        openai_voice_ids = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
+
+        # 1. OpenAI Strategy
+        if voice_id in openai_voice_ids:
+            try:
+                client = OpenAI(api_key=settings.OPENAI_API_KEY)
+                filename = f"openai_tts_{uuid.uuid4()}.mp3"
+                output_dir = os.path.join(settings.MEDIA_ROOT, "generated_audio")
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, filename)
+                
+                response = client.audio.speech.create(
+                    model="tts-1",
+                    voice=voice_id,
+                    input=text
+                )
+                response.stream_to_file(output_path)
+                
+                relative_path = os.path.relpath(output_path, settings.MEDIA_ROOT)
+                audio_url = settings.MEDIA_URL + relative_path.replace('\\', '/')
+                return JsonResponse({'success': True, 'data': {'audio_url': audio_url}})
+            except Exception as e:
+                 logger.error(f"OpenAI TTS Error: {str(e)}")
+                 return JsonResponse({'success': False, 'error': f"Lỗi tạo audio OpenAI: {str(e)}"}, status=500)
+
+        # 2. HeyGen / Non-OpenAI voices → Use OpenAI TTS as fallback
+        #    (HeyGen does NOT have a standalone TTS API — it requires full video generation
+        #     which is slow, expensive, and unreliable. Use OpenAI TTS instead for speed.)
+        else:
+            try:
+                logger.info(f"Voice {voice_id} is not OpenAI — using OpenAI TTS fallback (voice: alloy)")
+                
+                fallback_voice = 'alloy'  # Neutral, works well with Vietnamese
+                client = OpenAI(api_key=settings.OPENAI_API_KEY)
+                filename = f"tts_fallback_{uuid.uuid4()}.mp3"
+                output_dir = os.path.join(settings.MEDIA_ROOT, "generated_audio")
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, filename)
+                
+                response = client.audio.speech.create(
+                    model="tts-1",
+                    voice=fallback_voice,
+                    input=text
+                )
+                response.stream_to_file(output_path)
+                
+                relative_path = os.path.relpath(output_path, settings.MEDIA_ROOT)
+                audio_url = settings.MEDIA_URL + relative_path.replace('\\', '/')
+                
+                logger.info(f"OpenAI TTS fallback audio generated: {filename}")
+                return JsonResponse({
+                    'success': True,
+                    'data': {
+                        'audio_url': audio_url,
+                        'fallback': True,
+                        'fallback_note': 'Đã dùng giọng OpenAI (alloy) vì HeyGen không hỗ trợ TTS trực tiếp. Nếu muốn đúng giọng clone, hãy dùng Upload Audio.'
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f"TTS Fallback Error: {str(e)}")
+                return JsonResponse({'success': False, 'error': f"Lỗi tạo audio: {str(e)}"}, status=500)
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)

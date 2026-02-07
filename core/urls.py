@@ -105,6 +105,16 @@ urlpatterns += [
     path('api/heygen/status/<str:video_id>', heygen_views.get_video_status, name='heygen-status'),
     path('api/heygen/voices', heygen_views.list_voices, name='heygen-voices'),
     path('api/heygen/clone-voice', heygen_views.clone_voice_from_video, name='heygen-clone-voice'),
+    path('api/heygen/generate-audio', heygen_views.generate_audio, name='heygen-generate-audio'),
+]
+
+# Content Generation endpoints
+from video_management.views import content_generation_views
+
+urlpatterns += [
+    path('api/content/generate/', content_generation_views.generate_content, name='content-generate'),
+    path('api/content/video/<int:video_id>/', content_generation_views.get_generated_contents, name='content-by-video'),
+    path('api/content/<int:content_id>/', content_generation_views.get_content_detail, name='content-detail'),
 ]
 
 # Serve media files in development
