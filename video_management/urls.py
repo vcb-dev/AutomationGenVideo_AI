@@ -34,6 +34,7 @@ from .views.facebook_analysis_views import (
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
+from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
 
 app_name = 'video_management'
 
@@ -79,6 +80,10 @@ urlpatterns = [
     
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
+    
+    # Checklist công việc -> Lark Bitable
+    path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
+    path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
     
     # Collections (router URLs)
     path('', include(router.urls)),
