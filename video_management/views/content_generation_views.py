@@ -1,0 +1,234 @@
+"""
+Views for content generation based on viral videos.
+"""
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from video_management.models import ScrapedVideo, GeneratedContent
+from video_management.services.content_generation_service import ContentGenerationService
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@api_view(['POST'])
+def generate_content(request):
+    """
+    Generate marketing content based on a viral video.
+    
+    POST /api/content/generate/
+    Body:
+    {
+        "video_id": 123,  // optional if video_description provided
+        "video_description": "...",  // optional if video_id provided
+        "video_title": "...",  // optional
+        "content_type": "A1",  // A1, A2, A3, A4, or A5
+        "brand_name": "Viễn Chí Bảo",  // optional
+        "industry": "kim hoàn",  // optional
+        "additional_context": "..."  // optional
+    }
+    """
+    try:
+        # Get parameters
+        video_id = request.data.get('video_id')
+        video_description = request.data.get('video_description')
+        video_title = request.data.get('video_title', '')
+        content_type = request.data.get('content_type')
+        brand_name = request.data.get('brand_name', 'Viễn Chí Bảo')
+        industry = request.data.get('industry', 'kim hoàn (trang sức vàng bạc)')
+        additional_context = request.data.get('additional_context')
+        
+        # NEW: Product information
+        product_id = request.data.get('product_id')  # Optional product ID
+        product_name = request.data.get('product_name')  # Optional product name
+        product_category = request.data.get('product_category')  # Optional category
+        product_description = request.data.get('product_description')  # Optional description
+        product_price = request.data.get('product_price')  # Optional price
+        
+        # Validate
+        if not content_type:
+            return Response(
+                {'error': 'content_type is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if content_type not in ['A1', 'A2', 'A3', 'A4', 'A5']:
+            return Response(
+                {'error': 'content_type must be A1, A2, A3, A4, or A5'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get video info from database OR from request
+        source_video = None
+        if video_id:
+            try:
+                source_video = ScrapedVideo.objects.get(id=video_id)
+                video_description = source_video.description or source_video.title
+                video_title = source_video.title
+            except ScrapedVideo.DoesNotExist:
+                logger.warning(f"Video ID {video_id} not found in database, using provided description")
+        
+        # If no video in DB, require description
+        if not video_description:
+            return Response(
+                {'error': 'Either video_id (existing in DB) or video_description must be provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Build product context if product info provided
+        product_context = ""
+        if product_name or product_category or product_description:
+            product_context = "\n\nThông tin sản phẩm:\n"
+            if product_name:
+                product_context += f"- Tên sản phẩm: {product_name}\n"
+            if product_category:
+                product_context += f"- Loại sản phẩm: {product_category}\n"
+            if product_price:
+                product_context += f"- Giá: {product_price}\n"
+            if product_description:
+                product_context += f"- Mô tả: {product_description}\n"
+        
+        # Combine additional context with product context
+        combined_context = (additional_context or "") + product_context
+        
+        # Generate content
+        service = ContentGenerationService()
+        
+        logger.info(f"Generating {content_type} content for: {video_title or 'Untitled'}")
+        if product_name:
+            logger.info(f"Product context: {product_name} ({product_category})")
+        
+        result = service.generate_content(
+            video_description=video_description,
+            video_title=video_title or 'Video',
+            content_type=content_type,
+            brand_name=brand_name,
+            industry=industry,
+            additional_context=combined_context
+        )
+        
+        # Save to database (only if we have a source video)
+        if source_video:
+            generated_content = GeneratedContent.objects.create(
+                source_video=source_video,
+                content_type=content_type,
+                title=result['title'],
+                script=result['script'],
+                hook=result['hook'],
+                problem=result['problem'],
+                solution=result['solution'],
+                cta=result['cta'],
+                word_count=result['word_count'],
+                ai_model='gemini-2.5-flash',
+                prompt_used=f"Brand: {brand_name}, Industry: {industry}, Type: {content_type}"
+            )
+            content_id = generated_content.id
+            created_at = generated_content.created_at.isoformat()
+        else:
+            # No source video, return generated content without saving
+            content_id = None
+            from datetime import datetime
+            created_at = datetime.now().isoformat()
+        
+        logger.info(f"Successfully generated content")
+        
+        # Return response
+        return Response({
+            'success': True,
+            'content_id': content_id,
+            'title': result['title'],
+            'script': result['script'],
+            'hook': result['hook'],
+            'problem': result['problem'],
+            'solution': result['solution'],
+            'cta': result['cta'],
+            'word_count': result['word_count'],
+            'content_type': content_type,
+            'created_at': created_at
+        }, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.error(f"Error generating content: {str(e)}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+def get_generated_contents(request, video_id):
+    """
+    Get all generated contents for a video.
+    
+    GET /api/content/video/<video_id>/
+    """
+    try:
+        video = get_object_or_404(ScrapedVideo, id=video_id)
+        contents = GeneratedContent.objects.filter(source_video=video).order_by('-created_at')
+        
+        data = [{
+            'id': content.id,
+            'content_type': content.content_type,
+            'content_type_display': content.get_content_type_display(),
+            'title': content.title,
+            'script': content.script,
+            'hook': content.hook,
+            'problem': content.problem,
+            'solution': content.solution,
+            'cta': content.cta,
+            'word_count': content.word_count,
+            'is_approved': content.is_approved,
+            'created_at': content.created_at.isoformat()
+        } for content in contents]
+        
+        return Response({
+            'success': True,
+            'video_id': video_id,
+            'contents': data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching generated contents: {str(e)}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+def get_content_detail(request, content_id):
+    """
+    Get details of a generated content.
+    
+    GET /api/content/<content_id>/
+    """
+    try:
+        content = get_object_or_404(GeneratedContent, id=content_id)
+        
+        return Response({
+            'success': True,
+            'id': content.id,
+            'source_video_id': content.source_video.id,
+            'source_video_title': content.source_video.title,
+            'content_type': content.content_type,
+            'content_type_display': content.get_content_type_display(),
+            'title': content.title,
+            'script': content.script,
+            'hook': content.hook,
+            'problem': content.problem,
+            'solution': content.solution,
+            'cta': content.cta,
+            'word_count': content.word_count,
+            'estimated_duration': content.estimated_duration,
+            'is_approved': content.is_approved,
+            'notes': content.notes,
+            'created_at': content.created_at.isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching content detail: {str(e)}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

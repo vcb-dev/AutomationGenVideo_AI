@@ -361,6 +361,51 @@ class HeyGenClient:
         logger.info(f"Video downloaded to: {output_path}")
         return output_path
 
+    async def clone_voice(self, audio_path: str, voice_name: str) -> Dict[str, Any]:
+        """
+        Clone voice using HeyGen API (Instant Voice Cloning)
+        
+        Args:
+            audio_path: Path to local audio file (mp3/wav)
+            voice_name: Name for the cloned voice
+            
+        Returns:
+            Dict containing 'voice_id' and metadata
+        """
+        endpoint = "https://api.heygen.com/v2/voice/clone"
+        
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            
+        # Prepare multipart form data
+        form_data = aiohttp.FormData()
+        form_data.add_field('name', voice_name)
+        
+        # Add file
+        # We need to open the file and keep it open during request
+        # Aiohttp handles file opening if passed correctly, but let's be explicit
+        f = open(audio_path, 'rb')
+        try:
+            form_data.add_field('audio_file', f, filename=os.path.basename(audio_path))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    endpoint, 
+                    headers={"X-Api-Key": self.api_key}, # Content-Type is auto-set for multipart
+                    data=form_data
+                ) as response:
+                    response_data = await response.json()
+                    
+                    if response.status != 200:
+                        error_msg = response_data.get('error', {}).get('message', 'Unknown error')
+                        raise Exception(f"HeyGen Voice Cloning Failed: {error_msg}")
+                    
+                    data = response_data.get('data', {})
+                    logger.info(f"HeyGen Voice Cloned Successfully: {data.get('voice_id')}")
+                    return data
+        finally:
+            f.close()
+
 
 # Convenience function for quick video generation
 async def generate_video_from_text(

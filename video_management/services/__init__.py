@@ -10,6 +10,8 @@ from .base_scraper import (
     ScraperNotFoundException,
 )
 from .apify_service import ApifyScraperService, create_scraper
+from .video_cache_service import VideoCacheService, get_cache_service
+from .smart_preprocessing_service import SmartPreprocessingService, get_preprocessing_service
 
 __all__ = [
     'BaseScraperService',
@@ -19,4 +21,8 @@ __all__ = [
     'ScraperTimeoutException',
     'ScraperRateLimitException',
     'ScraperNotFoundException',
+    'VideoCacheService',
+    'get_cache_service',
+    'SmartPreprocessingService',
+    'get_preprocessing_service',
 ]

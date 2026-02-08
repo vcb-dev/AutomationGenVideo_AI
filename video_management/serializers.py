@@ -8,7 +8,7 @@ validation, serialization, and deserialization of data.
 from rest_framework import serializers
 from .models import (
     SearchHistory, ScrapedVideo, TrackedChannel, Platform,
-    VideoCollection, CollectionVideo
+    VideoCollection, CollectionVideo, Product, ProductList
 )
 
 
@@ -444,4 +444,63 @@ class AddVideosToCollectionSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="Optional notes"
     )
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    """Serializer for individual products."""
+    
+    class Meta:
+        model = Product
+        fields = [
+            'id',
+            'product_list',
+            'name',
+            'category',
+            'price',
+            'description',
+            'highlights',
+            'sku',
+            'raw_data',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class ProductListSerializer(serializers.ModelSerializer):
+    """Serializer for product lists with products."""
+    
+    products = ProductSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = ProductList
+        fields = [
+            'id',
+            'name',
+            'file_name',
+            'file_path',
+            'total_products',
+            'description',
+            'products',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'total_products', 'created_at', 'updated_at']
+
+
+class ProductListSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for product list without products."""
+    
+    class Meta:
+        model = ProductList
+        fields = [
+            'id',
+            'name',
+            'file_name',
+            'total_products',
+            'description',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'total_products', 'created_at', 'updated_at']
+
 

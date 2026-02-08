@@ -289,6 +289,16 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 
+# ==========================================
+# GOOGLE GEMINI API CONFIGURATION
+# ==========================================
+GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# ==========================================
+# ELEVENLABS API CONFIGURATION
+# ==========================================
+ELEVENLABS_API_KEY = env('ELEVENLABS_API_KEY', default='')
+
 
 # ==========================================
 # LEGACY API SETTINGS (Fallback)
