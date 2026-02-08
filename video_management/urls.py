@@ -34,7 +34,7 @@ from .views.facebook_analysis_views import (
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
-from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
+from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistFieldsView, ReportSettingsView
 
 app_name = 'video_management'
 
@@ -83,6 +83,8 @@ urlpatterns = [
     
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
+    path('checklist/fields/', ChecklistFieldsView.as_view(), name='checklist-fields'),
+    path('checklist/settings/', ReportSettingsView.as_view(), name='checklist-settings'),
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
     
     # Collections (router URLs)
