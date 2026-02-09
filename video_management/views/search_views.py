@@ -1264,37 +1264,61 @@ class UserVideosView(APIView):
                             # Instagram engagement = (likes + comments) / followers * 100
                             engagement_rate = ((fetched_likes + fetched_comments) / follower_count) * 100
                         
+                        # ===== DEBUG: Log profile_data =====
+                        logger.info("=" * 80)
+                        logger.info("📤 SENDING TO FRONTEND - Profile Data:")
+                        logger.info("=" * 80)
+                        
                         profile_data = {
                             'username': username,
                             'display_name': display_name,
                             'avatar_url': avatar_url,
                             'follower_count': follower_count,
+                            'following_count': page_info.get('followingCount', 0),
+                            'posts_count': total_posts,  # Total posts (photos + videos + reels)
                             'total_likes': fetched_likes,  # Sum of likes from fetched posts
                             'total_videos': len([v for v in normalized if v.get('content_type') in ['Video', 'Reel']]),
-                            'total_posts': total_posts,  # Total posts including photos
                             'total_views': fetched_views,
                             'engagement_rate': round(engagement_rate, 2),
                             'platform': platform_str,
+                            'is_verified': page_info.get('isVerified', False),
+                            'is_private': page_info.get('isPrivate', False),
+                            'biography': page_info.get('biography', ''),
+                            'external_url': page_info.get('externalUrl', ''),
+                            'category': page_info.get('category', ''),
                             'metadata': {
                                 'is_verified': page_info.get('isVerified', False),
                                 'biography': page_info.get('biography', ''),
                                 'external_url': page_info.get('externalUrl', '')
                             }
                         }
+                        
+                        # Log profile data
+                        logger.info("📊 Profile Data to Frontend:")
+                        for key, value in profile_data.items():
+                            if key != 'metadata':
+                                logger.info(f"   • {key:20s} = {value}")
+                        logger.info("=" * 80)
+                        
                     else:
-                        # Fallback if no page_info
+                        # Fallback if no page_info  
                         profile_data = {
                             'username': username,
                             'display_name': username,
                             'avatar_url': '',
                             'follower_count': 0,
+                            'posts_count': len(normalized),  # Fallback: count fetched posts
                             'total_likes': sum(v.get('likes_count', 0) for v in normalized),
                             'total_videos': len(normalized),
-                            'total_posts': len(normalized),
                             'total_views': sum(v.get('views_count', 0) for v in normalized),
                             'engagement_rate': 0.0,
                             'platform': platform_str
                         }
+                        
+                        logger.info("⚠️ Fallback Profile Data (no page_info):")
+                        for key, value in profile_data.items():
+                            logger.info(f"   • {key:20s} = {value}")
+                        logger.info("=" * 80)
                 
                 # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
                 else: 
