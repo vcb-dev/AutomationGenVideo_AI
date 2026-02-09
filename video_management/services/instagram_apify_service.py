@@ -271,11 +271,19 @@ class InstagramApifyService:
     
     def _normalize_profile_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize profile data to consistent format."""
-        # Debug: Log all keys containing 'pic' or 'avatar' or 'image'
-        pic_keys = [k for k in data.keys() if any(x in k.lower() for x in ['pic', 'avatar', 'image', 'photo'])]
-        logger.info(f"🔍 Profile pic related keys: {pic_keys}")
-        for k in pic_keys:
-            logger.info(f"   {k}: {str(data.get(k))[:100]}")
+        # ===== DEBUG: LOG ALL APIFY RAW DATA =====
+        logger.info("=" * 80)
+        logger.info("📦 APIFY INSTAGRAM PROFILE - FULL RAW DATA:")
+        logger.info("=" * 80)
+        logger.info(f"🔑 ALL KEYS: {list(data.keys())}")
+        logger.info("")
+        logger.info("📊 PROFILE FIELDS:")
+        for key, value in data.items():
+            if key not in ['raw_data']:  # Skip raw_data to avoid recursion
+                value_str = str(value)[:200] if value else 'NULL'
+                logger.info(f"   • {key:30s} = {value_str}")
+        logger.info("=" * 80)
+        # ========================================
         
         username = data.get('username', '')
         
