@@ -54,6 +54,10 @@ from .views.product_views import (
     delete_product_catalog,
     get_product_detail,
 )
+from .views.suggestions_views import (
+    get_search_suggestions,
+    track_search,
+)
 
 app_name = 'video_management'
 
@@ -71,6 +75,10 @@ urlpatterns = [
     path('search/history/', SearchHistoryView.as_view(), name='search-history'),
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),
+    
+    # Search Suggestions (NEW)
+    path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
+    path('search/track/', track_search, name='track-search'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     

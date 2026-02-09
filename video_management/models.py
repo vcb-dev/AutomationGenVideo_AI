@@ -980,7 +980,6 @@ class IndexedVideo(BaseModel):
     """
     file_path = models.CharField(
         max_length=1000,
-        unique=True,
         db_index=True,
         help_text="Absolute path to video file (network or local)"
     )
@@ -1046,6 +1045,7 @@ class IndexedVideo(BaseModel):
         verbose_name = "Indexed Video"
         verbose_name_plural = "Indexed Videos"
         ordering = ['-last_used_at']
+        unique_together = [['file_path', 'folder_type']]
         indexes = [
             models.Index(fields=['folder_type', 'is_available', '-last_used_at']),
             models.Index(fields=['folder_type', 'duration']),
@@ -1217,3 +1217,7 @@ class LocalVideoFile(BaseModel):
             return time_diff < 1.0
         except (OSError, IOError):
             return False
+
+
+# Import search-related models
+from .models_search import SearchQuery, TrendingKeyword
