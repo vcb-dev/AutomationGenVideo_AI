@@ -209,153 +209,6 @@ class ChecklistCheckView(APIView):
         return Response(result, status=status.HTTP_200_OK)
 
 
-class ReportSettingsView(APIView):
-    """
-    GET: Lấy cấu hình khung giờ báo cáo hiện tại
-    PUT: Cập nhật cấu hình (chỉ Manager)
-    """
-    permission_classes = [AllowAny]  # TODO: Thêm IsManager permission sau
-    
-    def get(self, request):
-        """Lấy settings hiện tại"""
-        try:
-            from video_management.models import ReportSettings
-            
-            settings = ReportSettings.get_settings()
-            
-            return Response({
-                "schedule": settings.schedule,
-                "one_report_per_day": settings.one_report_per_day,
-                "timezone": settings.timezone,
-                "updated_at": settings.updated_at.isoformat() if settings.updated_at else None,
-                "updated_by": settings.updated_by,
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.exception("Error getting report settings: %s", e)
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-    
-    def put(self, request):
-        """Cập nhật settings (Manager only)"""
-        try:
-            from video_management.models import ReportSettings
-            
-            settings = ReportSettings.get_settings()
-            
-            # Validate và update schedule
-            if "schedule" in request.data:
-                new_schedule = request.data["schedule"]
-                # TODO: Validate schedule format
-                settings.schedule = new_schedule
-            
-            if "one_report_per_day" in request.data:
-                settings.one_report_per_day = request.data["one_report_per_day"]
-            
-            if "timezone" in request.data:
-                settings.timezone = request.data["timezone"]
-            
-            # Track who updated
-            user_email = request.data.get("updated_by", "unknown")
-            settings.updated_by = user_email
-            
-            settings.save()
-            
-            logger.info("Report settings updated by %s", user_email)
-            
-            return Response({
-                "success": True,
-                "message": "Cập nhật cấu hình thành công",
-                "schedule": settings.schedule,
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.exception("Error updating report settings: %s", e)
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-
-class ChecklistFieldsView(APIView):
-    """
-    GET: Lấy danh sách tất cả fields trong table để debug Field IDs
-    """
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        try:
-            app_token = getattr(settings, "LARK_BASE_ID", "") or ""
-            table_id = getattr(settings, "LARK_TABLE_ID", "") or ""
-            
-            if not app_token or not table_id:
-                return Response(
-                    {"error": "LARK_BASE_ID và LARK_TABLE_ID phải được cấu hình"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
-
-            token = get_lark_tenant_access_token()
-            url = LARK_BITABLE_FIELDS_URL.format(app_token=app_token, table_id=table_id)
-            
-            resp = requests.get(
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            
-            data = resp.json()
-            
-            if not resp.ok or data.get("code") != 0:
-                return Response(
-                    {"error": data.get("msg", "Lỗi khi lấy fields"), "detail": data},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
-            
-            # Format kết quả dễ đọc
-            fields_list = []
-            for field in data.get("data", {}).get("items", []):
-                fields_list.append({
-                    "field_id": field.get("field_id"),
-                    "field_name": field.get("field_name"),
-                    "type": field.get("type"),
-                    "type_name": {
-                        1: "Text",
-                        2: "Number",
-                        3: "Single Select",
-                        4: "Multiple Select",
-                        5: "Date",
-                        7: "Checkbox",
-                        11: "Person",
-                        13: "Phone",
-                        15: "URL",
-                        17: "Attachment",
-                        18: "Single Link",
-                        19: "Formula",
-                        20: "Duplex Link",
-                        21: "Location",
-                        22: "GroupChat",
-                        23: "Created Time",
-                        1001: "Created User",
-                        1002: "Modified Time",
-                        1003: "Modified User",
-                    }.get(field.get("type"), f"Unknown({field.get('type')})")
-                })
-            
-            return Response({
-                "total_fields": len(fields_list),
-                "fields": fields_list,
-                "raw_response": data
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            logger.exception("Error getting fields: %s", e)
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
 
 class ChecklistSubmitView(APIView):
     """
@@ -383,89 +236,10 @@ class ChecklistSubmitView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             
-            # ============================================
-            # VALIDATION 1: Kiểm tra khung giờ cho phép
-            # ============================================
-            from video_management.models import ReportSettings
-            
-            settings = ReportSettings.get_settings()
-            vietnam_tz = pytz.timezone(settings.timezone)
+            # Thời gian báo cáo (Asia/Ho_Chi_Minh)
+            vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
             current_datetime = datetime.now(vietnam_tz)
             
-            # Check thời gian
-            is_allowed, reason = settings.is_report_allowed(current_datetime)
-            if not is_allowed:
-                return Response(
-                    {"error": "Không thể báo cáo"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            
-            # ============================================
-            # VALIDATION 2: Kiểm tra đã báo cáo hôm nay chưa (nếu bật one_report_per_day)
-            # ============================================
-            if settings.one_report_per_day:
-                token = get_lark_tenant_access_token()
-                
-                # Tính timestamp đầu ngày và cuối ngày hôm nay
-                today_start = current_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
-                today_end = current_datetime.replace(hour=23, minute=59, second=59, microsecond=999999)
-                
-                start_timestamp = int(today_start.timestamp() * 1000)
-                end_timestamp = int(today_end.timestamp() * 1000)
-                
-                # Search xem user đã submit hôm nay chưa
-                from django.conf import settings as django_settings
-                app_token = getattr(django_settings, "LARK_BASE_ID", "") or ""
-                table_id = getattr(django_settings, "LARK_TABLE_ID", "") or ""
-                
-                if app_token and table_id:
-                    url = LARK_BITABLE_SEARCH_URL.format(app_token=app_token, table_id=table_id)
-                    headers = {
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json; charset=utf-8",
-                    }
-                    
-                    # Search filter: Email = user_email AND Date >= today_start AND Date <= today_end
-                    search_payload = {
-                        "filter": {
-                            "conjunction": "and",
-                            "conditions": [
-                                {
-                                    "field_name": "Email",
-                                    "operator": "is",
-                                    "value": [user_email]
-                                },
-                                {
-                                    "field_name": "Date",
-                                    "operator": "isGreater",
-                                    "value": [start_timestamp]
-                                },
-                                {
-                                    "field_name": "Date",
-                                    "operator": "isLess",
-                                    "value": [end_timestamp]
-                                }
-                            ]
-                        },
-                        "page_size": 1
-                    }
-                    
-                    try:
-                        resp = requests.post(url, json=search_payload, headers=headers, timeout=10)
-                        data = resp.json()
-                        
-                        if resp.ok and data.get("code") == 0:
-                            items = data.get("data", {}).get("items", [])
-                            if items:
-                                logger.info("User %s đã báo cáo hôm nay rồi", user_email)
-                                return Response(
-                                    {"error": "Bạn đã báo cáo hôm nay rồi. Mỗi ngày chỉ được báo cáo 1 lần."},
-                                    status=status.HTTP_400_BAD_REQUEST,
-                                )
-                    except Exception as e:
-                        logger.warning("Không check được duplicate report: %s", e)
-                        # Không block user nếu check bị lỗi
-
             # Loại bỏ userEmail và userName khỏi payload checklist
             checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName"]}
             
@@ -475,7 +249,10 @@ class ChecklistSubmitView(APIView):
             # Date field (type: 5) cần timestamp milliseconds
             date_timestamp = int(current_datetime.timestamp() * 1000)
             
-            # CÁCH 2: Lookup user info từ bảng Lark dựa vào email
+            # Token đã lấy ở trên, dùng luôn để create record
+            token = get_lark_tenant_access_token()
+            
+            # Lookup user info từ bảng Lark dựa vào email
             existing_user_info = search_user_by_email(token, user_email)
             
             # Tạo fields object cơ bản

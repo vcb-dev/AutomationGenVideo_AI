@@ -58,7 +58,8 @@ from .views.suggestions_views import (
     get_search_suggestions,
     track_search,
 )
-from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistFieldsView, ReportSettingsView
+from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
+from .views.hashtag_check_views import check_hashtag_count
 
 app_name = 'video_management'
 
@@ -82,6 +83,7 @@ urlpatterns = [
     path('search/track/', track_search, name='track-search'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
+    path('hashtags/check/', check_hashtag_count, name='hashtag-check'),
     
     # OLD Mix endpoints (DEPRECATED - slow 2-3 min)
     path('videos/mix/', mix_videos, name='mix-videos'),
@@ -134,8 +136,6 @@ urlpatterns = [
     
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
-    path('checklist/fields/', ChecklistFieldsView.as_view(), name='checklist-fields'),
-    path('checklist/settings/', ReportSettingsView.as_view(), name='checklist-settings'),
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
     
     # Collections (router URLs)

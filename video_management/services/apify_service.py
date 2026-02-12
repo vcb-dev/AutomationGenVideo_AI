@@ -220,29 +220,34 @@ class ApifyScraperService(BaseScraperService):
         """
         if self.platform == Platform.TIKTOK:
             if username:
-                # Optimized Fetch Logic (Similar to Facebook)
-                effective_limit = max_results
+                # CLEANING: If user enters full URL, extract the @username
+                # Handles: https://www.tiktok.com/@username?lang=en -> username
+                clean_username = username.strip()
+                if 'tiktok.com/' in clean_username:
+                    import re
+                    match = re.search(r'tiktok\.com/@([^/?#]+)', clean_username)
+                    if match:
+                        clean_username = match.group(1)
                 
-                # Use strict limit from FE (days * 8) without extra buffer
-                # User confirmed realistic daily max is ~10 videos
+                clean_username = clean_username.replace('@', '').split('?')[0].strip()
+                
+                # Optimized Fetch Logic
+                effective_limit = max_results
                 limit_to_use = min(effective_limit, 300)
 
-                # OPTIMIZATION: If fetching small batch (e.g. Add Channel), disable video checking/downloading
-                # This makes the initial scan much faster (seconds instead of minutes)
                 should_download_videos = True
                 if max_results <= 10:
                     should_download_videos = False
                 
                 input_data = {
-                    "profiles": [username],
+                    "profiles": [clean_username],
                     "resultsPerPage": limit_to_use,
                     "postsCount": limit_to_use,
-                    "maxItems": limit_to_use, # Explicitly limit items
+                    "maxItems": limit_to_use,
                     "shouldDownloadVideos": should_download_videos, 
                     "shouldDownloadCovers": True, 
                 }
                 
-                # Add date filtering (similar to maxPostDate in Facebook)
                 if until_date:
                     input_data["oldestPostDate"] = until_date
                     self.logger.info(f"⏱️ TikTok Smart Stop enabled: Scraper will halt at {until_date}")
