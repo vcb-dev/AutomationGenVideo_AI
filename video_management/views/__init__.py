@@ -34,9 +34,11 @@ from .smart_mix_video_views import (
     smart_mix,
     smart_mix_status,
     index_folders,
+    index_outro,
     cache_stats,
     get_voices,
     generate_audio_from_script,
+    index_manufacturing_folder,
 )
 
 __all__ = [
@@ -67,7 +69,9 @@ __all__ = [
     'smart_mix',
     'smart_mix_status',
     'index_folders',
+    'index_outro',
     'cache_stats',
     'get_voices',
     'generate_audio_from_script',
+    'index_manufacturing_folder',
 ]

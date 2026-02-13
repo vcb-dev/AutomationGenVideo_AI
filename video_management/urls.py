@@ -32,9 +32,11 @@ from .views import (
     smart_mix,
     smart_mix_status,
     index_folders,
+    index_outro,
     cache_stats,
     get_voices,
     generate_audio_from_script,
+    index_manufacturing_folder,
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
@@ -53,6 +55,7 @@ from .views.product_views import (
     get_products_by_category,
     delete_product_catalog,
     get_product_detail,
+    find_product_video_path,
 )
 from .views.suggestions_views import (
     get_search_suggestions,
@@ -96,6 +99,8 @@ urlpatterns = [
     path('videos/smart-mix/', smart_mix, name='smart-mix'),
     path('videos/smart-mix/status/<str:progress_id>/', smart_mix_status, name='smart-mix-status'),
     path('videos/index-folders/', index_folders, name='index-folders'),
+    path('videos/index-manufacturing-folder/', index_manufacturing_folder, name='index-manufacturing-folder'),
+    path('videos/index-outro/', index_outro, name='index-outro'),
     path('videos/cache-stats/', cache_stats, name='cache-stats'),
     path('videos/voices/', get_voices, name='get-voices'),
     path('videos/generate-audio/', generate_audio_from_script, name='generate-audio'),
@@ -130,6 +135,7 @@ urlpatterns = [
     path('products/catalogs/<int:catalog_id>/by-category/', get_products_by_category, name='products-by-category'),
     path('products/catalogs/<int:catalog_id>/delete/', delete_product_catalog, name='product-catalog-delete'),
     path('products/<int:product_id>/', get_product_detail, name='product-detail'),
+    path('products/find-video/', find_product_video_path, name='find-product-video'),
     
     # Collections (router URLs)
     path('', include(router.urls)),

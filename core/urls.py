@@ -113,6 +113,7 @@ from video_management.views import content_generation_views
 
 urlpatterns += [
     path('api/content/generate/', content_generation_views.generate_content, name='content-generate'),
+    path('api/content/generate-prompt/', content_generation_views.generate_prompt, name='content-generate-prompt'),
     path('api/content/video/<int:video_id>/', content_generation_views.get_generated_contents, name='content-by-video'),
     path('api/content/<int:content_id>/', content_generation_views.get_content_detail, name='content-detail'),
 ]

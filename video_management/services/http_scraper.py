@@ -114,7 +114,7 @@ class DouyinHttpScraper:
                 # Method 2: Parse HTML trực tiếp (nếu có server-side rendering)
                 video_elements = soup.find_all(['li', 'div'], attrs={'data-e2e': re.compile(r'scroll-list-item|search-result')})
                 
-                if video_elements:
+                if video_elements: 
                     logger.info(f"Found {len(video_elements)} video elements in HTML")
                     for el in video_elements[:target_count]:
                         video_data = self._parse_html_element(el)
