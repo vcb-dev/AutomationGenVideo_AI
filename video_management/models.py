@@ -1266,6 +1266,23 @@ class AppUser(models.Model):
         db_table = 'users'
         managed = False
 
+class LarkPermission(models.Model):
+    id = models.CharField(max_length=255, primary_key=True)
+    email = models.CharField(max_length=255, null=True, blank=True)
+    name = models.CharField(max_length=255, null=True, blank=True)
+    pin_code = models.CharField(max_length=255, null=True, blank=True)
+    employee = models.JSONField(null=True, blank=True)
+    role = models.CharField(max_length=255, null=True, blank=True)
+    team = models.CharField(max_length=255, null=True, blank=True)
+    status = models.CharField(max_length=255, null=True, blank=True)
+    permissions = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'lark_permissions'
+        managed = False
+
 # Import search-related models
 from .models_search import SearchQuery, TrendingKeyword
 
