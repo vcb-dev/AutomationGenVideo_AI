@@ -284,7 +284,7 @@ class ChecklistSubmitView(APIView):
 
             return Response({
                 "success": True,
-                "message": "Báo cáo thành công (Lưu Database nội bộ)",
+                "message": "Báo cáo thành công",
                 "record_id": record_id,
             }, status=status.HTTP_201_CREATED)
 
