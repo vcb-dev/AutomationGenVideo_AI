@@ -39,10 +39,19 @@ class ProductCatalogService:
             ProductList instance with all products
         """
         try:
-            # Read Excel file efficiently
+            # Read Excel: support header on row 2 if row 1 is empty (e.g. "(Tech Core) Danh sách sản phẩm")
             # engine='openpyxl' is generally faster for xlsx
-            # dtype=str ensures phone numbers/ids aren't converted to scientific notation and speeds up reading
-            df = pd.read_excel(file, engine='openpyxl', dtype=str)
+            # dtype=str ensures phone numbers/ids aren't converted to scientific notation
+            df_first = pd.read_excel(file, engine='openpyxl', header=None, nrows=2, dtype=str)
+            header_row = 0
+            if not df_first.empty and len(df_first) >= 2:
+                first_row = ' '.join(str(c).lower() for c in df_first.iloc[0].fillna(''))
+                # If row 0 doesn't look like headers (no mã, tên, stt, mô tả...), use row 1
+                if not any(kw in first_row for kw in ['mã', 'ma ', 'tên', 'ten ', 'stt', 'mô tả', 'mo ta', 'product', 'sku', 'code']):
+                    header_row = 1
+            
+            file.seek(0)  # Reset for full read
+            df = pd.read_excel(file, engine='openpyxl', header=header_row, dtype=str)
             
             # Clean data: Remove rows where all columns are NaN
             df.dropna(how='all', inplace=True)
@@ -112,6 +121,12 @@ class ProductCatalogService:
         
         for idx, row in df.iterrows():
             try:
+                # Mã sản phẩm (SKU) bắt buộc — dùng để tìm thư mục video khi index
+                sku = cls._get_value(row, column_map.get('sku'), default="")
+                if not sku or not str(sku).strip():
+                    logger.debug(f"Skipping row {idx}: missing Mã sản phẩm (SKU)")
+                    continue
+
                 # Extract fields using column mapping
                 category_raw = cls._get_value(row, column_map.get('category'), default="")
                 # Normalize category: Title Case to reduce fragmentation (e.g. "NHẪN" -> "Nhẫn")
@@ -124,7 +139,7 @@ class ProductCatalogService:
                     'price': cls._parse_price(cls._get_value(row, column_map.get('price'))),
                     'description': cls._get_value(row, column_map.get('description'), default=""),
                     'highlights': cls._get_value(row, column_map.get('highlights'), default=""),
-                    'sku': cls._get_value(row, column_map.get('sku'), default=""),
+                    'sku': sku.strip(),
                     'raw_data': row.to_dict()  # Store all original data
                 }
                 

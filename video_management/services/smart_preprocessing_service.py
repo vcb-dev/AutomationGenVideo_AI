@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # Video extensions
 ALLOWED_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.m4v'}
 
+# ffprobe timeout: file mạng (UNC) chậm hơn → cần timeout dài
+FFPROBE_TIMEOUT_LOCAL = getattr(settings, 'FFPROBE_TIMEOUT', 15)
+FFPROBE_TIMEOUT_NETWORK = getattr(settings, 'FFPROBE_TIMEOUT_NETWORK', 60)  # UNC path
+
 # Cache settings
 CACHE_DIR = getattr(settings, 'VIDEO_CLIP_CACHE_DIR', os.path.join(settings.BASE_DIR, 'media', 'clip_cache'))
 MAX_CACHE_SIZE_GB = getattr(settings, 'MAX_CLIP_CACHE_SIZE_GB', 10)  # 10GB default
@@ -69,6 +73,7 @@ class SmartPreprocessingService:
     def index_videos_from_folders(self, folder_paths: Dict[str, str], videos_per_folder: int = 1000) -> Dict[str, int]:
         """
         Index videos from multiple folders into database.
+        OPTIMIZED: Parallel folder indexing + parallel ffprobe metadata fetching.
         
         Args:
             folder_paths: Dict mapping folder_type to folder_path
@@ -79,42 +84,52 @@ class SmartPreprocessingService:
             Dict with folder_type -> count of indexed videos
         """
         from video_management.models import IndexedVideo
-        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
         results = {}
-        
-        for folder_type, folder_path in folder_paths.items():
+        results_lock = threading.Lock()
+
+        def _index_one_folder(folder_type: str, folder_path: str) -> int:
+            """Index a single folder, returning count of newly indexed videos."""
             if not os.path.isdir(folder_path):
                 logger.warning(f"Folder not found: {folder_path}")
-                results[folder_type] = 0
-                continue
-            
-            logger.info(f"Indexing folder: {folder_type} from {folder_path}")
-            count = 0
-            
-            try:
-                # Scan for videos (fast - only 1-2 levels deep)
-                video_files = self._scan_folder_fast(folder_path, videos_per_folder)
-                
-                for video_path in video_files:
-                    try:
-                        # Get metadata
-                        # Normalize path for consistent DB lookup (handles \\?\UNC vs \\ formats)
-                        db_path = self._normalize_path_for_db(video_path)
-                        
-                        # OPTIMIZATION: Check if already indexed for this folder type BEFORE running ffprobe
-                        # This makes re-indexing (User 2) super fast!
-                        if IndexedVideo.objects.filter(file_path=db_path, folder_type=folder_type).exists():
-                            # Already indexed, skip expensive processing
-                            continue
+                return 0
 
-                        # Get metadata (EXPENSIVE OPERATION - only run if new)
+            logger.info(f"📂 [PARALLEL] Indexing folder: {folder_type} → {folder_path}")
+
+            try:
+                video_files = self._scan_folder_fast(folder_path, videos_per_folder)
+                logger.info(f"  🔍 {folder_type}: found {len(video_files)} video candidates")
+
+                # ── Fast pre-filter: skip already-indexed paths ────────────────
+                new_files = []
+                for video_path in video_files:
+                    db_path = self._normalize_path_for_db(video_path)
+                    if not IndexedVideo.objects.filter(
+                        file_path=db_path, folder_type=folder_type
+                    ).exists():
+                        new_files.append((video_path, db_path))
+
+                if not new_files:
+                    logger.info(f"  ✅ {folder_type}: all {len(video_files)} already indexed (skip)")
+                    return 0
+
+                logger.info(f"  ⚡ {folder_type}: {len(new_files)} new files to index (parallel ffprobe)")
+
+                # ── Parallel ffprobe metadata ──────────────────────────────────
+                count = 0
+                count_lock = threading.Lock()
+
+                def _probe_and_insert(video_path: str, db_path: str):
+                    nonlocal count
+                    try:
                         metadata = self._get_video_metadata(video_path)
                         if not metadata:
-                            continue
-                        # Check if video already indexed FOR THIS FOLDER TYPE
+                            return
                         video_obj, created = IndexedVideo.objects.get_or_create(
                             file_path=db_path,
-                            folder_type=folder_type,  # Allow same file in different folder types
+                            folder_type=folder_type,
                             defaults={
                                 'duration': metadata['duration'],
                                 'file_size': metadata['size'],
@@ -129,25 +144,54 @@ class SmartPreprocessingService:
                             }
                         )
                         if created:
-                            count += 1
-                        
-                        if count % 10 == 0:
-                            logger.info(f"  Indexed {count} videos from {folder_type}")
-                    
+                            with count_lock:
+                                count += 1
+                                if count % 10 == 0:
+                                    logger.info(f"    📊 {folder_type}: indexed {count} new videos so far")
                     except Exception as e:
                         logger.error(f"Failed to index {video_path}: {e}")
-                        continue
-                
-                results[folder_type] = count
-                if count > 0 or len(video_files) > 0:
-                    logger.info(f"✅ Found {len(video_files)} candidates, Indexed {count} new videos from {folder_type}")
-                else:
-                    logger.info(f"✅ Indexed {count} videos from {folder_type}")
-            
+
+                # 8 workers for ffprobe (network I/O bound, not CPU bound)
+                ffprobe_workers = min(8, len(new_files))
+                with ThreadPoolExecutor(
+                    max_workers=ffprobe_workers,
+                    thread_name_prefix=f"ffprobe_{folder_type[:6]}"
+                ) as ff_executor:
+                    futs = [
+                        ff_executor.submit(_probe_and_insert, vp, dp)
+                        for vp, dp in new_files
+                    ]
+                    for f in as_completed(futs):
+                        pass  # results handled inside worker
+
+                logger.info(f"  ✅ {folder_type}: indexed {count} new videos (total candidates: {len(video_files)})")
+                return count
+
             except Exception as e:
                 logger.error(f"Error indexing folder {folder_type}: {e}")
-                results[folder_type] = 0
-        
+                return 0
+
+        # ── Run all folders in parallel (max 4 concurrent folders) ────────────
+        logger.info(f"🚀 Indexing {len(folder_paths)} folders in parallel (max 4 workers)...")
+        folder_workers = min(4, len(folder_paths))
+        with ThreadPoolExecutor(
+            max_workers=folder_workers,
+            thread_name_prefix="index_folder"
+        ) as folder_executor:
+            future_map = {
+                folder_executor.submit(_index_one_folder, ft, fp): ft
+                for ft, fp in folder_paths.items()
+            }
+            for fut in as_completed(future_map):
+                ft = future_map[fut]
+                try:
+                    results[ft] = fut.result()
+                except Exception as e:
+                    logger.error(f"Folder {ft} indexing raised: {e}")
+                    results[ft] = 0
+
+        total = sum(results.values())
+        logger.info(f"✅ Parallel indexing complete: {total} new videos across {len(folder_paths)} folders")
         return results
     
     def scan_and_index_specific_sku(self, sku: str, folder_path: str) -> Optional[int]:
@@ -173,14 +217,17 @@ class SmartPreprocessingService:
         sku_clean = sku.strip().lower()
         found_path = None
         
-        # Recursive scan
+        # Recursive scan: SKU có thể nằm trong tên file HOẶC tên thư mục (folder)
+        # VD: VIDEO Sản Phẩm/N101276/video.mp4 hoặc VIDEO Sản Phẩm/L000963_clip.mp4
         for root, dirs, files in os.walk(folder_path):
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
                 if ext in ALLOWED_EXTENSIONS:
-                    # Check if filename contains SKU
-                    if sku_clean in file.lower():
-                        found_path = os.path.join(root, file)
+                    full_path = os.path.join(root, file)
+                    path_lower = full_path.lower()
+                    # Match: SKU trong filename hoặc trong đường dẫn (tên folder)
+                    if sku_clean in path_lower:
+                        found_path = full_path
                         break
             if found_path:
                 break
@@ -348,15 +395,22 @@ class SmartPreprocessingService:
         return os.path.normpath(p)
     
     def _get_video_metadata(self, video_path: str) -> Optional[Dict]:
-        """Get video metadata using ffprobe."""
+        """Get video metadata using ffprobe. Fallback metadata when ffprobe timeout (file mạng chậm)."""
         import json
+        safe_path = None
+        stat = None
         try:
-            # Handle long paths on Windows
             safe_path = self._prepare_path_for_windows(video_path)
-            
             stat = os.stat(safe_path)
-            
-            # Use JSON format for robust parsing (handles various ffprobe versions)
+        except Exception as e:
+            logger.warning(f"Cannot stat file {video_path}: {e}")
+            return None
+
+        # Timeout dài hơn cho file mạng (UNC path) - thường chậm
+        is_network = video_path.replace('/', '\\').strip().startswith('\\\\')
+        timeout_sec = FFPROBE_TIMEOUT_NETWORK if is_network else FFPROBE_TIMEOUT_LOCAL
+
+        try:
             cmd = [
                 self.ffprobe_path,
                 '-v', 'error',
@@ -364,22 +418,21 @@ class SmartPreprocessingService:
                 '-of', 'json',
                 '-i', safe_path
             ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
             if result.returncode != 0:
                 logger.warning(f"ffprobe failed for {video_path}: {result.stderr[:200]}")
-                return None
-            
+                return self._fallback_metadata(video_path, stat, "ffprobe returned error")
+
             data = json.loads(result.stdout)
             format_info = data.get('format', {})
             streams = data.get('streams', [])
-            
+
             duration = 0.0
             try:
                 duration = float(format_info.get('duration', 0))
             except (TypeError, ValueError):
                 pass
-            
+
             width = None
             height = None
             has_audio = False
@@ -389,11 +442,10 @@ class SmartPreprocessingService:
                     height = height or s.get('height')
                 elif s.get('codec_type') == 'audio':
                     has_audio = True
-            
+
             if duration == 0:
-                logger.warning(f"Metadata check failed (duration=0) for {video_path}")
-                return None
-            
+                return self._fallback_metadata(video_path, stat, "duration=0")
+
             return {
                 'duration': duration,
                 'size': stat.st_size,
@@ -402,10 +454,32 @@ class SmartPreprocessingService:
                 'height': height,
                 'has_audio': has_audio
             }
-        
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"ffprobe timeout ({timeout_sec}s) for network file {video_path} - using fallback metadata")
+            return self._fallback_metadata(video_path, stat, "timeout")
         except Exception as e:
             logger.error(f"Failed to get metadata for {video_path}: {e}")
-            return None
+            return self._fallback_metadata(video_path, stat, str(e))
+
+    def _fallback_metadata(self, video_path: str, stat, reason: str) -> Optional[Dict]:
+        """Fallback khi ffprobe timeout/lỗi - vẫn index video với duration mặc định để dùng được."""
+        if stat is None:
+            try:
+                safe_path = self._prepare_path_for_windows(video_path)
+                stat = os.stat(safe_path)
+            except Exception:
+                return None
+        duration_default = 30.0  # Giả định 30s - mix vẫn chạy được, clip sẽ trim đúng khi generate
+        logger.info(f"Using fallback metadata (duration={duration_default}s) for {Path(video_path).name} - reason: {reason}")
+        return {
+            'duration': duration_default,
+            'size': stat.st_size,
+            'mtime': stat.st_mtime,
+            'width': None,
+            'height': None,
+            'has_audio': True
+        }
     
     def get_or_generate_clip(self, video_id: int, use_gpu: bool = None, duration: float = None) -> Optional[str]:
         """
@@ -451,8 +525,16 @@ class SmartPreprocessingService:
         return self._generate_clip(video, use_gpu, duration)
     
     def _generate_clip(self, video, use_gpu: bool = None, clip_duration: float = None) -> Optional[str]:
-        """Generate a short clip from video with GPU acceleration if available."""
+        """
+        Generate a short clip from video with GPU acceleration if available.
+        
+        TWO-PASS OPTIMIZATION for NAS/network files:
+          Pass 1: Fast sequential copy from NAS → local temp (no decode/encode)
+          Pass 2: Encode from local temp → final clip (no network I/O)
+        This avoids SMB random-access bottleneck: ~5-7s instead of ~20-30s.
+        """
         from video_management.models import VideoClipCache
+        import time
         
         # Resolve path (fix malformed UNC from DB, add long-path prefix)
         resolved_path = self._resolve_path_for_access(video.file_path)
@@ -460,18 +542,25 @@ class SmartPreprocessingService:
             logger.error(f"Source video not found: {video.file_path} (resolved: {resolved_path})")
             return None
         
+        # Detect network file (UNC path: \\server\share\...)
+        is_network_file = resolved_path.replace('/', '\\').strip().startswith('\\\\')
+        
         # Auto-detect GPU if not specified (check USE_GPU env: true/false/auto)
         if use_gpu is None:
             env_gpu = os.getenv('USE_GPU', 'true').lower()
             if env_gpu in ('false', '0', 'no'):
                 use_gpu = False
             elif env_gpu in ('true', '1', 'yes'):
-                # Force GPU - will fallback to CPU if encoding fails
                 use_gpu = True
                 if not self.has_gpu():
                     logger.info("USE_GPU=true: will try GPU encoding (fallback to CPU if fails)")
             else:
                 use_gpu = self.has_gpu()
+        
+        # ── FORCE CPU FOR NETWORK FILES ─────────────────────────────────────
+        if is_network_file and use_gpu:
+            logger.info("🌐 Network file → forcing CPU (libx264 ultrafast)")
+            use_gpu = False
         
         # Use default or custom duration
         if clip_duration is None:
@@ -484,8 +573,215 @@ class SmartPreprocessingService:
         # Generate clip filename
         clip_filename = f"{video.id}_{int(start_time)}_{random.randint(1000, 9999)}.mp4"
         clip_path = os.path.join(self.cache_dir, clip_filename)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TWO-PASS STRATEGY for NETWORK files (NAS/UNC)
+        # ═══════════════════════════════════════════════════════════════════
+        if is_network_file:
+            return self._generate_clip_two_pass(
+                video, resolved_path, start_time, clip_duration,
+                clip_path, use_gpu
+            )
         
-        # FFmpeg command with STRICT NORMALIZATION (critical for concat!)
+        # ═══════════════════════════════════════════════════════════════════
+        # SINGLE-PASS for LOCAL files (fast disk I/O, no SMB overhead)
+        # ═══════════════════════════════════════════════════════════════════
+        return self._generate_clip_single_pass(
+            video, resolved_path, start_time, clip_duration,
+            clip_path, use_gpu
+        )
+
+    def _generate_clip_two_pass(
+        self, video, resolved_path: str, start_time: float,
+        clip_duration: float, clip_path: str, use_gpu: bool
+    ) -> Optional[str]:
+        """
+        TWO-PASS clip generation for NETWORK files.
+        
+        Pass 1: ffmpeg -c copy → extract raw segment from NAS (sequential read, ~1-2s)
+        Pass 2: ffmpeg encode  → encode from local temp file (no network, ~3-5s)
+        
+        Total: ~5-7s instead of ~20-30s (single-pass from NAS).
+        """
+        from video_management.models import VideoClipCache
+        import time
+        
+        temp_raw = os.path.join(self.cache_dir, f"raw_{video.id}_{random.randint(1000,9999)}.mp4")
+        
+        try:
+            overall_start = time.time()
+            
+            # ── PASS 1: Fast raw extract from NAS (sequential copy, no decode) ──
+            logger.info(f"⚡ [PASS 1] Copying raw segment from NAS (sequential, no encode)...")
+            # Add small buffer to clip_duration to ensure we have enough frames after trim
+            extract_duration = clip_duration + 0.5
+            
+            cmd_extract = [
+                self.ffmpeg_path,
+                '-ss', str(start_time),
+                '-i', resolved_path,
+                '-t', str(extract_duration),
+                '-c', 'copy',        # ⚡ NO encoding! Just byte-copy → blazing fast on NAS
+                '-avoid_negative_ts', 'make_zero',
+                '-y',
+                temp_raw
+            ]
+            
+            t1 = time.time()
+            result1 = subprocess.run(
+                cmd_extract,
+                capture_output=True, text=True,
+                encoding='utf-8', errors='ignore',
+                timeout=180  # 180s: 8 workers share NAS bandwidth → each copy takes longer
+            )
+            pass1_time = time.time() - t1
+            
+            if result1.returncode != 0 or not os.path.isfile(temp_raw):
+                logger.warning(f"⚠️ Pass 1 copy failed: {result1.stderr[:200]}")
+                # Fallback to single-pass
+                logger.info("🔄 Fallback to single-pass (direct encode from NAS)...")
+                return self._generate_clip_single_pass(
+                    video, resolved_path, start_time, clip_duration,
+                    clip_path, use_gpu
+                )
+            
+            logger.info(f"✅ [PASS 1] Raw extracted in {pass1_time:.1f}s → {os.path.getsize(temp_raw)/1024/1024:.1f}MB")
+            
+            # ── PASS 2: Encode from LOCAL temp file (no network I/O!) ──────────
+            logger.info(f"⚡ [PASS 2] Encoding from local temp (no network)...")
+            
+            encoder = 'h264_nvenc' if use_gpu else 'libx264'
+            
+            cmd_encode = [
+                self.ffmpeg_path,
+                '-i', temp_raw,          # ⚡ Reading from LOCAL disk!
+                '-t', str(clip_duration), # Trim to exact duration
+                '-vf', 'fps=30,scale=540:960',
+                '-c:v', encoder,
+            ]
+            
+            if use_gpu:
+                cmd_encode.extend([
+                    '-preset', 'fast',
+                    '-profile:v', 'main',
+                    '-level', '4.1',
+                    '-b:v', '2M',
+                    '-maxrate', '2.5M',
+                    '-bufsize', '4M',
+                    '-rc', 'vbr',
+                    '-pix_fmt', 'yuv420p',
+                ])
+            else:
+                cmd_encode.extend([
+                    '-preset', 'ultrafast',
+                    '-crf', '28',
+                    '-pix_fmt', 'yuv420p',
+                ])
+            
+            cmd_encode.extend([
+                '-c:a', 'aac',
+                '-ar', '44100',
+                '-ac', '2',
+                '-y',
+                clip_path
+            ])
+            
+            t2 = time.time()
+            result2 = subprocess.run(
+                cmd_encode,
+                capture_output=True, text=True,
+                encoding='utf-8', errors='ignore',
+                timeout=90  # Local encoding should be fast
+            )
+            pass2_time = time.time() - t2
+            
+            # GPU fallback to CPU
+            if result2.returncode != 0 and use_gpu:
+                logger.warning(f"⚠️ GPU encode failed, retrying with CPU...")
+                cmd_encode_cpu = [
+                    self.ffmpeg_path,
+                    '-i', temp_raw,
+                    '-t', str(clip_duration),
+                    '-vf', 'fps=30,scale=540:960',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+                    '-y', clip_path
+                ]
+                t2 = time.time()
+                result2 = subprocess.run(
+                    cmd_encode_cpu,
+                    capture_output=True, text=True,
+                    encoding='utf-8', errors='ignore',
+                    timeout=90
+                )
+                pass2_time = time.time() - t2
+                use_gpu = False
+            
+            # Cleanup temp raw
+            if os.path.exists(temp_raw):
+                os.remove(temp_raw)
+            
+            if result2.returncode != 0 or not os.path.isfile(clip_path):
+                logger.error(f"❌ Pass 2 encode failed: {result2.stderr[:300]}")
+                return None
+            
+            total_time = time.time() - overall_start
+            
+            # Cache the clip
+            clip_size = os.path.getsize(clip_path)
+            VideoClipCache.objects.create(
+                source_video=video,
+                clip_path=clip_path,
+                start_time=start_time,
+                duration=clip_duration,
+                file_size=clip_size,
+                generated_with_gpu=use_gpu,
+                generation_time=total_time,
+                access_count=1
+            )
+            
+            video.last_used_at = timezone.now()
+            video.use_count += 1
+            video.save(update_fields=['last_used_at', 'use_count'])
+            
+            logger.info(
+                f"✅ [TWO-PASS] Clip done in {total_time:.1f}s "
+                f"(P1 copy: {pass1_time:.1f}s + P2 encode: {pass2_time:.1f}s) "
+                f"→ {clip_path}"
+            )
+            return clip_path
+        
+        except subprocess.TimeoutExpired:
+            logger.warning(f"⏱️ Two-pass timeout for {video.file_path} → fallback to single-pass")
+            for f in [temp_raw, clip_path]:
+                if os.path.exists(f):
+                    os.remove(f)
+            # Fallback: encode directly from NAS (slower but works)
+            return self._generate_clip_single_pass(
+                video, resolved_path, start_time, clip_duration,
+                clip_path, use_gpu
+            )
+        except Exception as e:
+            logger.error(f"❌ Two-pass generation failed: {e} → fallback to single-pass")
+            for f in [temp_raw, clip_path]:
+                if os.path.exists(f):
+                    os.remove(f)
+            # Fallback: encode directly from NAS
+            return self._generate_clip_single_pass(
+                video, resolved_path, start_time, clip_duration,
+                clip_path, use_gpu
+            )
+
+    def _generate_clip_single_pass(
+        self, video, resolved_path: str, start_time: float,
+        clip_duration: float, clip_path: str, use_gpu: bool
+    ) -> Optional[str]:
+        """Single-pass clip generation for LOCAL files (or fallback)."""
+        from video_management.models import VideoClipCache
+        import time
+        
+        clip_timeout = 120
         encoder = 'h264_nvenc' if use_gpu else 'libx264'
         
         cmd = [
@@ -493,91 +789,72 @@ class SmartPreprocessingService:
             '-ss', str(start_time),
             '-i', resolved_path,
             '-t', str(clip_duration),
-            '-vf', 'fps=30,scale=540:960',  # ✅ FORCE 30fps + scale (prevents speed up/slow down!)
+            '-vf', 'fps=30,scale=540:960',
             '-c:v', encoder,
         ]
         
         if use_gpu:
-            # GPU: Optimized for GT 1030 (Pascal architecture with old NVENC generation)
-            # Note: GT 1030 doesn't support new presets (p1-p7), use legacy presets
             cmd.extend([
-                '-preset', 'fast',         # Legacy preset: fast (NOT p2!)
-                '-profile:v', 'main',      # Main profile (most compatible)
-                '-level', '4.1',           # Level 4.1 (supports 1080p@30fps)
-                '-b:v', '2M',              # 2 Mbps bitrate
-                '-maxrate', '2.5M',        # Max bitrate
-                '-bufsize', '4M',          # Buffer (2x maxrate)
-                '-rc', 'vbr',              # Variable bitrate
-                '-pix_fmt', 'yuv420p',     # ✅ Consistent pixel format
+                '-preset', 'fast',
+                '-profile:v', 'main',
+                '-level', '4.1',
+                '-b:v', '2M',
+                '-maxrate', '2.5M',
+                '-bufsize', '4M',
+                '-rc', 'vbr',
+                '-pix_fmt', 'yuv420p',
             ])
         else:
-            # CPU: Fast encoding
             cmd.extend([
                 '-preset', 'ultrafast',
                 '-crf', '28',
-                '-pix_fmt', 'yuv420p',     # ✅ Consistent pixel format
+                '-pix_fmt', 'yuv420p',
             ])
         
         cmd.extend([
             '-c:a', 'aac',
-            '-ar', '44100',                # ✅ Consistent sample rate
-            '-ac', '2',                    # ✅ Stereo
+            '-ar', '44100',
+            '-ac', '2',
             '-y',
             clip_path
         ])
         
         try:
-            import time
             start = time.time()
             
             result = subprocess.run(
                 cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',  # Ignore Unicode decode errors from FFmpeg output
-                timeout=60
+                capture_output=True, text=True,
+                encoding='utf-8', errors='ignore',
+                timeout=clip_timeout
             )
             
             generation_time = time.time() - start
             
-            # If GPU failed, retry with CPU
+            # GPU failed → retry CPU
             if result.returncode != 0 and use_gpu:
                 logger.warning(f"⚠️ GPU encoding failed for video {video.id}")
-                logger.warning(f"GPU Error: {result.stderr[:500]}")  # First 500 chars
                 logger.info(f"🔄 Retrying with CPU fallback...")
-                # Rebuild command with CPU encoder
-                encoder = 'libx264'
-                preset = 'ultrafast'
-                
                 cmd_cpu = [
                     self.ffmpeg_path,
                     '-ss', str(start_time),
                     '-i', resolved_path,
-                    '-t', str(clip_duration),  # ✅ Use clip_duration instead of CLIP_DURATION
-                    '-vf', 'fps=30,scale=540:960',  # ✅ NORMALIZE: Force 30fps + scale
-                    '-c:v', encoder,
-                    '-preset', preset,
-                    '-crf', '28',
-                    '-pix_fmt', 'yuv420p',     # ✅ Consistent pixel format
-                    '-c:a', 'aac',
-                    '-ar', '44100',
-                    '-ac', '2',
-                    '-y',
-                    clip_path
+                    '-t', str(clip_duration),
+                    '-vf', 'fps=30,scale=540:960',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                    '-pix_fmt', 'yuv420p',
+                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+                    '-y', clip_path
                 ]
-                
                 start = time.time()
                 result = subprocess.run(
                     cmd_cpu,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='ignore',
-                    timeout=60
+                    capture_output=True, text=True,
+                    encoding='utf-8', errors='ignore',
+                    timeout=clip_timeout
                 )
                 generation_time = time.time() - start
-                use_gpu = False  # Mark as CPU-generated
+                use_gpu = False
             
             if result.returncode != 0:
                 logger.error(f"FFmpeg failed: {result.stderr}")
@@ -600,7 +877,6 @@ class SmartPreprocessingService:
                 access_count=1
             )
             
-            # Update video usage
             video.last_used_at = timezone.now()
             video.use_count += 1
             video.save(update_fields=['last_used_at', 'use_count'])
@@ -609,7 +885,7 @@ class SmartPreprocessingService:
             return clip_path
         
         except subprocess.TimeoutExpired:
-            logger.error(f"Clip generation timeout for {video.file_path}")
+            logger.error(f"Clip generation timeout ({clip_timeout}s) for {video.file_path}")
             if os.path.exists(clip_path):
                 os.remove(clip_path)
             return None
@@ -707,6 +983,224 @@ class SmartPreprocessingService:
         return result
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BACKGROUND PRE-GENERATION SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════
+# After indexing, auto-generate clips for ALL indexed videos in background.
+# When user hits "Generate Mix", all clips are cached → near-instant!
+# ═══════════════════════════════════════════════════════════════════════════
+
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Pre-generation progress tracking
+_pregen_progress = {
+    "status": "idle",       # idle | running | completed | error
+    "total": 0,
+    "done": 0,
+    "cached": 0,            # Already had cache (skipped)
+    "generated": 0,         # Newly generated
+    "failed": 0,
+    "percent": 0,
+    "message": "",
+    "started_at": None,
+    "completed_at": None,
+}
+_pregen_lock = threading.Lock()
+_pregen_cancel = threading.Event()
+
+
+def get_pregen_progress() -> dict:
+    """Get current pre-generation progress."""
+    with _pregen_lock:
+        return dict(_pregen_progress)
+
+
+def cancel_pregen():
+    """Cancel running pre-generation."""
+    _pregen_cancel.set()
+    with _pregen_lock:
+        _pregen_progress["message"] = "Cancelling..."
+
+
+def start_background_pregen(clip_duration: float = 12.0):
+    """
+    Start background pre-generation of clips for ALL indexed videos.
+    
+    This runs in a daemon thread and generates 1 clip per indexed video.
+    Clips are generated at `clip_duration` seconds (default 12s) which
+    covers most A4 formula slot durations (audio/6 ≈ 7-15s).
+    
+    The mix system's cache lookup doesn't check duration, so a 12s clip
+    will be returned for 9.79s requests. The final output is trimmed by
+    _replace_audio() to exact audio length.
+    
+    Args:
+        clip_duration: Duration of pre-generated clips (default 12s)
+    """
+    import time
+    
+    with _pregen_lock:
+        if _pregen_progress["status"] == "running":
+            logger.info("⚠️ Pre-generation already running, skipping")
+            return
+    
+    def _run_pregen():
+        from video_management.models import IndexedVideo, VideoClipCache
+        
+        service = get_preprocessing_service()
+        _pregen_cancel.clear()
+        
+        try:
+            # Find all indexed videos WITHOUT cached clips
+            all_videos = IndexedVideo.objects.filter(is_available=True)
+            videos_with_cache = set(
+                VideoClipCache.objects.values_list('source_video_id', flat=True)
+            )
+            
+            videos_to_generate = [
+                v for v in all_videos if v.id not in videos_with_cache
+            ]
+            
+            already_cached = len(videos_with_cache)
+            total_to_gen = len(videos_to_generate)
+            total_all = all_videos.count()
+            
+            with _pregen_lock:
+                _pregen_progress.update({
+                    "status": "running",
+                    "total": total_all,
+                    "done": already_cached,
+                    "cached": already_cached,
+                    "generated": 0,
+                    "failed": 0,
+                    "percent": int(already_cached / total_all * 100) if total_all > 0 else 0,
+                    "message": f"Pre-generating {total_to_gen} clips ({already_cached} already cached)...",
+                    "started_at": time.time(),
+                    "completed_at": None,
+                })
+            
+            if total_to_gen == 0:
+                logger.info(f"✅ All {already_cached} videos already have cached clips!")
+                with _pregen_lock:
+                    _pregen_progress.update({
+                        "status": "completed",
+                        "percent": 100,
+                        "message": f"All {already_cached} clips already cached!",
+                        "completed_at": time.time(),
+                    })
+                return
+            
+            logger.info(
+                f"🚀 Background pre-generation starting: "
+                f"{total_to_gen} to generate, {already_cached} already cached, "
+                f"clip_duration={clip_duration}s"
+            )
+            
+            gen_count = 0
+            fail_count = 0
+            gen_lock = threading.Lock()
+            
+            def _gen_one(video):
+                nonlocal gen_count, fail_count
+                
+                if _pregen_cancel.is_set():
+                    return
+                
+                try:
+                    # Generate clip (two-pass for network, single-pass for local)
+                    clip_path = service.get_or_generate_clip(
+                        video.id, use_gpu=None, duration=clip_duration
+                    )
+                    
+                    with gen_lock:
+                        if clip_path:
+                            gen_count += 1
+                        else:
+                            fail_count += 1
+                        
+                        done = already_cached + gen_count + fail_count
+                        pct = int(done / total_all * 100) if total_all > 0 else 0
+                        
+                        with _pregen_lock:
+                            _pregen_progress.update({
+                                "done": done,
+                                "generated": gen_count,
+                                "failed": fail_count,
+                                "percent": pct,
+                                "message": (
+                                    f"Pre-generating... {gen_count}/{total_to_gen} done"
+                                    f" ({fail_count} failed)" if fail_count > 0
+                                    else f"Pre-generating... {gen_count}/{total_to_gen} done"
+                                ),
+                            })
+                        
+                        if gen_count % 5 == 0:
+                            logger.info(
+                                f"📊 Pre-gen progress: {gen_count}/{total_to_gen} "
+                                f"({pct}%)"
+                            )
+                
+                except Exception as e:
+                    with gen_lock:
+                        fail_count += 1
+                    logger.error(f"Pre-gen failed for video {video.id}: {e}")
+            
+            # 8 parallel workers for clip generation
+            max_workers = min(8, total_to_gen)
+            with ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="pregen"
+            ) as executor:
+                futures = [
+                    executor.submit(_gen_one, v) for v in videos_to_generate
+                ]
+                for f in as_completed(futures):
+                    if _pregen_cancel.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        break
+            
+            elapsed = time.time() - _pregen_progress.get("started_at", time.time())
+            
+            if _pregen_cancel.is_set():
+                msg = f"Cancelled. Generated {gen_count}/{total_to_gen} clips in {elapsed:.0f}s"
+                final_status = "idle"
+            else:
+                msg = (
+                    f"✅ Pre-generation complete! "
+                    f"{gen_count} generated, {already_cached} cached, "
+                    f"{fail_count} failed. Total: {elapsed:.0f}s"
+                )
+                final_status = "completed"
+            
+            logger.info(msg)
+            
+            with _pregen_lock:
+                _pregen_progress.update({
+                    "status": final_status,
+                    "percent": 100 if not _pregen_cancel.is_set() else _pregen_progress["percent"],
+                    "message": msg,
+                    "completed_at": time.time(),
+                })
+        
+        except Exception as e:
+            logger.error(f"❌ Pre-generation error: {e}", exc_info=True)
+            with _pregen_lock:
+                _pregen_progress.update({
+                    "status": "error",
+                    "message": f"Error: {str(e)}",
+                })
+    
+    # Start as daemon thread (dies when main process exits)
+    thread = threading.Thread(
+        target=_run_pregen,
+        name="clip_pregen_bg",
+        daemon=True
+    )
+    thread.start()
+    logger.info("🚀 Background pre-generation thread started")
+
+
 # Singleton instance
 _service = None
 
@@ -716,3 +1210,4 @@ def get_preprocessing_service() -> SmartPreprocessingService:
     if _service is None:
         _service = SmartPreprocessingService()
     return _service
+

@@ -291,14 +291,6 @@ GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
 ELEVENLABS_API_KEY = env('ELEVENLABS_API_KEY', default='')
 
 
-# ==========================================
-# LEGACY API SETTINGS (Fallback)
-# ==========================================
-
-# Tikhub TikTok API settings
-TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
-TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
-
 # Douyin API settings
 DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.com/douyin')
 DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
@@ -352,15 +344,21 @@ CELERY_BEAT_SCHEDULE = {
 # ==========================================
 # VIDEO PATHS CONFIGURATION
 # ==========================================
-# Base paths for video folders (can be network paths or local mapped drives)
-# Format: List of paths to try in order
+# Base paths for video folders (network paths hoặc ổ đĩa local đã map)
+# Ví dụ: VIDEO_BASE_PATHS=//VCB_MEDIA/MEDIA VCB folder,//192.168.1.250/MEDIA VCB folder,Z:/
 VIDEO_BASE_PATHS = env.list('VIDEO_BASE_PATHS', default=[
     r'\\VCB_MEDIA\MEDIA VCB folder',
     r'\\192.168.1.250\MEDIA VCB folder',
 ])
 
-# Manufacturing (Chế tác) folder location
-# This is appended to VIDEO_BASE_PATHS
+# Thư mục chứa video sản phẩm (dưới mỗi base path). Hệ thống tìm folder có tên chứa mã SKU trong đây.
+PRODUCT_VIDEO_SUBFOLDER = env('PRODUCT_VIDEO_SUBFOLDER', default=r'VIDEO Sản Phẩm')
+
+# (Tùy chọn) Đường dẫn ĐẦY ĐỦ để quét tìm video sản phẩm. Nếu có → dùng thay vì VIDEO_BASE_PATHS + PRODUCT_VIDEO_SUBFOLDER.
+# Ví dụ: PRODUCT_VIDEO_PATHS=//VCB_MEDIA/MEDIA VCB folder/VIDEO Sản Phẩm,Z:/VIDEO Sản Phẩm,D:/Videos/Sản phẩm
+PRODUCT_VIDEO_PATHS = env.list('PRODUCT_VIDEO_PATHS', default=[])
+
+# Manufacturing (Chế tác) folder location - append dưới VIDEO_BASE_PATHS
 MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'CHẾ TÁC SẢN PHẨM (xưởng)\Việt Nam')
 
 

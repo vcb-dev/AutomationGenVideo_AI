@@ -105,6 +105,7 @@ A4_FORMULA = [
 def index_folders(request):
     """
     Index videos from folders into database (one-time setup).
+    After indexing, automatically starts background pre-generation of clips.
     
     POST Body:
     {
@@ -114,13 +115,6 @@ def index_folders(request):
             ...
         },
         "videos_per_folder": 100  // Max videos to index per folder (0 = unlimited)
-    }
-    
-    Returns:
-    {
-        "success": true,
-        "results": {"Sản phẩm": 50, "HuyK": 30, ...},
-        "total_indexed": 80
     }
     """
     try:
@@ -139,11 +133,22 @@ def index_folders(request):
         
         total = sum(results.values())
         
+        # ── AUTO-START BACKGROUND PRE-GENERATION ────────────────────────
+        # Generate clips in background so mix is instant next time!
+        from video_management.services.smart_preprocessing_service import (
+            start_background_pregen, get_pregen_progress
+        )
+        start_background_pregen(clip_duration=12.0)
+        pregen = get_pregen_progress()
+        # ─────────────────────────────────────────────────────────
+        
         return Response({
             'success': True,
             'results': results,
             'total_indexed': total,
-            'message': f'Indexed {total} videos from {len(folders)} folders'
+            'message': f'Indexed {total} videos from {len(folders)} folders',
+            'pregen_status': pregen.get('status', 'idle'),
+            'pregen_message': pregen.get('message', ''),
         })
     
     except Exception as e:
@@ -152,6 +157,52 @@ def index_folders(request):
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+@api_view(['GET'])
+def pregen_status(request):
+    """
+    Get background pre-generation progress.
+    
+    Returns:
+    {
+        "status": "running",  // idle | running | completed | error
+        "total": 100,
+        "done": 45,
+        "cached": 30,
+        "generated": 15,
+        "failed": 0,
+        "percent": 45,
+        "message": "Pre-generating... 15/70 done"
+    }
+    """
+    from video_management.services.smart_preprocessing_service import get_pregen_progress
+    return Response(get_pregen_progress())
+
+
+@api_view(['POST'])
+def pregen_start(request):
+    """
+    Manually start or restart background pre-generation.
+    Useful when new folders are indexed from auto-index during mix.
+    """
+    from video_management.services.smart_preprocessing_service import start_background_pregen
+    clip_duration = float(request.data.get('clip_duration', 12.0))
+    start_background_pregen(clip_duration=clip_duration)
+    
+    from video_management.services.smart_preprocessing_service import get_pregen_progress
+    return Response({
+        'success': True,
+        'message': 'Pre-generation started',
+        'progress': get_pregen_progress(),
+    })
+
+
+@api_view(['POST'])
+def pregen_cancel(request):
+    """Cancel running pre-generation."""
+    from video_management.services.smart_preprocessing_service import cancel_pregen
+    cancel_pregen()
+    return Response({'success': True, 'message': 'Pre-generation cancel requested'})
 
 
 @api_view(['POST'])
@@ -644,18 +695,30 @@ def _run_smart_mix_task(
                 is_flexible = slot.get('flexible', False)
                 required_duration = slot_duration if is_flexible else slot.get('duration', 3)
                 
-                # Simple validation - just check if folder has videos
+                # Validation: chỉ cần folder có ít nhất 1 video (không check duration)
+                # Auto-fill sẽ tự concat nhiều clip ngắn nếu video ngắn hơn required_duration
                 count = IndexedVideo.objects.filter(
                     folder_type=folder_type,
-                    is_available=True,
-                    duration__gte=required_duration
+                    is_available=True
                 ).count()
                 
                 if count == 0:
-                    missing_slots.append(f"Slot {i}: {folder_type} ({required_duration:.1f}s)")
-                    logger.error(f"❌ Slot {i}/7: {folder_type} - NO VIDEOS FOUND!")
+                    missing_slots.append(f"Slot {i}: {folder_type}")
+                    logger.error(f"❌ Slot {i}/7: {folder_type} - KHÔNG CÓ VIDEO NÀO ĐƯỢC INDEX!")
                 else:
-                    logger.info(f"✅ Slot {i}/7: {folder_type} ({required_duration:.1f}s) - {count} videos")
+                    # Log thêm thông tin về video đủ dài
+                    count_ok = IndexedVideo.objects.filter(
+                        folder_type=folder_type,
+                        is_available=True,
+                        duration__gte=required_duration
+                    ).count()
+                    if count_ok > 0:
+                        logger.info(f"✅ Slot {i}/7: {folder_type} - {count_ok}/{count} videos >= {required_duration:.1f}s")
+                    else:
+                        logger.warning(
+                            f"⚠️ Slot {i}/7: {folder_type} - {count} videos nhưng KHÔNG CÓ video nào >= {required_duration:.1f}s. "
+                            f"Auto-fill sẽ ghép nhiều clip ngắn lại."
+                        )
             
             if missing_slots:
                 error_details = "\n".join(missing_slots)
@@ -678,44 +741,114 @@ def _run_smart_mix_task(
             if available_count < 5:
                 raise ValueError(f"Not enough videos indexed. Only {available_count} folder(s) have videos. Need at least 5!")
         
-        # Generate outputs - SELECT DIFFERENT VIDEOS FOR EACH OUTPUT!
-        output_files = []
-        
+        # ── PHASE 1: Chọn videos cho tất cả outputs ──────────────────────────
+        _update_progress(progress_id, 12, "Selecting videos for all outputs...")
+        all_selections = []
         for i in range(num_outputs):
-            _update_progress(progress_id, 10 + (i * 80 // num_outputs), f"Generating video {i+1}/{num_outputs}...")
-            
-            # Get FRESH video selections for each output (ensures variety!)
             if use_a4_formula:
-                video_selections = _get_a4_formula_videos(
-                    service, 
-                    slot_duration, 
-                    product_category=product_category
-                )
-                logger.info(f"Output {i+1}: A4 V3 formula (7 simple slots, {slot_duration:.2f}s each)")
+                sel = _get_a4_formula_videos(service, slot_duration, product_category=product_category)
+                logger.info(f"Output {i+1}: A4 V3 formula selected ({len(sel)} slots)")
             else:
-                video_dict = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
-                video_selections = list(video_dict.values())
-                logger.info(f"Output {i+1}: Random mode with {len([v for v in video_selections if v])} videos" +
-                           (f" (filtered by '{product_category}')" if product_category else ""))
+                vd = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
+                sel = list(vd.values())
+                logger.info(f"Output {i+1}: Random mode ({len([v for v in sel if v])} videos)")
+            all_selections.append(sel)
+
+        # ── PHASE 2: Pre-warm clip cache (SONG SONG) ──────────────────────────
+        # Thu thập tất cả unique video IDs cần generate clip
+        # Các outputs khác nhau → chọn video khác nhau → ít share cache
+        # Nhưng CÙNG output: clip của slot X được dùng cho output 1
+        # Key insight: pre-generate tất cả clips trước, rồi mix sẽ là cache HIT
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Collect (video_id, clip_duration) cần pre-warm từ tất cả selections
+        # Dùng set để dedup (cùng video_id + duration → chỉ generate 1 lần)
+        prewarm_tasks = set()  # (video_id, clip_duration_rounded)
+        for i, sel in enumerate(all_selections):
+            for j, video_id in enumerate(sel):
+                if video_id is None:
+                    continue
+                if use_a4_formula and j < len(A4_FORMULA):
+                    slot_cfg = A4_FORMULA[j]
+                    is_outro = slot_cfg.get('use_original_audio', False)
+                    if is_outro:
+                        # Outro duration cần query DB - skip pre-warm (nhanh vì cache)
+                        continue
+                    dur = slot_duration if slot_cfg.get('flexible') else slot_cfg.get('duration', 8)
+                else:
+                    dur = 8
+                # Round duration để dedup tốt hơn
+                prewarm_tasks.add((video_id, round(dur, 2)))
+        
+        if prewarm_tasks:
+            logger.info(f"🚀 Pre-warming {len(prewarm_tasks)} unique clips in parallel...")
+            _update_progress(progress_id, 15, f"Pre-generating {len(prewarm_tasks)} clips in parallel...")
             
-            output_file = _generate_one_mix(
-                progress_id,
-                i,
-                video_selections,
-                audio_path,
-                audio_duration,  # Pass SAME duration for all outputs
-                width,
-                height,
-                use_gpu,
-                service,
-                output_dir,
-                use_a4_formula,
-                slot_duration,  # Pass flexible slot duration
-                forced_product_video_id
-            )
+            def _prewarm_clip(task):
+                vid_id, dur = task
+                try:
+                    result = service.get_or_generate_clip(vid_id, use_gpu, duration=dur)
+                    if result:
+                        logger.info(f"  ✅ Pre-warmed clip: video={vid_id}, dur={dur}s")
+                    else:
+                        logger.warning(f"  ⚠️ Pre-warm failed: video={vid_id}, dur={dur}s")
+                    return vid_id, result
+                except Exception as e:
+                    logger.error(f"  ❌ Pre-warm error video={vid_id}: {e}")
+                    return vid_id, None
             
-            if output_file:
-                output_files.append(output_file)
+            # ⚡ Tối đa 8 workers song song — ffmpeg clip generation là I/O bound (NAS)
+            # Căng thẳng network ít hơn so với CPU → 8 workers an toàn
+            max_workers_prewarm = min(8, len(prewarm_tasks))
+            with ThreadPoolExecutor(max_workers=max_workers_prewarm, thread_name_prefix="prewarm") as executor:
+                futures = {executor.submit(_prewarm_clip, t): t for t in prewarm_tasks}
+                done_count = 0
+                for future in as_completed(futures):
+                    done_count += 1
+                    pct = 15 + int(done_count / len(prewarm_tasks) * 50)  # 15% → 65%
+                    _update_progress(progress_id, pct, f"Pre-generating clips... ({done_count}/{len(prewarm_tasks)})")
+            
+            logger.info(f"✅ Pre-warm complete. Cache is hot for mix phase.")
+
+        # ── PHASE 3: Mix tất cả outputs (SONG SONG) ──────────────────────────
+        _update_progress(progress_id, 67, f"Mixing {num_outputs} videos in parallel...")
+        logger.info(f"🎬 Mixing {num_outputs} outputs in parallel (clips are pre-cached)...")
+        
+        output_files_map = {}  # index → path (để giữ thứ tự)
+        mix_lock = threading.Lock()
+        
+        def _mix_one(i):
+            sel = all_selections[i]
+            try:
+                f = _generate_one_mix(
+                    progress_id, i, sel,
+                    audio_path, audio_duration,
+                    width, height, use_gpu, service, output_dir,
+                    use_a4_formula, slot_duration, forced_product_video_id
+                )
+                with mix_lock:
+                    _update_progress(
+                        progress_id,
+                        67 + int((len(output_files_map) + 1) / num_outputs * 30),
+                        f"Mixed {len(output_files_map)+1}/{num_outputs} videos..."
+                    )
+                return i, f
+            except Exception as e:
+                logger.error(f"❌ Mix output {i+1} failed: {e}", exc_info=True)
+                return i, None
+        
+        # ⚡ Tối đa 5 workers — clips đã có trong cache → mix chỉ cần concat + replace audio (I/O)
+        # Không tạo clip mới (pre-warm đã xong) → không có GPU conflict
+        max_workers_mix = min(5, num_outputs)
+        with ThreadPoolExecutor(max_workers=max_workers_mix, thread_name_prefix="mix") as executor:
+            mix_futures = [executor.submit(_mix_one, i) for i in range(num_outputs)]
+            for future in as_completed(mix_futures):
+                idx, path = future.result()
+                if path:
+                    output_files_map[idx] = path
+        
+        # Giữ nguyên thứ tự output
+        output_files = [output_files_map[i] for i in range(num_outputs) if i in output_files_map]
         
         # Generate URLs - Use full URL with AI service host
         ai_service_url = os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
@@ -997,15 +1130,23 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
             '-y',
             output_path
         ]
-        
-        result = subprocess.run(
-            cmd_fast,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            timeout=120
-        )
+
+        # ⚡ Timeout rõ ràng: 60s đủ để copy — nếu quá tức là bị block
+        concat_copy_timeout = 60 + len(clip_paths) * 5  # 60s base + 5s/clip
+        try:
+            result = subprocess.run(
+                cmd_fast,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                timeout=concat_copy_timeout
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(f"⏱️ Concat copy TIMEOUT ({concat_copy_timeout}s) — falling back to re-encode")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            result = type('R', (), {'returncode': 1, 'stderr': 'timeout'})()
         
         if result.returncode == 0 and os.path.isfile(output_path):
             logger.info(f"✅ Concat SUCCESS (copy codec) → {os.path.basename(output_path)}")
@@ -1040,14 +1181,24 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
             output_path
         ]
         
-        result2 = subprocess.run(
-            cmd_reencode,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            timeout=300  # Longer timeout for re-encoding
-        )
+        # ⚡ Re-encode timeout: 60s base + 30s/clip — tránh chờ vô hạn
+        reencode_timeout = 60 + len(clip_paths) * 30
+        try:
+            result2 = subprocess.run(
+                cmd_reencode,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                timeout=reencode_timeout
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ Concat re-encode TIMEOUT ({reencode_timeout}s)!")
+            if os.path.exists(list_file):
+                os.remove(list_file)
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return False
         
         # Cleanup list file
         if os.path.exists(list_file):
@@ -1476,29 +1627,42 @@ def _get_a4_formula_videos(
         is_flexible = slot.get('flexible', False)
         required_duration = slot_duration if is_flexible else slot.get('duration', 3)
         
-        # Helper function to get random video with optional category filtering
+        # Helper function to get random video với optional category filtering
+        # KHÔNG filter theo duration - auto-fill sẽ concat nếu video ngắn hơn required_duration
         def get_random_video_id(f_type, duration):
-            # Base query
-            query = Q(folder_type=f_type, is_available=True, duration__gte=duration)
+            base_query = Q(folder_type=f_type, is_available=True)
             
-            # Apply category filtering for product-related folders
-            # This ensures videos match the product category (e.g., "Dây chuyền", "Nhẫn")
+            # Apply category filtering cho các folder liên quan đến sản phẩm
             if product_category and f_type in ["Sản phẩm", "Sản phẩm HT", "Chế tác"]:
-                # Try to find videos matching category in path
+                # Ưu tiên video có category trong path
                 filtered_videos = IndexedVideo.objects.filter(
-                    query & Q(file_path__icontains=product_category)
+                    base_query & Q(file_path__icontains=product_category)
                 ).values_list('id', flat=True)
                 
                 if filtered_videos.exists():
-                    logger.info(f"  🔍 Filtered '{f_type}' by '{product_category}' -> found {len(filtered_videos)} videos")
+                    logger.info(f"  🔍 Filtered '{f_type}' by '{product_category}' -> {len(filtered_videos)} videos")
                     return random.choice(list(filtered_videos))
                 else:
-                    logger.warning(f"  ⚠️ No videos found for category '{product_category}' in '{f_type}', falling back to all videos")
+                    logger.warning(f"  ⚠️ No '{product_category}' videos in '{f_type}', dùng tất cả videos")
             
-            # Fallback to all videos in folder
-            videos = IndexedVideo.objects.filter(query).values_list('id', flat=True)
-            if videos:
-                return random.choice(list(videos))
+            # Lấy tất cả video trong folder (không filter duration)
+            # Ưu tiên video đủ dài trước, nếu không có thì lấy bất kỳ
+            videos_ok = IndexedVideo.objects.filter(
+                base_query & Q(duration__gte=duration)
+            ).values_list('id', flat=True)
+            
+            if videos_ok.exists():
+                return random.choice(list(videos_ok))
+            
+            # Fallback: lấy video bất kỳ (dù ngắn hơn yêu cầu - auto-fill sẽ xử lý)
+            videos_any = IndexedVideo.objects.filter(base_query).values_list('id', flat=True)
+            if videos_any.exists():
+                logger.warning(
+                    f"  ⚠️ '{f_type}': Không có video >= {duration:.1f}s, "
+                    f"dùng video ngắn hơn (auto-fill sẽ ghép thêm)"
+                )
+                return random.choice(list(videos_any))
+            
             return None
 
         # A4 V3: All slots are simple videos
