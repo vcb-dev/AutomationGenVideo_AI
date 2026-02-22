@@ -11,7 +11,9 @@ from django.conf import settings
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+import uuid
 from rest_framework.permissions import AllowAny
+from ..models import LarkReport, AppUser, LarkEmployee
 
 logger = logging.getLogger(__name__)
 
@@ -243,59 +245,55 @@ class ChecklistSubmitView(APIView):
             # Loại bỏ userEmail và userName khỏi payload checklist
             checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName"]}
             
-            # Convert checklist data thành JSON string
-            checklist_json = json.dumps(checklist_data, ensure_ascii=False)
-            
-            # Date field (type: 5) cần timestamp milliseconds
-            date_timestamp = int(current_datetime.timestamp() * 1000)
-            
-            # Token đã lấy ở trên, dùng luôn để create record
-            token = get_lark_tenant_access_token()
-            
-            # Lookup user info từ bảng Lark dựa vào email
-            existing_user_info = search_user_by_email(token, user_email)
-            
-            # Tạo fields object cơ bản
-            fields = {
-                "Email": user_email,        
-                "Answers": checklist_json,   
-                "HoTen": user_name,         
-                "Date": date_timestamp,
-            }
-            
-            # Tự động điền Role, Team, Nhân viên nếu tìm thấy từ record cũ
-            if existing_user_info:
-                logger.info("Auto-fill từ record cũ: %s", existing_user_info)
-                if "Role" in existing_user_info:
-                    fields["Role"] = existing_user_info["Role"]
-                if "Team" in existing_user_info:
-                    fields["Team"] = existing_user_info["Team"]
-                if "Nhân viên" in existing_user_info:
-                    fields["Nhân viên"] = existing_user_info["Nhân viên"]
-            else:
-                logger.info("User mới hoặc không tìm thấy info trong Lark - chỉ điền Email, HoTen, Answers, Date")
+            # 1. Lookup thông tin từ table AppUser (users)
+            user_role = None
+            try:
+                user_record = AppUser.objects.filter(email=user_email).first()
+                if user_record:
+                    user_role = user_record.role
+            except Exception as e:
+                logger.warning("Lỗi lookup AppUser: %s", e)
 
-            # Debug logging
-            logger.info("Sending to Lark Bitable with fields: %s", list(fields.keys()))
-            logger.info("Field values types: %s", {k: type(v).__name__ for k, v in fields.items()})
+            # 2. Lookup thông tin từ table LarkEmployee (nếu có để lấy Team)
+            user_team = None
+            user_emp_data = None
+            try:
+                emp_record = LarkEmployee.objects.filter(name=user_name).first()
+                if emp_record:
+                    user_team = emp_record.team
+                    user_emp_data = emp_record.employee_data
+            except Exception as e:
+                logger.warning("Lỗi lookup LarkEmployee: %s", e)
 
-            # Token đã lấy ở trên, dùng luôn để create record
-            result = create_bitable_record(token, fields)
-
-            if result.get("code") != 0:
-                logger.warning("Lark Bitable response: %s", result)
-                logger.warning("Fields sent: %s", fields)
-                return Response(
-                    {"error": result.get("msg", "Lark Bitable lỗi"), "detail": result, "fields_sent": list(fields.keys())},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
-
+            # Tạo ID ngẫu nhiên cho bản ghi (thay vì lấy từ Lark)
+            record_id = f"local_{uuid.uuid4().hex[:12]}"
+            
+            # --- LƯU VÀO DATABASE (Postgres) ---
+            report = LarkReport.objects.create(
+                id=record_id,
+                name=user_name,
+                email=user_email,
+                team=user_team,
+                role=user_role,
+                employee=user_emp_data,
+                answers=checklist_data,
+                date=current_datetime,
+            )
+            
+            logger.info("Đã lưu báo cáo LOCAL %s cho %s vào database", record_id, user_email)
 
             return Response({
                 "success": True,
-                "message": "Báo cáo thành công",
-                "record_id": result.get("data", {}).get("record", {}).get("record_id"),
+                "message": "Báo cáo thành công (Lưu Database nội bộ)",
+                "record_id": record_id,
             }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.exception("Checklist submit error: %s", e)
+            return Response(
+                {"error": "Lỗi xử lý báo cáo", "detail": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         except ValueError as e:
             return Response(
