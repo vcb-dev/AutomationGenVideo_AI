@@ -26,7 +26,8 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from video_management.services.smart_preprocessing_service import get_preprocessing_service
-from video_management.models import IndexedVideo, VideoClipCache
+from video_management.models import IndexedVideo, VideoClipCache, Product
+from video_management.views.smart_mix_video_views_helper import _auto_index_manufacturing_folders, _auto_index_by_sku_global
 
 logger = logging.getLogger(__name__)
 
@@ -34,36 +35,34 @@ logger = logging.getLogger(__name__)
 _mix_progress = {}
 _mix_progress_lock = threading.Lock()
 
-# 10-slot formula folder types
-# Default folder types for A4 Formula (7 REQUIRED folder types for 8 slots)
-# Note: "HuyK" is used twice (slot 2 & 4), "SPLIT_LAYOUT" uses 2 folders (Chế tác Above 2 + HuyK)
+# Folder types for A4 Formula V3 (7 SIMPLE SLOTS - NO SPLIT)
+# Simplified structure: No split layouts, just 7 sequential slots
 FOLDER_TYPES = [
-    "Sản phẩm",         # Slot 1: Intro
-    "HuyK",             # Slot 2 + SPLIT 2 (bottom) + SPLIT 3 (top)
-    "Chế tác Above 1",  # SPLIT 1 (top, 30%)
-    "Chế tác Below 1",  # SPLIT 1 (bottom, 70%)
-    "Chế tác Above 2",  # SPLIT 2 (top, 30%)
-    "Chế tác Below 2",  # SPLIT 3 (bottom, 70%)
+    "Sản phẩm",         # Slot 1: Intro sản phẩm
+    "HuyK",             # Slot 2: KOC (HuyK)
+    "Chế tác",          # Slot 3: Chế tác
+    # "HuyK" reused      # Slot 4: KOC (HuyK) - same folder type
+    # "Chế tác" reused   # Slot 5: Chế tác - same folder type
     "Sản phẩm HT",      # Slot 6: Sản phẩm hoàn thiện
     "Outtrol",          # Slot 7: Outro (original audio)
 ]
 
 # ============================================================================
-# CÔNG THỨC A4 V2 - FLEXIBLE DURATION (7 slots)
+# CÔNG THỨC A4 V3 - SIMPLE 7 SLOTS (NO SPLIT LAYOUTS)
 # ============================================================================
-# Reference: gen-n-CongThucA4.jpg (Updated requirements)
+# Updated: 2026-02-12 - Simplified structure per user request
 # 
-# Cấu trúc timeline mới:
+# Cấu trúc timeline mới (KHÔNG CÓ SPLIT):
 # 
-#   ┌─────────┬─────┬──────────┬──────────┬──────────┬──────────┬─────────┐
-#   │ Sản phẩm│ HuyK│ SPLIT 1  │ SPLIT 2  │ SPLIT 3  │Sản phẩm  │ Outro   │
-#   │  (Intro)│     │(CT 30/70)│(CT30/HK70)│(HK30/CT70)│   HT     │(Audio ✓)│
-#   └─────────┴─────┴──────────┴──────────┴──────────┴──────────┴─────────┘
+#   ┌─────────┬─────┬─────────┬─────┬─────────┬─────────┬─────────┐
+#   │ Sản phẩm│ KOC │ Chế tác │ KOC │ Chế tác │Sản phẩm │ Outro   │
+#   │  (Intro)│(HuyK)│         │(HuyK)│         │   HT    │(Audio ✓)│
+#   └─────────┴─────┴─────────┴─────┴─────────┴─────────┴─────────┘
 #    ◄─────────────── FLEXIBLE (audio_duration / 6) ──────────────►│ORIGINAL│
 #
 # FLEXIBLE DURATION (Slot 1-6):
 # - duration = audio_duration / 6
-# - Ví dụ: audio 45s → mỗi slot 7.5s
+# - Ví dụ: audio 48s → mỗi slot 8s
 #
 # OUTRO (Slot 7):
 # - duration = video_outro.original_duration (giữ nguyên)
@@ -71,48 +70,32 @@ FOLDER_TYPES = [
 #
 # OUTPUT VIDEO:
 # - Total = (audio_duration) + (outro_duration)
-# - Ví dụ: 45s content + 5s outro = 50s total
+# - Ví dụ: 48s content + 5s outro = 53s total
 #
 # Chi tiết từng slot:
 # 1. Sản phẩm (flexible)       - Intro sản phẩm
-# 2. HuyK (flexible)           - Video người tạo/KOC
-# 3. SPLIT 1 (flexible)        - Chế tác Above (30%) / Chế tác Below (70%)
-# 4. SPLIT 2 (flexible)        - Chế tác (30%) / HuyK (70%)
-# 5. SPLIT 3 (flexible)        - HuyK (30%) / Chế tác (70%)
+# 2. KOC/HuyK (flexible)       - Video người tạo/KOC
+# 3. Chế tác (flexible)        - Video chế tác
+# 4. KOC/HuyK (flexible)       - Video người tạo/KOC (lặp lại)
+# 5. Chế tác (flexible)        - Video chế tác (lặp lại)
 # 6. Sản phẩm HT (flexible)    - Sản phẩm hoàn thiện
 # 7. Outro (original)          - Outro HuyK/Brand (giữ nguyên audio+duration)
 #
 # ⚠️ LƯU Ý QUAN TRỌNG:
-# - 3 SPLIT LAYOUTS sử dụng FFmpeg filter_complex với vstack
-# - Mỗi split có tỉ lệ khác nhau (30/70 hoặc 70/30)
+# - KHÔNG CÒN SPLIT LAYOUTS (đã loại bỏ)
+# - Tất cả 7 slots đều là video đơn giản, fullscreen
+# - Slot 2 và 4 dùng cùng folder "HuyK" (chọn video khác nhau)
+# - Slot 3 và 5 dùng cùng folder "Chế tác" (chọn video khác nhau)
 # - Mỗi lần generate 5 videos sẽ chọn ngẫu nhiên videos khác nhau
 # - Slot 1-6 dùng audio nội dung, Slot 7 giữ nguyên audio gốc
 # ============================================================================
 
 A4_FORMULA = [
-    {"folder_type": "Sản phẩm", "flexible": True},      # Slot 1: Intro
-    {"folder_type": "HuyK", "flexible": True},          # Slot 2: HuyK
-    {   # Slot 3: SPLIT 1 - Chế tác Above (30%) / Chế tác Below (70%)
-        "folder_type": "SPLIT_LAYOUT",
-        "flexible": True,
-        "layout_name": "SPLIT_1",
-        "top_video": {"folder_type": "Chế tác Above 1", "ratio": 0.3},   # 30% top
-        "bottom_video": {"folder_type": "Chế tác Below 1", "ratio": 0.7}  # 70% bottom
-    },
-    {   # Slot 4: SPLIT 2 - Chế tác (30%) / HuyK (70%)
-        "folder_type": "SPLIT_LAYOUT",
-        "flexible": True,
-        "layout_name": "SPLIT_2",
-        "top_video": {"folder_type": "Chế tác Above 2", "ratio": 0.3},   # 30% top
-        "bottom_video": {"folder_type": "HuyK", "ratio": 0.7}  # 70% bottom
-    },
-    {   # Slot 5: SPLIT 3 - HuyK (30%) / Chế tác (70%)
-        "folder_type": "SPLIT_LAYOUT",
-        "flexible": True,
-        "layout_name": "SPLIT_3",
-        "top_video": {"folder_type": "HuyK", "ratio": 0.3},              # 30% top
-        "bottom_video": {"folder_type": "Chế tác Below 2", "ratio": 0.7}  # 70% bottom
-    },
+    {"folder_type": "Sản phẩm", "flexible": True},      # Slot 1: Intro sản phẩm
+    {"folder_type": "HuyK", "flexible": True},          # Slot 2: KOC (HuyK)
+    {"folder_type": "Chế tác", "flexible": True},       # Slot 3: Chế tác
+    {"folder_type": "HuyK", "flexible": True},          # Slot 4: KOC (HuyK) - reuse
+    {"folder_type": "Chế tác", "flexible": True},       # Slot 5: Chế tác - reuse
     {"folder_type": "Sản phẩm HT", "flexible": True},   # Slot 6: Sản phẩm hoàn thiện
     {"folder_type": "Outtrol", "flexible": False, "use_original_audio": True},  # Slot 7: Outro (keep audio)
 ]
@@ -165,6 +148,47 @@ def index_folders(request):
     
     except Exception as e:
         logger.error(f"Index folders error: {e}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+def index_outro(request):
+    """
+    Smart scan and index Outro folder.
+    Automatically finds folder containing 'outro' (case-insensitive).
+    
+    Returns:
+    {
+        "success": true,
+        "message": "Found and indexed Outro folder",
+        "folder_path": "\\\\VCB_MEDIA\\..."
+    }
+    """
+    try:
+        service = get_preprocessing_service()
+        _auto_index_outro(service)
+        
+        # Check if indexing succeeded
+        from video_management.models import IndexedVideo
+        outro_count = IndexedVideo.objects.filter(folder_type="Outtrol").count()
+        
+        if outro_count > 0:
+            return Response({
+                'success': True,
+                'message': f'Successfully indexed {outro_count} Outro videos',
+                'indexed_count': outro_count
+            })
+        else:
+            return Response({
+                'success': False,
+                'error': 'Could not find Outro folder'
+            }, status=status.HTTP_404_NOT_FOUND)
+    
+    except Exception as e:
+        logger.error(f"Index Outro error: {e}", exc_info=True)
         return Response(
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -421,6 +445,28 @@ def smart_mix(request):
         
         use_a4_formula = use_a4_formula_str.lower() == 'true'
         
+        # Handle forced product video (from SKU search)
+        forced_product_video_id = request.POST.get('forced_product_video_id')
+        if forced_product_video_id:
+            try:
+                forced_product_video_id = int(forced_product_video_id)
+                logger.info(f"🔒 Forced product video ID: {forced_product_video_id}")
+            except ValueError:
+                logger.warning(f"Invalid forced_product_video_id: {forced_product_video_id}")
+                forced_product_video_id = None
+        
+        # Get product id, category and SKU for auto-indexing
+        product_id = request.POST.get('product_id')
+        product_category = request.POST.get('product_category')
+        product_sku = request.POST.get('product_sku')
+        
+        if product_id:
+            logger.info(f"🧾 Product ID: {product_id}")
+        if product_category:
+            logger.info(f"📦 Product category: {product_category}")
+        if product_sku:
+            logger.info(f"🏷️ Product SKU: {product_sku}")
+        
         # Create progress tracking
         progress_id = uuid.uuid4().hex
         with _mix_progress_lock:
@@ -439,7 +485,20 @@ def smart_mix(request):
         is_temp_audio = temp_audio is not None
         threading.Thread(
             target=_run_smart_mix_task,
-            args=(progress_id, audio_path, num_outputs, width, height, use_gpu, is_temp_audio, use_a4_formula),
+            args=(
+                progress_id,
+                audio_path,
+                num_outputs,
+                width,
+                height,
+                use_gpu,
+                is_temp_audio,
+                use_a4_formula,
+                forced_product_video_id,
+                product_id,
+                product_category,
+                product_sku
+            ),
             daemon=True
         ).start()
         
@@ -476,7 +535,11 @@ def _run_smart_mix_task(
     height: int,
     use_gpu: Optional[bool],
     is_temp_audio: bool,
-    use_a4_formula: bool = False
+    use_a4_formula: bool = False,
+    forced_product_video_id: Optional[int] = None,
+    product_id: Optional[str] = None,
+    product_category: Optional[str] = None,
+    product_sku: Optional[str] = None
 ):
     """Background task for smart mix."""
     service = get_preprocessing_service()
@@ -486,6 +549,43 @@ def _run_smart_mix_task(
     try:
         # Update progress
         _update_progress(progress_id, 5, "Preparing...")
+
+        # Resolve product info from catalog if we have product_id and/or product_sku
+        try:
+            catalog_product = None
+
+            if product_id:
+                try:
+                    catalog_product = Product.objects.filter(id=int(product_id)).first()
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠️ Invalid product_id received: {product_id}")
+
+            # Fallback: lookup by SKU if no product found yet
+            if not catalog_product and product_sku:
+                catalog_product = Product.objects.filter(sku__iexact=product_sku.strip()).order_by('-created_at').first()
+
+            if catalog_product:
+                # Prefer catalog values when FE did not send them
+                if not product_category or not product_category.strip():
+                    if catalog_product.category:
+                        product_category = catalog_product.category
+                        logger.info(f"📦 Inferred product category '{product_category}' from catalog (product id={catalog_product.id})")
+                if not product_sku and catalog_product.sku:
+                    product_sku = catalog_product.sku
+                    logger.info(f"🏷️ Using SKU '{product_sku}' from catalog (product id={catalog_product.id})")
+                
+                logger.info(
+                    f"✅ Product resolved for MIX pipeline: "
+                    f"id={catalog_product.id}, name='{catalog_product.name}', "
+                    f"category='{product_category}', sku='{product_sku}'"
+                )
+            else:
+                if product_id:
+                    logger.warning(f"⚠️ No Product found in catalog for id={product_id}")
+                elif product_sku:
+                    logger.warning(f"⚠️ No Product found in catalog for SKU '{product_sku}'")
+        except Exception as e:
+            logger.error(f"Error while resolving product info from catalog (id={product_id}, sku={product_sku}): {e}", exc_info=True)
         
         # Get audio duration ONCE (all outputs will have same duration!)
         audio_duration = _get_media_duration(audio_path)
@@ -494,18 +594,48 @@ def _run_smart_mix_task(
             audio_duration = 60  # Default fallback
         
         logger.info(f"🎵 Audio duration: {audio_duration}s (all outputs will match this)")
+        # -------------------------------------------------------------
+        # AUTO-INDEX OUTRO (If missing)
+        # -------------------------------------------------------------
+        from video_management.models import IndexedVideo
+        if not IndexedVideo.objects.filter(folder_type="Outtrol").exists():
+             logger.info("🔍 'Outtrol' index missing. Auto-scanning...")
+             _auto_index_outro(service)
+
+        # -------------------------------------------------------------
+        # AUTO-INDEX BY SKU (First Priority)
+        # -------------------------------------------------------------   
+        sku_found = False
+        if product_sku:
+             # Try to find folder with SKU name
+             sku_found = _auto_index_by_sku(service, product_sku)
+             
+        # -------------------------------------------------------------
+        # AUTO-INDEX CATEGORY FOLDER (Fallback if SKU not found)
+        # -------------------------------------------------------------
+        if not sku_found and product_category:
+            _auto_index_category_folder(service, product_category)
+            
+            # ALSO AUTO-INDEX MANUFACTURING FOLDERS (Chế tác)
+            # This will scan "CHẾ TÁC SẢN PHẨM (xưởng)\Việt Nam\<Category>" and index videos
+            try:
+                logger.info(f"🔧 Auto-indexing manufacturing folders for category: '{product_category}'")
+                if product_category:
+                    _auto_index_manufacturing_folders(service, product_category, product_sku)
+            except Exception as e:
+                logger.error(f"❌ Error auto-indexing manufacturing folders: {e}", exc_info=True)
         
         # Calculate flexible slot duration for A4 (slot 1-6 share audio duration)
         slot_duration = audio_duration / 6 if use_a4_formula else None
         
         # Check if we have enough indexed videos for the selected mode
         if use_a4_formula:
-            # STRICT VALIDATION FOR A4 V2: ALL 7 SLOTS MUST HAVE VIDEOS!
+            # STRICT VALIDATION FOR A4 V3: ALL 7 SLOTS MUST HAVE VIDEOS!
             from video_management.models import IndexedVideo
             
-            logger.info("🔍 Validating A4 Formula V2 requirements (7 slots, flexible duration)...")
+            logger.info("🔍 Validating A4 Formula V3 requirements (7 simple slots, flexible duration)...")
             logger.info(f"🎵 Audio: {audio_duration}s → Slot 1-6: {slot_duration:.2f}s each, Slot 7: original")
-            logger.info("⚠️ Note: Slots 3-5 use SPLIT LAYOUTS (30/70 or 70/30)")
+            logger.info("✨ Note: Simple fullscreen videos only (NO split layouts)")
             
             missing_slots = []
             
@@ -514,71 +644,36 @@ def _run_smart_mix_task(
                 is_flexible = slot.get('flexible', False)
                 required_duration = slot_duration if is_flexible else slot.get('duration', 3)
                 
-                # SPECIAL: SPLIT_LAYOUT needs to check 1 top + 1 bottom
-                if folder_type == "SPLIT_LAYOUT":
-                    layout_name = slot.get('layout_name', f'SPLIT_{i}')
-                    logger.info(f"🔍 Slot {i}/7: {layout_name} - Checking top + bottom ({required_duration:.2f}s)...")
-                    
-                    # Check top video
-                    top_folder = slot['top_video']['folder_type']
-                    
-                    count = IndexedVideo.objects.filter(
-                        folder_type=top_folder,
-                        is_available=True,
-                        duration__gte=required_duration
-                    ).count()
-                    
-                    if count == 0:
-                        missing_slots.append(f"Slot {i} Top: {top_folder} ({required_duration:.1f}s)")
-                        logger.error(f"❌ Slot {i} Top: {top_folder} - NO VIDEOS!")
-                    else:
-                        logger.info(f"✅ Slot {i} Top: {top_folder} - {count} videos")
-                    
-                    # Check bottom video
-                    bottom_folder = slot['bottom_video']['folder_type']
-                    
-                    count = IndexedVideo.objects.filter(
-                        folder_type=bottom_folder,
-                        is_available=True,
-                        duration__gte=required_duration
-                    ).count()
-                    
-                    if count == 0:
-                        missing_slots.append(f"Slot {i} Bottom: {bottom_folder} ({required_duration:.1f}s)")
-                        logger.error(f"❌ Slot {i} Bottom: {bottom_folder} - NO VIDEOS!")
-                    else:
-                        logger.info(f"✅ Slot {i} Bottom: {bottom_folder} - {count} videos")
+                # Simple validation - just check if folder has videos
+                count = IndexedVideo.objects.filter(
+                    folder_type=folder_type,
+                    is_available=True,
+                    duration__gte=required_duration
+                ).count()
+                
+                if count == 0:
+                    missing_slots.append(f"Slot {i}: {folder_type} ({required_duration:.1f}s)")
+                    logger.error(f"❌ Slot {i}/7: {folder_type} - NO VIDEOS FOUND!")
                 else:
-                    # NORMAL SLOT (including Outro)
-                    count = IndexedVideo.objects.filter(
-                        folder_type=folder_type,
-                        is_available=True,
-                        duration__gte=required_duration
-                    ).count()
-                    
-                    if count == 0:
-                        missing_slots.append(f"Slot {i}: {folder_type} ({required_duration:.1f}s)")
-                        logger.error(f"❌ Slot {i}/7: {folder_type} - NO VIDEOS FOUND!")
-                    else:
-                        logger.info(f"✅ Slot {i}/7: {folder_type} ({required_duration:.1f}s) - {count} videos")
+                    logger.info(f"✅ Slot {i}/7: {folder_type} ({required_duration:.1f}s) - {count} videos")
             
             if missing_slots:
                 error_details = "\n".join(missing_slots)
-                logger.error(f"\n⚠️ A4 V2 VALIDATION FAILED!\nMissing slots:\n{error_details}")
-                logger.error("\n💡 Solution: Go to 'Quản lý Folders' and index ALL 7 folder types!")
+                logger.error(f"\n⚠️ A4 V3 VALIDATION FAILED!\nMissing slots:\n{error_details}")
+                logger.error("\n💡 Solution: Go to 'Quản lý Folders' and index ALL required folder types!")
                 
                 raise ValueError(
-                    f"❌ A4 Formula V2 requires ALL 7 slots!\n\n"
+                    f"❌ A4 Formula V3 requires all slots to have videos!\n\n"
                     f"Missing slots:\n{error_details}\n\n"
                     f"⚠️ ESPECIALLY CHECK:\n"
                     f"- Slot 7: 'Outtrol' (Outro with original audio)\n\n"
-                    f"Please index all 7 folder types."
+                    f"Note: Slot 1 'Sản phẩm' will be auto-indexed if you provide product SKU/category."
                 )
             
-            logger.info(f"✅ A4 V2 Validation passed! All 7 slots have videos.")
+            logger.info(f"✅ A4 V3 Validation passed! All required slots have videos.")
         else:
             # Quick validation for random mode
-            video_dict = service.get_random_videos(FOLDER_TYPES)
+            video_dict = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
             available_count = sum(1 for v in video_dict.values() if v is not None)
             if available_count < 5:
                 raise ValueError(f"Not enough videos indexed. Only {available_count} folder(s) have videos. Need at least 5!")
@@ -591,12 +686,17 @@ def _run_smart_mix_task(
             
             # Get FRESH video selections for each output (ensures variety!)
             if use_a4_formula:
-                video_selections = _get_a4_formula_videos(service, slot_duration)
-                logger.info(f"Output {i+1}: A4 V2 formula (7 slots, {slot_duration:.2f}s each)")
+                video_selections = _get_a4_formula_videos(
+                    service, 
+                    slot_duration, 
+                    product_category=product_category
+                )
+                logger.info(f"Output {i+1}: A4 V3 formula (7 simple slots, {slot_duration:.2f}s each)")
             else:
-                video_dict = service.get_random_videos(FOLDER_TYPES)
+                video_dict = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
                 video_selections = list(video_dict.values())
-                logger.info(f"Output {i+1}: Random mode with {len([v for v in video_selections if v])} videos")
+                logger.info(f"Output {i+1}: Random mode with {len([v for v in video_selections if v])} videos" +
+                           (f" (filtered by '{product_category}')" if product_category else ""))
             
             output_file = _generate_one_mix(
                 progress_id,
@@ -610,7 +710,8 @@ def _run_smart_mix_task(
                 service,
                 output_dir,
                 use_a4_formula,
-                slot_duration  # Pass flexible slot duration
+                slot_duration,  # Pass flexible slot duration
+                forced_product_video_id
             )
             
             if output_file:
@@ -668,12 +769,13 @@ def _generate_one_mix(
     service,
     output_dir: str,
     use_a4_formula: bool = False,
-    slot_duration: Optional[float] = None  # For A4 V2 flexible slots
+    slot_duration: Optional[float] = None,  # For A4 V3 flexible slots
+    forced_product_video_id: Optional[int] = None
 ) -> Optional[str]:
     """
     Generate one mixed video using cached clips.
     
-    For A4 V2:
+    For A4 V3:
     - Slot 1-6: Use slot_duration (flexible, based on audio)
     - Slot 7 (Outro): Use original duration + original audio
     """
@@ -684,114 +786,92 @@ def _generate_one_mix(
     # Get/generate clips for each slot
     clip_paths = []
     clip_durations = []
-    outro_clip_path = None  # For A4 V2: Outro with original audio
+    outro_clip_path = None  # For A4 V3: Outro with original audio
     outro_duration = None
     
     for i, video_selection in enumerate(video_selections):
-        # Check if this is Outro slot (last slot in A4 V2)
+        # Check if this is Outro slot (last slot in A4 V3)
         is_outro = (use_a4_formula and i == len(video_selections) - 1 and 
                     i < len(A4_FORMULA) and A4_FORMULA[i].get('use_original_audio'))
         
-        # Check if this is a SPLIT_LAYOUT slot (dict) or normal slot (int)
-        if isinstance(video_selection, dict) and video_selection.get("type") == "SPLIT_LAYOUT":
-            # SPECIAL HANDLING: SPLIT LAYOUT
-            clip_duration = video_selection['duration']
-            layout_name = video_selection.get('layout_name', 'SPLIT')
-            top_ratio = video_selection.get('top_ratio', 0.3)
-            bottom_ratio = video_selection.get('bottom_ratio', 0.7)
-            
-            # Create split layout video
-            split_output = os.path.join(output_dir, f"split_{output_index}_{i}.mp4")
-            
-            success = _create_split_layout_video(
-                top_video_id=video_selection['top_video'],
-                bottom_video_id=video_selection['bottom_video'],
-                duration=clip_duration,
-                output_path=split_output,
-                service=service,
-                use_gpu=use_gpu,
-                top_ratio=top_ratio,
-                bottom_ratio=bottom_ratio,
-                output_dir=output_dir,
-                output_index=output_index
-            )
-            
-            if success and os.path.isfile(split_output):
-                clip_paths.append(split_output)
-                clip_durations.append(clip_duration)
-                logger.info(f"✅ Slot {i+1}/{len(video_selections)}: {layout_name} ({int(top_ratio*100)}/{int(bottom_ratio*100)}, {clip_duration:.2f}s)")
-            else:
-                if use_a4_formula:
-                    logger.error(f"❌ Split layout failed: success={success}, file_exists={os.path.isfile(split_output) if split_output else False}")
-                    raise ValueError(f"❌ A4 Formula: Failed to create SPLIT LAYOUT for Slot {i+1}")
-                logger.error(f"Failed to create SPLIT LAYOUT for slot {i+1}")
-                continue
-        else:
-            # NORMAL SLOT
-            video_id = video_selection
-            
-            if video_id is None:
-                slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-                
-                if use_a4_formula:
-                    raise ValueError(f"❌ A4 Formula: Slot {i+1}/{len(A4_FORMULA)} ({slot_name}) has no video!")
-                
-                logger.warning(f"{slot_name}: No video available, skipping")
-                continue
-            
-            # Get duration for this slot
+        # A4 V3: All slots are simple videos (no SPLIT layouts)
+        video_id = video_selection
+        
+        # --- FORCE PRODUCT VIDEO LOGIC ---
+        if forced_product_video_id:
+            # Check if this slot is "Sản phẩm"
+            current_folder_type = None
             if use_a4_formula and i < len(A4_FORMULA):
-                if is_outro:
-                    # Outro: Get original video duration
-                    from video_management.models import IndexedVideo
-                    try:
-                        indexed_video = IndexedVideo.objects.get(id=video_id)
-                        clip_duration = indexed_video.duration
-                        logger.info(f"🎬 Slot {i+1}: Outro with ORIGINAL duration ({clip_duration:.2f}s)")
-                    except IndexedVideo.DoesNotExist:
-                        clip_duration = 5  # Fallback
-                        logger.warning(f"⚠️ Outro video {video_id} not found, using fallback 5s")
-                elif A4_FORMULA[i].get('flexible'):
-                    clip_duration = slot_duration
-                else:
-                    clip_duration = A4_FORMULA[i].get('duration', 8)
-            else:
-                clip_duration = 8
+                current_folder_type = A4_FORMULA[i].get('folder_type')
+            elif i < len(FOLDER_TYPES):
+                current_folder_type = FOLDER_TYPES[i]
             
-            # ===== USE ANTI-FREEZE HELPER =====
+            if current_folder_type == "Sản phẩm":
+                video_id = forced_product_video_id
+                logger.info(f"🔒 Output {output_index}: FORCED specific video for 'Sản phẩm' slot (ID {video_id})")
+        # ---------------------------------
+        
+        if video_id is None:
+            slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
+            
+            if use_a4_formula:
+                raise ValueError(f"❌ A4 Formula: Slot {i+1}/{len(A4_FORMULA)} ({slot_name}) has no video!")
+            
+            logger.warning(f"{slot_name}: No video available, skipping")
+            continue
+        
+        # Get duration for this slot
+        if use_a4_formula and i < len(A4_FORMULA):
             if is_outro:
-                # Outro: Generate normally (keep original duration)
-                clip_path = service.get_or_generate_clip(video_id, use_gpu, duration=clip_duration)
+                # Outro: Get original video duration
+                from video_management.models import IndexedVideo
+                try:
+                    indexed_video = IndexedVideo.objects.get(id=video_id)
+                    clip_duration = indexed_video.duration
+                    logger.info(f"🎬 Slot {i+1}: Outro with ORIGINAL duration ({clip_duration:.2f}s)")
+                except IndexedVideo.DoesNotExist:
+                    clip_duration = 5  # Fallback
+                    logger.warning(f"⚠️ Outro video {video_id} not found, using fallback 5s")
+            elif A4_FORMULA[i].get('flexible'):
+                clip_duration = slot_duration
             else:
-                # Use auto-fill helper to prevent freeze
-                fill_output = os.path.join(output_dir, f"filled_{output_index}_{i}.mp4")
-                clip_path = _get_clip_with_autofill(video_id, clip_duration, use_gpu, service, fill_output)
-            
-            if clip_path and os.path.isfile(clip_path):
-                if is_outro:
-                    # Store outro separately (to preserve its original audio)
-                    outro_clip_path = clip_path
-                    outro_duration = clip_duration
-                    logger.info(f"✅ Slot {i+1}/{len(video_selections)}: Outro (ORIGINAL AUDIO, {clip_duration:.2f}s)")
-                else:
-                    clip_paths.append(clip_path)
-                    clip_durations.append(clip_duration)
-                    
-                    slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-                    logger.info(f"✅ Slot {i+1}/{len(video_selections)}: {slot_name} ({clip_duration:.2f}s)")
+                clip_duration = A4_FORMULA[i].get('duration', 8)
+        else:
+            clip_duration = 8
+        
+        # ===== USE ANTI-FREEZE HELPER =====
+        if is_outro:
+            # Outro: Generate normally (keep original duration)
+            clip_path = service.get_or_generate_clip(video_id, use_gpu, duration=clip_duration)
+        else:
+            # Use auto-fill helper to prevent freeze
+            fill_output = os.path.join(output_dir, f"filled_{output_index}_{i}.mp4")
+            clip_path = _get_clip_with_autofill(video_id, clip_duration, use_gpu, service, fill_output)
+        
+        if clip_path and os.path.isfile(clip_path):
+            if is_outro:
+                # Store outro separately (to preserve its original audio)
+                outro_clip_path = clip_path
+                outro_duration = clip_duration
+                logger.info(f"✅ Slot {i+1}/{len(video_selections)}: Outro (ORIGINAL AUDIO, {clip_duration:.2f}s)")
             else:
+                clip_paths.append(clip_path)
+                clip_durations.append(clip_duration)
+                
                 slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-                
-                if use_a4_formula:
-                    raise ValueError(f"❌ A4 Formula: Failed to generate clip for Slot {i+1} ({slot_name})")
-                
-                logger.warning(f"{slot_name}: Failed to get clip for video {video_id}")
+                logger.info(f"✅ Slot {i+1}/{len(video_selections)}: {slot_name} ({clip_duration:.2f}s)")
+        else:
+            slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
+            
+            if use_a4_formula:
+                raise ValueError(f"❌ A4 Formula: Failed to generate clip for Slot {i+1} ({slot_name})")
+            
+            logger.warning(f"{slot_name}: Failed to get clip for video {video_id}")
     
     # Log all clips for debugging
     logger.info(f"📋 Clip summary: {len(clip_paths)} content clips + {1 if outro_clip_path else 0} outro")
     for idx, (clip, dur) in enumerate(zip(clip_paths, clip_durations), start=1):
-        is_split = "split_" in os.path.basename(clip)
-        logger.info(f"  Clip {idx}: {os.path.basename(clip)} ({dur:.2f}s) {'[SPLIT LAYOUT]' if is_split else ''}")
+        logger.info(f"  Clip {idx}: {os.path.basename(clip)} ({dur:.2f}s)")
     if outro_clip_path:
         logger.info(f"  Outro: {os.path.basename(outro_clip_path)} ({outro_duration:.2f}s) [ORIGINAL AUDIO]")
     
@@ -799,9 +879,9 @@ def _generate_one_mix(
     if use_a4_formula:
         expected_content_clips = 6  # Slot 1-6
         if len(clip_paths) != expected_content_clips:
-            raise ValueError(f"❌ A4 V2 Formula requires {expected_content_clips} content clips! Got {len(clip_paths)} clips.")
+            raise ValueError(f"❌ A4 V3 Formula requires {expected_content_clips} content clips! Got {len(clip_paths)} clips.")
         if not outro_clip_path:
-            raise ValueError(f"❌ A4 V2 Formula: Missing Outro (Slot 7)!")
+            raise ValueError(f"❌ A4 V3 Formula: Missing Outro (Slot 7)!")
     elif len(clip_paths) < 5:
         raise ValueError(f"Not enough clips generated: {len(clip_paths)} clips. Need at least 5 clips to mix.")
     
@@ -809,10 +889,10 @@ def _generate_one_mix(
     total_content_duration = sum(clip_durations)
     logger.info(f"📊 Content duration (Slot 1-6): {total_content_duration:.2f}s")
     
-    # For A4 V2: Content should match audio_duration (Slot 1-6 only)
+    # For A4 V3: Content should match audio_duration (Slot 1-6 only)
     # No need to loop - slot_duration is calculated to fill audio_duration exactly
     if use_a4_formula and outro_clip_path:
-        logger.info(f"🎵 A4 V2 Mode:")
+        logger.info(f"🎵 A4 V3 Mode:")
         logger.info(f"  - Content (Slot 1-6): {total_content_duration:.2f}s (should match audio)")
         logger.info(f"  - Outro (Slot 7): {outro_duration:.2f}s (original audio)")
         logger.info(f"  - Total output: {total_content_duration + outro_duration:.2f}s")
@@ -852,7 +932,7 @@ def _generate_one_mix(
     # Final output
     output_file = os.path.join(output_dir, f"output_{output_index}.mp4")
     
-    # If A4 V2: Concat content + outro (outro keeps original audio)
+    # If A4 V3: Concat content + outro (outro keeps original audio)
     if use_a4_formula and outro_clip_path:
         logger.info("🔗 Concatenating content + outro...")
         final_concat_success = _concat_clips_fast([content_with_audio, outro_clip_path], output_file)
@@ -862,7 +942,7 @@ def _generate_one_mix(
             os.remove(content_with_audio)
         
         if final_concat_success:
-            logger.info(f"✅ A4 V2 Final output: {os.path.basename(output_file)}")
+            logger.info(f"✅ A4 V3 Final output: {os.path.basename(output_file)}")
             return output_file
         return None
     else:
@@ -1365,22 +1445,28 @@ def _get_media_duration(file_path: str) -> Optional[float]:
         return None
 
 
-def _get_a4_formula_videos(service, slot_duration):
+def _get_a4_formula_videos(
+    service, 
+    slot_duration, 
+    product_category: Optional[str] = None
+):
     """
-    Get videos for A4 Formula V2 (flexible duration, 7 slots).
+    Get videos for A4 Formula V3 (flexible duration, 7 simple slots).
     
     CRITICAL: ALL 7 SLOTS MUST HAVE VIDEOS!
-    Slots 3-5 are SPECIAL: SPLIT LAYOUTS with different ratios
+    All slots are simple fullscreen videos (NO SPLIT LAYOUTS)
     
     Args:
         service: SmartPreprocessingService instance
         slot_duration: Duration for flexible slots (1-6)
+        product_category: Optional string to filter videos in "Sản phẩm" folders
     
     Returns:
-        List of video IDs or SPLIT_LAYOUT dicts
+        List of video IDs (integers)
     """
     from video_management.models import IndexedVideo
     import random
+    from django.db.models import Q
     
     selected_videos = []
     missing_slots = []
@@ -1390,87 +1476,232 @@ def _get_a4_formula_videos(service, slot_duration):
         is_flexible = slot.get('flexible', False)
         required_duration = slot_duration if is_flexible else slot.get('duration', 3)
         
-        # SPECIAL HANDLING for SPLIT_LAYOUT (Slots 3, 4, 5)
-        if folder_type == "SPLIT_LAYOUT":
-            layout_name = slot.get('layout_name', f'SPLIT_{i}')
-            top_ratio = slot['top_video']['ratio']
-            bottom_ratio = slot['bottom_video']['ratio']
+        # Helper function to get random video with optional category filtering
+        def get_random_video_id(f_type, duration):
+            # Base query
+            query = Q(folder_type=f_type, is_available=True, duration__gte=duration)
             
-            logger.info(f"🎬 A4 Slot {i}/7: {layout_name} ({int(top_ratio*100)}/{int(bottom_ratio*100)}, {required_duration:.2f}s)")
-            
-            # Select 1 video for top
-            top_folder = slot['top_video']['folder_type']
-            
-            videos = IndexedVideo.objects.filter(
-                folder_type=top_folder,
-                is_available=True,
-                duration__gte=required_duration
-            ).values_list('id', flat=True)
-            
-            if videos:
-                top_vid_id = random.choice(list(videos))
-                logger.info(f"  ✅ Top ({int(top_ratio*100)}%): {top_folder} → Video {top_vid_id}")
-            else:
-                logger.error(f"  ❌ Top: {top_folder} → NO VIDEO!")
-                top_vid_id = None
-                missing_slots.append(f"Slot {i} Top: {top_folder}")
-            
-            # Select 1 video for bottom
-            bottom_folder = slot['bottom_video']['folder_type']
-            
-            videos = IndexedVideo.objects.filter(
-                folder_type=bottom_folder,
-                is_available=True,
-                duration__gte=required_duration
-            ).values_list('id', flat=True)
-            
-            if videos:
-                bottom_vid_id = random.choice(list(videos))
-                logger.info(f"  ✅ Bottom ({int(bottom_ratio*100)}%): {bottom_folder} → Video {bottom_vid_id}")
-            else:
-                logger.error(f"  ❌ Bottom: {bottom_folder} → NO VIDEO!")
-                bottom_vid_id = None
-                missing_slots.append(f"Slot {i} Bottom: {bottom_folder}")
-            
-            # Store as dict for special handling
-            selected_videos.append({
-                "type": "SPLIT_LAYOUT",
-                "layout_name": layout_name,
-                "top_video": top_vid_id,
-                "bottom_video": bottom_vid_id,
-                "top_ratio": top_ratio,
-                "bottom_ratio": bottom_ratio,
-                "duration": required_duration
-            })
-        else:
-            # Normal slot (including Outro with original audio)
-            videos = IndexedVideo.objects.filter(
-                folder_type=folder_type,
-                is_available=True,
-                duration__gte=required_duration
-            ).values_list('id', flat=True)
-            
-            video_count = len(videos)
-            
-            if videos:
-                video_id = random.choice(list(videos))
-                selected_videos.append(video_id)
+            # Apply category filtering for product-related folders
+            # This ensures videos match the product category (e.g., "Dây chuyền", "Nhẫn")
+            if product_category and f_type in ["Sản phẩm", "Sản phẩm HT", "Chế tác"]:
+                # Try to find videos matching category in path
+                filtered_videos = IndexedVideo.objects.filter(
+                    query & Q(file_path__icontains=product_category)
+                ).values_list('id', flat=True)
                 
-                # Mark Outro as special
-                if slot.get('use_original_audio'):
-                    logger.info(f"✅ A4 Slot {i}/7: {folder_type} (OUTRO, original audio) → Video {video_id} (Pool: {video_count})")
+                if filtered_videos.exists():
+                    logger.info(f"  🔍 Filtered '{f_type}' by '{product_category}' -> found {len(filtered_videos)} videos")
+                    return random.choice(list(filtered_videos))
                 else:
-                    logger.info(f"✅ A4 Slot {i}/7: {folder_type} ({required_duration:.2f}s) → Video {video_id} (Pool: {video_count})")
+                    logger.warning(f"  ⚠️ No videos found for category '{product_category}' in '{f_type}', falling back to all videos")
+            
+            # Fallback to all videos in folder
+            videos = IndexedVideo.objects.filter(query).values_list('id', flat=True)
+            if videos:
+                return random.choice(list(videos))
+            return None
+
+        # A4 V3: All slots are simple videos
+        video_id = get_random_video_id(folder_type, required_duration)
+        
+        if video_id:
+            selected_videos.append(video_id)
+            
+            # Mark Outro as special
+            if slot.get('use_original_audio'):
+                logger.info(f"✅ A4 Slot {i}/7: {folder_type} (OUTRO, original audio) → Video {video_id}")
             else:
-                logger.error(f"❌ A4 Slot {i}/7: {folder_type} ({required_duration:.2f}s) → NO VIDEO FOUND!")
-                selected_videos.append(None)
-                missing_slots.append(f"Slot {i}: {folder_type}")
+                logger.info(f"✅ A4 Slot {i}/7: {folder_type} ({required_duration:.2f}s) → Video {video_id}")
+        else:
+            logger.error(f"❌ A4 Slot {i}/7: {folder_type} ({required_duration:.2f}s) → NO VIDEO FOUND!")
+            selected_videos.append(None)
+            missing_slots.append(f"Slot {i}: {folder_type}")
     
     # CRITICAL VALIDATION
     if missing_slots:
-        error_msg = f"❌ A4 Formula V2 FAILED! Missing slots:\n" + "\n".join(missing_slots)
+        error_msg = f"❌ A4 Formula V3 FAILED! Missing slots:\n" + "\n".join(missing_slots)
         logger.error(error_msg)
         raise ValueError(error_msg + "\n\nPlease index ALL required folder types!")
     
-    logger.info(f"✅ A4 Formula V2 complete: Selected 7/7 slots successfully!")
+    logger.info(f"✅ A4 Formula V3 complete: Selected 7/7 slots successfully!")
     return selected_videos
+
+
+def _auto_index_category_folder(service, category_name: str):
+    """
+    Automatically find and index the folder corresponding to the category.
+    E.g. Category="Dây chuyền" -> Search "Video Sản Phẩm/Dây chuyền" -> Index ONLY that folder.
+    """
+    try:
+        if not category_name:
+            return
+
+        logger.info(f"🔍 Auto-indexing category: '{category_name}'")
+        
+        # Candidate base paths to search
+        base_paths = [
+            r"\\VCB_MEDIA\MEDIA VCB folder\VIDEO Sản Phẩm",
+            r"\\192.168.1.250\MEDIA VCB folder\VIDEO Sản Phẩm",
+            os.path.join(settings.MEDIA_ROOT, "VIDEO Sản Phẩm"),
+        ]
+        
+        target_path = None
+        
+        # Use smart BFS search
+        for base in base_paths:
+            if not os.path.exists(base):
+                continue
+                
+            # Try to find folder matching category name
+            target_path = service.find_folder_by_name(
+                root_path=base,
+                target_name=category_name.strip(),
+                exact_match=False,  # Allow substring match (e.g. "Dây chuyền" matches "Dây chuyền vàng")
+                max_depth=2  # Limit search depth
+            )
+            
+            if target_path:
+                break
+        
+        if target_path and os.path.isdir(target_path):
+            logger.info(f"✅ Found category folder: '{target_path}'")
+            logger.info(f"📂 Indexing ONLY videos from this folder (not parent)...")
+            
+            # Index ONLY this specific folder into "Sản phẩm" type
+            service.index_videos_from_folders({"Sản phẩm": target_path})
+            
+        else:
+            logger.warning(f"⚠️ Could not find auto-folder for category '{category_name}'")
+            
+    except Exception as e:
+        logger.error(f"Auto-index error: {e}")
+
+def _auto_index_by_sku(service, sku: str):
+    """
+    Scan folders for a subfolder matching the SKU.
+    If found, index that specific folder into 'Sản phẩm'.
+    """
+    try:
+        if not sku: return False
+
+        logger.info(f"🕵️ Searching for folder with SKU: '{sku}'")
+        sku_clean = sku.strip().lower()
+        
+        # Base paths to search
+        base_paths = [
+            r"\\VCB_MEDIA\MEDIA VCB folder\VIDEO Sản Phẩm",
+            r"\\192.168.1.250\MEDIA VCB folder\VIDEO Sản Phẩm",
+            os.path.join(settings.MEDIA_ROOT, "VIDEO Sản Phẩm"),
+        ]
+        
+        # Strategy:
+        # 1. If we can infer category (e.g. from DB or request), search IN that category folder first.
+        # But here we just have SKU. 
+        # So we do a breadth-first search on "VIDEO Sản Phẩm" to find the SKU folder.
+        
+        target_path = service.find_folder_by_name(
+             root_path=base_paths[0], # Primary path
+             target_name=sku_clean,
+             exact_match=False, # SKU might be part of folder name e.g. "N12345_DayChuyen"
+             max_depth=4 # Need enough depth: Root -> Category -> SubCategory -> SKU
+        )
+        
+        # Legacy scanning code removed in favor of service.find_folder_by_name
+        pass
+            
+        if target_path:
+            logger.info(f"✅ Found specific product folder for SKU '{sku}': {target_path}")
+            # Index this specific folder into "Sản phẩm"
+            service.index_videos_from_folders({"Sản phẩm": target_path})
+            return True
+        else:
+             logger.warning(f"⚠️ Could not find folder for SKU '{sku}' in base paths")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Auto-index SKU error: {e}")
+        return False
+
+@api_view(['POST'])
+def index_manufacturing_folder(request):
+    """
+    Manually trigger indexing for a specific manufacturing folder (Category + SKU).
+    Useful when frontend detects a new product selection.
+    
+    POST Body:
+    {
+        "category": "Dây chuyền",
+        "sku": "MD64"
+    }
+    """
+    try:
+        category = request.data.get('category', '')
+        sku = request.data.get('sku', '')
+        
+        logger.info(f"🔧 Manual trigger: Index manufacturing folder. Cat='{category}', SKU='{sku}'")
+        
+        if not category and not sku:
+             return Response({'error': 'Category or SKU required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        service = get_preprocessing_service()
+        if sku:
+            # Powerful global scan for both Product and Manufacturing
+            _auto_index_by_sku_global(service, sku, category)
+        else:
+            # Fallback to category only scanner
+            _auto_index_manufacturing_folders(service, category)
+        
+        return Response({'success': True, 'message': f'Triggered indexing for Cat={category}, SKU={sku}'})
+        
+    except Exception as e:
+        logger.error(f"Error indexing manufacturing folder: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _auto_index_outro(service):
+    """
+    Find and index "Outtrol" (Outro) folder by scanning for any folder containing 'outro' (case-insensitive).
+    Scans from root folder downwards.
+    """
+    try:
+        logger.info("🔍 Auto-scanning for Outro folder...")
+        
+        # Base root to search (start from top-level media folder)
+        search_roots = [
+            r"\\VCB_MEDIA\MEDIA VCB folder",
+            r"\\192.168.1.250\MEDIA VCB folder",
+        ]
+        
+        target_path = None
+        
+        # Scan for any folder containing "outro" (case-insensitive)
+        # The find_folder_by_name already does case-insensitive search
+        for root in search_roots:
+            if not os.path.exists(root):
+                continue
+                
+            logger.info(f"📂 Scanning '{root}' for folders containing 'outro'...")
+            
+            # Search for folder containing "outro" (substring match, case-insensitive)
+            path = service.find_folder_by_name(
+                root_path=root,
+                target_name="outro",  # Will match: Outro, outro, Source Outro, OUTRO, etc.
+                exact_match=False,  # Allow substring match
+                max_depth=3  # Scan up to 3 levels deep
+            )
+            
+            if path:
+                target_path = path
+                break
+        
+        if target_path:
+            logger.info(f"✅ Found Outro folder: {target_path}")
+            logger.info(f"📂 Indexing videos from Outro folder...")
+            service.index_videos_from_folders({"Outtrol": target_path})
+        else:
+            logger.error("❌ Could not find any folder with 'outro' in name!")
+            logger.error(f"💡 Searched in: {', '.join(search_roots)}")
+             
+    except Exception as e:
+        logger.error(f"Auto-index Outro error: {e}")

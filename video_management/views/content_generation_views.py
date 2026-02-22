@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
-from video_management.models import ScrapedVideo, GeneratedContent
+from video_management.models import ScrapedVideo, GeneratedContent, Product
 from video_management.services.content_generation_service import ContentGenerationService
 import logging
 
@@ -38,6 +38,9 @@ def generate_content(request):
         brand_name = request.data.get('brand_name', 'Viễn Chí Bảo')
         industry = request.data.get('industry', 'kim hoàn (trang sức vàng bạc)')
         additional_context = request.data.get('additional_context')
+        custom_prompt = request.data.get('custom_prompt')  # Advanced regeneration prompt (auto-filled on FE)
+        if custom_prompt:
+            additional_context = (additional_context or '') + ('\n\n' + custom_prompt if additional_context else custom_prompt)
         
         # NEW: Product information
         product_id = request.data.get('product_id')  # Optional product ID
@@ -45,6 +48,43 @@ def generate_content(request):
         product_category = request.data.get('product_category')  # Optional category
         product_description = request.data.get('product_description')  # Optional description
         product_price = request.data.get('product_price')  # Optional price
+
+        # DEBUG: Log product info coming from FE so bạn thấy rõ trên terminal
+        logger.info(
+            f"🧾 Product from FE for content-generation: "
+            f"id={product_id}, name='{product_name}', category='{product_category}', price='{product_price}'"
+        )
+
+        # Nếu FE chỉ gửi id (hoặc thiếu category/price/description) thì tự lấy đầy đủ từ catalog Product
+        try:
+            resolved_product = None
+            if product_id:
+                try:
+                    resolved_product = Product.objects.filter(id=int(product_id)).first()
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠️ Invalid product_id in content-generation: {product_id}")
+
+            if not resolved_product and product_name:
+                # Fallback: tìm theo tên nếu cần
+                resolved_product = Product.objects.filter(name=product_name).order_by('-created_at').first()
+
+            if resolved_product:
+                if not product_name:
+                    product_name = resolved_product.name
+                if not product_category:
+                    product_category = resolved_product.category
+                if not product_description:
+                    product_description = resolved_product.description
+                if not product_price and resolved_product.price is not None:
+                    product_price = str(resolved_product.price)
+
+                logger.info(
+                    f"✅ Product resolved for CONTENT pipeline: "
+                    f"id={resolved_product.id}, name='{product_name}', "
+                    f"category='{product_category}', price='{product_price}'"
+                )
+        except Exception as e:
+            logger.error(f"Error resolving product from catalog for content-generation (id={product_id}): {e}", exc_info=True)
         
         # Validate
         if not content_type:
@@ -150,6 +190,71 @@ def generate_content(request):
         
     except Exception as e:
         logger.error(f"Error generating content: {str(e)}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+def generate_prompt(request):
+    """
+    Generate an optimized prompt based on video content.
+    
+    POST /api/content/generate-prompt/
+    Body: same as generate_content
+    """
+    try:
+        # Get parameters
+        video_id = request.data.get('video_id')
+        video_description = request.data.get('video_description')
+        video_title = request.data.get('video_title', '')
+        
+        # Product info
+        product_id = request.data.get('product_id')
+        product_name = request.data.get('product_name')
+        product_category = request.data.get('product_category')
+        product_description = request.data.get('product_description')
+        product_price = request.data.get('product_price')
+        
+        # Get video info if needed
+        if video_id:
+            try:
+                source_video = ScrapedVideo.objects.get(id=video_id)
+                video_description = source_video.description or source_video.title
+                video_title = source_video.title
+            except ScrapedVideo.DoesNotExist:
+                pass
+        
+        if not video_description:
+            return Response(
+                {'error': 'Video description or ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        product_info = None
+        if product_name:
+            product_info = {
+                'name': product_name,
+                'category': product_category,
+                'description': product_description,
+                'price': product_price
+            }
+            
+        service = ContentGenerationService()
+        prompt = service.generate_optimization_prompt(
+            video_description=video_description,
+            video_title=video_title,
+            product_info=product_info
+        )
+        
+        return Response({
+            'success': True,
+            'prompt': prompt
+        })
+        
+    except Exception as e:
+        logger.error(f"Error generating prompt: {str(e)}", exc_info=True)
         return Response(
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR

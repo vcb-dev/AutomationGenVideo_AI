@@ -17,12 +17,12 @@ class ProductCatalogService:
     
     # Expected column mappings (flexible)
     COLUMN_MAPPINGS = {
-        'name': ['name', 'product_name', 'tên sản phẩm', 'ten san pham', 'product'],
-        'category': ['category', 'loại', 'loai', 'type', 'danh mục', 'danh muc'],
-        'price': ['price', 'giá', 'gia', 'cost', 'price_vnd'],
-        'description': ['description', 'mô tả', 'mo ta', 'desc', 'chi tiết', 'chi tiet'],
-        'highlights': ['highlights', 'đặc điểm', 'dac diem', 'features', 'nổi bật', 'noi bat'],
-        'sku': ['sku', 'code', 'mã', 'ma', 'product_code', 'product_id'],
+        'name': ['name', 'product_name', 'tên sản phẩm', 'ten san pham', 'product', 'tên', 'ten', 'tên hàng', 'ten hang', 'tiêu đề', 'tieu de'],
+        'category': ['category', 'loại', 'loai', 'type', 'danh mục', 'danh muc', 'nhóm hàng', 'nhom hang', 'chủng loại', 'chung loai', 'dòng hàng', 'dong hang', 'ngành hàng', 'nganh hang'],
+        'price': ['price', 'giá', 'gia', 'cost', 'price_vnd', 'giá bán', 'gia ban', 'đơn giá', 'don gia'],
+        'description': ['description', 'mô tả', 'mo ta', 'desc', 'chi tiết', 'chi tiet', 'nội dung', 'noi dung'],
+        'highlights': ['highlights', 'đặc điểm', 'dac diem', 'features', 'nổi bật', 'noi bat', 'thông số', 'thong so'],
+        'sku': ['sku', 'code', 'mã', 'ma', 'product_code', 'product_id', 'mã sản phẩm', 'ma san pham', 'mã sp', 'ma sp', 'mã hàng', 'ma hang'],
     }
     
     @classmethod
@@ -135,24 +135,37 @@ class ProductCatalogService:
                 continue
         
         return products
-    
+
     @classmethod
     def _map_columns(cls, columns: List[str]) -> Dict[str, str]:
         """
         Map Excel columns to our field names.
-        
-        Args:
-            columns: List of column names from Excel
-            
-        Returns:
-            Dict mapping our field names to actual column names
+        Supports both exact match and partial match.
         """
         mapping = {}
         
+        # 1. Exact match (Priority)
         for field, possible_names in cls.COLUMN_MAPPINGS.items():
             for col in columns:
                 if col in possible_names:
                     mapping[field] = col
+                    break
+                    
+        # 2. Partial match (Fallback)
+        # Only if field not found yet
+        for field, possible_names in cls.COLUMN_MAPPINGS.items():
+            if field in mapping:
+                continue
+                
+            for col in columns:
+                # Check if col contains any of the keywords
+                # e.g. "Mã sản phẩm (SKU)" contains "sku" or "mã sản phẩm"
+                for keyword in possible_names:
+                    # Avoid matching too short keywords to long columns unless necessary
+                    if len(keyword) > 2 and keyword in col:
+                        mapping[field] = col
+                        break
+                if field in mapping:
                     break
         
         return mapping

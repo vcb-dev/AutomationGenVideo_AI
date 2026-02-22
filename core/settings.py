@@ -358,5 +358,19 @@ CELERY_BEAT_SCHEDULE = {
 }
 
 
+# ==========================================
+# VIDEO PATHS CONFIGURATION
+# ==========================================
+# Base paths for video folders (can be network paths or local mapped drives)
+# Format: List of paths to try in order
+VIDEO_BASE_PATHS = env.list('VIDEO_BASE_PATHS', default=[
+    r'\\VCB_MEDIA\MEDIA VCB folder',
+    r'\\192.168.1.250\MEDIA VCB folder',
+])
+
+# Manufacturing (Chế tác) folder location
+# This is appended to VIDEO_BASE_PATHS
+MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'CHẾ TÁC SẢN PHẨM (xưởng)\Việt Nam')
+
 
 # Reload triggered

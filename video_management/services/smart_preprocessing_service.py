@@ -150,6 +150,136 @@ class SmartPreprocessingService:
         
         return results
     
+    def scan_and_index_specific_sku(self, sku: str, folder_path: str) -> Optional[int]:
+        """
+        Real-time scan for a specific SKU in the products folder.
+        If found, indexes it immediately and returns the video ID.
+        
+        Args:
+            sku: Product SKU to search for
+            folder_path: Physical path to 'Sản phẩm' folder
+            
+        Returns:
+            Video ID if found and indexed, else None
+        """
+        from video_management.models import IndexedVideo
+        
+        if not os.path.exists(folder_path):
+             logger.warning(f"Product folder not found: {folder_path}")
+             return None
+             
+        logger.info(f"🕵️ Real-time scanning for SKU '{sku}' in {folder_path}...")
+        
+        sku_clean = sku.strip().lower()
+        found_path = None
+        
+        # Recursive scan
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                ext = os.path.splitext(file)[1].lower()
+                if ext in ALLOWED_EXTENSIONS:
+                    # Check if filename contains SKU
+                    if sku_clean in file.lower():
+                        found_path = os.path.join(root, file)
+                        break
+            if found_path:
+                break
+        
+        if found_path:
+            logger.info(f"✅ Found video for SKU '{sku}': {found_path}")
+            
+            # Index immediately
+            try:
+                db_path = self._normalize_path_for_db(found_path)
+                
+                # Double check if already exists
+                existing = IndexedVideo.objects.filter(file_path=db_path, folder_type="Sản phẩm").first()
+                if existing:
+                    return existing.id
+                
+                # Index new
+                metadata = self._get_video_metadata(found_path)
+                if metadata:
+                    video_obj = IndexedVideo.objects.create(
+                        file_path=db_path,
+                        folder_type="Sản phẩm",
+                        duration=metadata['duration'],
+                        file_size=metadata['size'],
+                        has_audio=metadata.get('has_audio', False),
+                        width=metadata.get('width'),
+                        height=metadata.get('height'),
+                        modified_time=timezone.make_aware(
+                             datetime.fromtimestamp(metadata['mtime']),
+                             timezone.get_default_timezone()
+                        ),
+                        is_available=True
+                    )
+                    return video_obj.id
+            except Exception as e:
+                logger.error(f"Failed to index found video {found_path}: {e}")
+                return None
+                
+        logger.warning(f"❌ No video found for SKU '{sku}' in manual scan")
+        return None
+        
+    def find_folder_by_name(self, root_path: str, target_name: str, exact_match: bool = False, max_depth: int = 3) -> Optional[str]:
+        """
+        Smart scan to find a folder by name (case-insensitive).
+        
+        Args:
+            root_path: Starting directory
+            target_name: Name to search for (e.g. "Dây chuyền" or "N300874")
+            exact_match: If True, requires exact name match. If False, allows substring match.
+            max_depth: Maximum recursion depth to prevent infinite loops.
+        
+        Returns:
+            Absolute path to found folder, or None.
+        """
+        if not os.path.exists(root_path):
+            return None
+            
+        target_clean = target_name.strip().lower()
+        
+        # BFS Search for better performance (find shallowest match first)
+        queue = [(root_path, 0)]
+        visited = set()
+        
+        while queue:
+            current_path, depth = queue.pop(0)
+            
+            if current_path in visited or depth > max_depth:
+                continue
+            visited.add(current_path)
+            
+            try:
+                # Scan current directory
+                entries = os.scandir(current_path)
+                subdirs = []
+                
+                for entry in entries:
+                    if entry.is_dir():
+                        name = entry.name.lower()
+                        # Check match
+                        is_match = (name == target_clean) if exact_match else (target_clean in name)
+                        
+                        if is_match:
+                            logger.info(f"✅ Found smart folder match: '{entry.name}' in '{current_path}'")
+                            return entry.path
+                            
+                        subdirs.append(entry.path)
+                        
+                # Add subdirs to queue
+                for subdir in subdirs:
+                    queue.append((subdir, depth + 1))
+                    
+            except PermissionError:
+                continue
+            except Exception as e:
+                logger.warning(f"Error scanning {current_path}: {e}")
+                continue
+                
+        return None
+    
     def _scan_folder_fast(self, folder_path: str, limit: int = 0) -> List[str]:
         """Scan folder recursively (unlimited depth) to find all videos."""
         videos = []
@@ -530,26 +660,42 @@ class SmartPreprocessingService:
         
         logger.info(f"✅ Deleted {deleted_count} clips, freed {deleted_size / 1024 / 1024:.1f} MB")
     
-    def get_random_videos(self, folder_types: List[str]) -> Dict[str, Optional[int]]:
+    def get_random_videos(self, folder_types: List[str], product_category: Optional[str] = None) -> Dict[str, Optional[int]]:
         """
         Get random video IDs from each folder type for mixing.
         
         Args:
             folder_types: List of folder types to select from
+            product_category: Optional category to filter 'Sản phẩm' videos
         
         Returns:
             Dict mapping folder_type -> video_id (or None if no video found)
         """
         from video_management.models import IndexedVideo
+        from django.db.models import Q
         
         result = {}
         
         for folder_type in folder_types:
-            videos = IndexedVideo.objects.filter(
-                folder_type=folder_type,
-                is_available=True,
-                duration__gte=CLIP_DURATION  # Must be long enough for clip
-            ).values_list('id', flat=True)
+            # Base query
+            query = Q(folder_type=folder_type, is_available=True, duration__gte=CLIP_DURATION)
+            
+            # Category filtering for 'Sản phẩm'
+            if product_category and folder_type in ["Sản phẩm", "Sản phẩm HT"]:
+                filtered_qs = IndexedVideo.objects.filter(
+                    query & Q(file_path__icontains=product_category)
+                ).values_list('id', flat=True)
+                
+                if filtered_qs.exists():
+                    logger.info(f"  🔍 Filtered '{folder_type}' by '{product_category}' -> found {len(filtered_qs)} videos")
+                    video_id = random.choice(list(filtered_qs))
+                    result[folder_type] = video_id
+                    continue
+                else:
+                    logger.warning(f"  ⚠️ No videos found for '{product_category}' in '{folder_type}'")
+            
+            # Fallback (All videos in folder)
+            videos = IndexedVideo.objects.filter(query).values_list('id', flat=True)
             
             if videos:
                 video_id = random.choice(list(videos))

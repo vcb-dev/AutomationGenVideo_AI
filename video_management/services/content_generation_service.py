@@ -437,3 +437,78 @@ Từ lúc cưa vàng..."
             'word_count': word_count
         }
 
+    def generate_optimization_prompt(
+        self,
+        video_description: str,
+        video_title: str,
+        product_info: Optional[Dict] = None
+    ) -> str:
+        """
+        Generate an optimized prompt based on video content to guide the AI generation process.
+        
+        Args:
+            video_description: Description of the video
+            video_title: Title of the video
+            product_info: Optional product info
+            
+        Returns:
+            str: An optimized prompt string
+        """
+        # Prepare product context if available
+        product_context = ""
+        if product_info:
+            product_context = f"""
+Sản phẩm liên quan:
+- Tên: {product_info.get('name', '')}
+- Loại: {product_info.get('category', '')}
+- Mô tả: {product_info.get('description', '')}
+"""
+
+        prompt = f"""
+VAI TRÒ: Bạn là chuyên gia về Prompt Enigneering và Content Marketing.
+NHIỆM VỤ: Phân tích nội dung video dưới đây và viết một PROMPT TỐI ƯU để yêu cầu AI viết kịch bản video marketing.
+
+THÔNG TIN ĐẦU VÀO:
+- Tiêu đề video gốc: {video_title}
+- Mô tả video gốc: {video_description}
+{product_context}
+
+YÊU CẦU CHO PROMPT ĐẦU RA:
+1. Phải là một chỉ thị rõ ràng cho AI (như "Hãy đóng vai...", "Viết kịch bản về...").
+2. Tận dụng các điểm thú vị/viral của video gốc nhưng hướng nó về việc bán hàng/giới thiệu sản phẩm (nếu có thông tin sản phẩm) hoặc chia sẻ kiến thức.
+3. Chỉ định rõ giọng điệu: Chân thật, trầm ấm, tử tế (style Huy Ca).
+4. Yêu cầu cấu trúc: Fullscript, viết liền mạch, ngắt nghỉ bằng dấu câu.
+5. Ngắn gọn, súc tích, đi thẳng vào vấn đề.
+
+OUTPUT ONLY: Chỉ trả về nội dung PROMPT (không giải thích thêm).
+"""
+        
+        # Call Gemini REST API
+        try:
+            headers = { 'Content-Type': 'application/json' }
+            payload = {
+                "contents": [{ "parts": [{ "text": prompt }] }],
+                "generationConfig": { "temperature": 0.7, "maxOutputTokens": 1024 }
+            }
+            
+            response = requests.post(
+                f"{self.api_url}?key={self.api_key}",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            if 'candidates' in result and result['candidates']:
+                return result['candidates'][0]['content']['parts'][0]['text'].strip()
+            else:
+                return "Hãy viết một kịch bản hấp dẫn dựa trên video này."
+                
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Gemini API Error (Generate Prompt): {str(e)}")
+            return "Hãy viết một kịch bản hấp dẫn dựa trên video này."
+

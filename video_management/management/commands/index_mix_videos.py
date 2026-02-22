@@ -6,6 +6,8 @@ Usage:
 
 This command scans network folders and indexes video metadata into database
 for fast mixing operations.
+
+Updated for A4 V3: 7 simple slots (no split layouts)
 """
 
 from django.core.management.base import BaseCommand
@@ -13,7 +15,7 @@ from video_management.services.smart_preprocessing_service import get_preprocess
 
 
 class Command(BaseCommand):
-    help = 'Index videos from network folders for smart mix preprocessing'
+    help = 'Index videos from network folders for smart mix preprocessing (A4 V3)'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -26,26 +28,27 @@ class Command(BaseCommand):
             '--folders',
             type=str,
             nargs='+',
-            help='Specific folder types to index (default: all 10 types)'
+            help='Specific folder types to index (default: all 5 types for A4 V3)'
         )
 
     def handle(self, *args, **options):
         limit = options['limit']
         specific_folders = options.get('folders')
         
-        self.stdout.write(self.style.SUCCESS('Starting video indexing...'))
+        self.stdout.write(self.style.SUCCESS('Starting video indexing (A4 V3 - 7 simple slots)...'))
         
-        # Define folder paths (UPDATE THESE to match your network storage!)
-        # NOTE: Folder names MUST be unique! Use this mapping as reference.
+        # A4 V3 FOLDER MAPPING (5 unique folder types for 7 slots)
+        # Slot 1: Sản phẩm
+        # Slot 2: HuyK
+        # Slot 3: Chế tác (NEW - replaces 4 Above/Below folders)
+        # Slot 4: HuyK (reuse)
+        # Slot 5: Chế tác (reuse)
+        # Slot 6: Sản phẩm HT
+        # Slot 7: Outtrol
         folder_mapping = {
             "Sản phẩm": "\\\\VCB_MEDIA\\MEDIA VCB folder\\VIDEO Sản Phẩm\\Logo tag Việt Nam\\Nhẫn",
             "HuyK": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\Source daily HuyK",
-            "Chế tác Above 1": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",
-            "Chế tác Below 1": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",
-            "Chế tác Above 2": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",
-            "HuyK Above 1": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\Source daily HuyK",
-            "HuyK Above 2": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\Source daily HuyK",
-            "Chế tác Below 2": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",
+            "Chế tác": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",  # NEW: Single folder for Slot 3 & 5
             "Sản phẩm HT": "\\\\VCB_MEDIA\\MEDIA VCB folder\\VIDEO Sản Phẩm\\Logo tag Việt Nam\\Nhẫn",
             "Outtrol": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\OUTRO HUYK",
         }
@@ -58,6 +61,7 @@ class Command(BaseCommand):
             }
         
         self.stdout.write(f'Indexing from {len(folder_mapping)} folders (limit: {limit} videos/folder)...')
+        self.stdout.write(self.style.WARNING('NOTE: A4 V3 uses 5 folder types for 7 slots (HuyK and Chế tác are reused)'))
         
         # Run indexing
         service = get_preprocessing_service()
@@ -82,3 +86,4 @@ class Command(BaseCommand):
         self.stdout.write(f'  • Indexed Videos: {total_indexed}')
         self.stdout.write(f'  • Cached Clips: {total_clips}')
         self.stdout.write(f'  • GPU Available: {service.has_gpu()}')
+
