@@ -39,6 +39,10 @@ from .smart_mix_video_views import (
     get_voices,
     generate_audio_from_script,
     index_manufacturing_folder,
+    # Pre-generation
+    pregen_status,
+    pregen_start,
+    pregen_cancel,
 )
 
 __all__ = [
@@ -74,4 +78,8 @@ __all__ = [
     'get_voices',
     'generate_audio_from_script',
     'index_manufacturing_folder',
+    # Pre-generation views
+    'pregen_status',
+    'pregen_start',
+    'pregen_cancel',
 ]

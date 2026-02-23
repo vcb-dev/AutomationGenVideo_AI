@@ -12,6 +12,7 @@ import logging
 import re
 
 from video_management.models import SearchQuery, TrendingKeyword
+from .tiktok_suggest_views import _fetch_gemini_pool, _fetch_google_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,14 @@ def get_search_suggestions(request):
     """
     Get search suggestions based on query input.
     
-    Combines:
+    Combines (in priority order):
+    0. TikTok/Google real-time suggestions (PRIMARY - like real TikTok)
     1. Search history (user's past searches)
     2. Trending keywords (from scraped videos)
-    3. AI-generated suggestions (always as fallback)
+    3. AI-generated suggestions (fallback)
     
     Query params:
-        - q: Search query (min 2 chars)
+        - q: Search query (min 1 char)
         - platform: Platform filter (TIKTOK, INSTAGRAM, etc.)
         - limit: Max results (default 10)
     
@@ -36,8 +38,8 @@ def get_search_suggestions(request):
             "success": true,
             "query": "mèo",
             "suggestions": [
-                {"text": "mèo cute", "type": "history", "count": 5},
-                {"text": "mèo trắng", "type": "trending", "score": 95.5},
+                {"text": "mèo cute", "type": "tiktok"},
+                {"text": "mèo trắng", "type": "history", "count": 5},
                 {"text": "vòng tay mèo", "type": "ai"}
             ]
         }
@@ -47,7 +49,7 @@ def get_search_suggestions(request):
     limit = int(request.GET.get('limit', 10))
     
     # Validate input
-    if not query or len(query) < 2:
+    if not query or len(query) < 1:
         return Response({
             'success': True,
             'query': query,
@@ -66,6 +68,31 @@ def get_search_suggestions(request):
     
     suggestions = []
     
+    # 0. AI-powered real-time suggestions (HIGHEST PRIORITY)
+    if platform == 'TIKTOK':
+        try:
+            ai_results = _fetch_gemini_pool(query, limit)
+            if ai_results:
+                for text in ai_results:
+                    suggestions.append({
+                        'text': text,
+                        'type': 'tiktok',
+                        'priority': 200  # Highest priority
+                    })
+                logger.info(f"Got {len(ai_results)} AI suggestions for '{query}'")
+            else:
+                # Fallback to Google suggest
+                google_results = _fetch_google_suggestions(query, limit)
+                for text in google_results:
+                    suggestions.append({
+                        'text': text,
+                        'type': 'trending',
+                        'priority': 150
+                    })
+                logger.info(f"Got {len(google_results)} Google suggestions for '{query}'")
+        except Exception as e:
+            logger.warning(f"Real-time suggestions failed: {e}")
+    
     # 1. Get from search history
     try:
         history = SearchQuery.objects.filter(
@@ -78,7 +105,7 @@ def get_search_suggestions(request):
                 'text': h.query,
                 'type': 'history',
                 'count': h.search_count,
-                'priority': 100  # Highest priority
+                'priority': 100
             })
         
         logger.info(f"Found {len(history)} history suggestions for '{query}'")

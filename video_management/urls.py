@@ -37,6 +37,10 @@ from .views import (
     get_voices,
     generate_audio_from_script,
     index_manufacturing_folder,
+    # Pre-generation views
+    pregen_status,
+    pregen_start,
+    pregen_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
@@ -48,6 +52,7 @@ from .views.facebook_analysis_views import (
 from .views.douyin_search_views import search_douyin_videos
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
+from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.product_views import (
     upload_product_catalog,
     list_product_catalogs,
@@ -60,6 +65,13 @@ from .views.product_views import (
 from .views.suggestions_views import (
     get_search_suggestions,
     track_search,
+)
+from .views.virtual_mix_views import (
+    virtual_mix,
+    stream_video,
+    stream_clip,
+    stream_audio,
+    virtual_mix_render,
 )
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
 from .views.hashtag_check_views import check_hashtag_count
@@ -108,6 +120,18 @@ urlpatterns = [
     path('videos/voices/', get_voices, name='get-voices'),
     path('videos/generate-audio/', generate_audio_from_script, name='generate-audio'),
     
+    # Pre-generation endpoints (background clip generation)
+    path('videos/pregen/status/', pregen_status, name='pregen-status'),
+    path('videos/pregen/start/', pregen_start, name='pregen-start'),
+    path('videos/pregen/cancel/', pregen_cancel, name='pregen-cancel'),
+    
+    # Virtual Mix endpoints (INSTANT preview, no FFmpeg!)
+    path('videos/virtual-mix/', virtual_mix, name='virtual-mix'),
+    path('videos/virtual-mix/render/', virtual_mix_render, name='virtual-mix-render'),
+    path('videos/stream/<int:video_id>/', stream_video, name='stream-video'),
+    path('videos/stream-clip/<int:clip_id>/', stream_clip, name='stream-clip'),
+    path('videos/stream-audio/<str:audio_id>/', stream_audio, name='stream-audio'),
+    
     # Channel endpoints
     path('channels/', ChannelListCreateView.as_view(), name='channel-list'),
     path('channels/check-by-username/', ChannelCheckByUsernameView.as_view(), name='channel-check-by-username'),
@@ -130,6 +154,9 @@ urlpatterns = [
     
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
+    
+    # TikTok Search Suggest (Real-time autocomplete)
+    path('tiktok/suggest/', tiktok_search_suggest, name='tiktok-suggest'),
     
     # Product Catalog Management
     path('products/upload/', upload_product_catalog, name='product-upload'),

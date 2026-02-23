@@ -251,33 +251,36 @@ def find_product_video_path(request):
         # 2. If not found in DB, try Real-time Scan
         logger.info(f"⚠️ SKU '{sku}' not found in DB. Trying real-time scan...")
         
+        from django.conf import settings
         from video_management.services.smart_preprocessing_service import get_preprocessing_service
         service = get_preprocessing_service()
         
-        # Determine product folder path - use a set of known paths or infer from existing DB entries
-        known_paths = [
-             r"\\VCB_MEDIA\MEDIA VCB folder\VIDEO Sản Phẩm",
-             r"\\192.168.1.250\MEDIA VCB folder\VIDEO Sản Phẩm",
-             r"Z:\VIDEO Sản Phẩm",
-             r"D:\VIDEO Sản Phẩm",
-             r"E:\VIDEO Sản Phẩm"
-        ]
+        # Đường dẫn quét tìm folder chứa video sản phẩm (theo mã SKU)
+        # Ưu tiên: PRODUCT_VIDEO_PATHS (nếu cấu hình) > VIDEO_BASE_PATHS + PRODUCT_VIDEO_SUBFOLDER
+        known_paths = list(getattr(settings, 'PRODUCT_VIDEO_PATHS', []) or [])
         
-        # Try to infer path from any existing "Sản phẩm" videos
+        if not known_paths:
+            base_paths = getattr(settings, 'VIDEO_BASE_PATHS', [r'\\VCB_MEDIA\MEDIA VCB folder'])
+            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', r'VIDEO Sản Phẩm')
+            known_paths = [os.path.join(base, subfolder) for base in base_paths]
+        
+        # Fallback: infer từ video đã index trong DB
         existing_sample = IndexedVideo.objects.filter(folder_type="Sản phẩm").first()
         if existing_sample:
-            # Try to get the root folder part (e.g. up to 'VIDEO Sản Phẩm')
             path_str = existing_sample.file_path
-            if "VIDEO Sản Phẩm" in path_str:
-                root_part = path_str.split("VIDEO Sản Phẩm")[0] + "VIDEO Sản Phẩm"
+            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', 'VIDEO Sản Phẩm')
+            if subfolder in path_str:
+                root_part = path_str.split(subfolder)[0] + subfolder
+                root_part = os.path.normpath(root_part)
                 if root_part not in known_paths:
                     known_paths.insert(0, root_part)
 
         prod_folder_path = None
         for p in known_paths:
-             if os.path.exists(p):
-                 prod_folder_path = p
-                 break
+            p = os.path.normpath(p.strip())
+            if p and os.path.exists(p):
+                prod_folder_path = p
+                break
         
         if prod_folder_path:
             logger.info(f"Using product video path for scan: {prod_folder_path}")

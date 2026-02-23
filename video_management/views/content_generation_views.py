@@ -48,11 +48,12 @@ def generate_content(request):
         product_category = request.data.get('product_category')  # Optional category
         product_description = request.data.get('product_description')  # Optional description
         product_price = request.data.get('product_price')  # Optional price
+        product_sku = request.data.get('product_sku')  # Optional SKU (mã sản phẩm)
 
         # DEBUG: Log product info coming from FE so bạn thấy rõ trên terminal
         logger.info(
             f"🧾 Product from FE for content-generation: "
-            f"id={product_id}, name='{product_name}', category='{product_category}', price='{product_price}'"
+            f"id={product_id}, name='{product_name}', sku='{product_sku}', category='{product_category}', price='{product_price}'"
         )
 
         # Nếu FE chỉ gửi id (hoặc thiếu category/price/description) thì tự lấy đầy đủ từ catalog Product
@@ -77,10 +78,12 @@ def generate_content(request):
                     product_description = resolved_product.description
                 if not product_price and resolved_product.price is not None:
                     product_price = str(resolved_product.price)
+                if not product_sku and resolved_product.sku:
+                    product_sku = resolved_product.sku
 
                 logger.info(
                     f"✅ Product resolved for CONTENT pipeline: "
-                    f"id={resolved_product.id}, name='{product_name}', "
+                    f"id={resolved_product.id}, name='{product_name}', sku='{product_sku}', "
                     f"category='{product_category}', price='{product_price}'"
                 )
         except Exception as e:
@@ -116,28 +119,26 @@ def generate_content(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Build product context if product info provided
-        product_context = ""
-        if product_name or product_category or product_description:
-            product_context = "\n\nThông tin sản phẩm:\n"
-            if product_name:
-                product_context += f"- Tên sản phẩm: {product_name}\n"
-            if product_category:
-                product_context += f"- Loại sản phẩm: {product_category}\n"
-            if product_price:
-                product_context += f"- Giá: {product_price}\n"
-            if product_description:
-                product_context += f"- Mô tả: {product_description}\n"
+        # Build product_info dict for KOC prompt (tên, sku, category, mô tả → kể chuyện xoay quanh)
+        product_info = None
+        if product_name or product_sku or product_category or product_description:
+            product_info = {
+                'name': product_name or '',
+                'sku': product_sku or '',
+                'category': product_category or '',
+                'description': product_description or '',
+                'price': product_price or '',
+            }
         
-        # Combine additional context with product context
-        combined_context = (additional_context or "") + product_context
+        # Combine additional context (user custom prompt etc.)
+        combined_context = additional_context or ""
         
-        # Generate content
+        # Generate content (KOC style - product_info được dùng trong prompt)
         service = ContentGenerationService()
         
         logger.info(f"Generating {content_type} content for: {video_title or 'Untitled'}")
         if product_name:
-            logger.info(f"Product context: {product_name} ({product_category})")
+            logger.info(f"Product context: {product_name} (sku={product_sku}, {product_category})")
         
         result = service.generate_content(
             video_description=video_description,
@@ -145,7 +146,8 @@ def generate_content(request):
             content_type=content_type,
             brand_name=brand_name,
             industry=industry,
-            additional_context=combined_context
+            additional_context=combined_context,
+            product_info=product_info
         )
         
         # Save to database (only if we have a source video)
