@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import uuid
 from rest_framework.permissions import AllowAny
-from ..models import LarkReport, AppUser, LarkEmployee
+from ..models import LarkReport, AppUser, LarkEmployee, ReportOutstanding, LarkPermission
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +280,48 @@ class ChecklistSubmitView(APIView):
                 date=current_datetime,
             )
             
-            logger.info("Đã lưu báo cáo LOCAL %s cho %s vào database", record_id, user_email)
+            # --- LƯU VÀO ReportOutstanding ---
+            # 1. Tìm team từ LarkPermission nếu chưa có team (đồng bộ với yêu cầu: team dựa vào email check trong larkPermission)
+            if not user_team:
+                try:
+                    perm = LarkPermission.objects.filter(email__iexact=user_email).first()
+                    if perm:
+                        user_team = perm.team
+                except Exception as e:
+                    logger.warning("Lỗi lookup LarkPermission cho ReportOutstanding: %s", e)
+
+            # 2. Map các câu hỏi sang ReportOutstanding (nếu có nội dung trả lời)
+            outstanding_mappings = [
+                # Câu hỏi từ DetailSection (Nhân viên)
+                ("4. Bạn có đóng góp ý tưởng hay đề xuất gì không?", "ý kiến đóng góp cải tiến mới"),
+                ("3. Bạn có gặp khó khăn nào cần hỗ trợ không?", "khó khăn cần hỗ trợ"),
+                ("5. Bạn có sản phẩm (A4 - A5) nào win mới không? (>5k view - >10 cmt hỏi giá?)", "video sản phẩm win"),
+                ("2. Hôm qua có đổi mới sáng tạo gì được áp dụng vào công việc của bạn không?", "ý kiến đóng góp cải tiến mới"),
+                
+                # Câu hỏi từ LeaderEvaluationSection (Quản lý)
+                ("3. Team bạn hôm qua có gì đổi mới được áp dụng không?", "ý kiến đóng góp cải tiến mới"),
+                ("5. Team bạn hôm qua có sản phẩm nào win mới không? Đã thông tin lên Group New Product chưa?", "video sản phẩm win"),
+            ]
+
+            for q_key, content_label in outstanding_mappings:
+                answer = checklist_data.get(q_key)
+                # Chỉ lưu nếu có câu trả lời và không phải là "Không ạ"
+                if answer and isinstance(answer, str) and answer.strip() and answer.strip().lower() not in ["không", "không có", "k", "no", "none", ".", "không ạ"]:
+                    try:
+                        ReportOutstanding.objects.create(
+                            id=f"out_{uuid.uuid4().hex[:12]}",
+                            name=user_name,
+                            date=current_datetime,
+                            team=user_team,
+                            content=content_label,
+                            idea_content=answer.strip(),
+                            email=user_email,
+                            status=None # để sau chưa cần có dữ liệu
+                        )
+                    except Exception as e:
+                        logger.error("Lỗi lưu ReportOutstanding cho câu hỏi '%s': %s", q_key, e)
+
+            logger.info("Đã lưu báo cáo LOCAL %s và ReportOutstanding cho %s", record_id, user_email)
 
             return Response({
                 "success": True,

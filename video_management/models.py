@@ -1283,6 +1283,22 @@ class LarkPermission(models.Model):
         db_table = 'lark_permissions'
         managed = False
 
+class ReportOutstanding(models.Model):
+    id = models.CharField(max_length=255, primary_key=True)
+    name = models.CharField(max_length=255)
+    date = models.DateTimeField(default=timezone.now)
+    team = models.CharField(max_length=255, null=True, blank=True)
+    content = models.TextField(null=True, blank=True)
+    idea_content = models.TextField(null=True, blank=True)
+    status = models.CharField(max_length=255, null=True, blank=True)
+    email = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'report_outstanding'
+        managed = False
+
 # Import search-related models
 from .models_search import SearchQuery, TrendingKeyword
 
