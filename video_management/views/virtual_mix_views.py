@@ -95,6 +95,10 @@ def virtual_mix(request):
         cache_map = {}  # video_id → cache_id
         for cache in VideoClipCache.objects.all():
             if os.path.isfile(cache.clip_path):
+                fsize = os.path.getsize(cache.clip_path)
+                if fsize < 100_000:  # Skip corrupted clips (< 100KB)
+                    logger.warning(f"⚠️ Clip {cache.id} too small ({fsize} bytes), skipping")
+                    continue
                 cache_map[cache.source_video_id] = {
                     'cache_id': cache.id,
                     'duration': cache.duration or 12.0,
