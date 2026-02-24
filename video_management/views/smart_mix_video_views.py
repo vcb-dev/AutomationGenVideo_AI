@@ -10,14 +10,18 @@ Performance: 5-13 seconds per mix (vs 2-3 minutes with old approach)
 """
 
 import os
+import re
 import uuid
+import hashlib
 import logging
 import tempfile
 import subprocess
 import threading
+import time as time_module
 from pathlib import Path
 from typing import List, Dict, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.conf import settings
 from django.utils import timezone
@@ -28,11 +32,23 @@ from rest_framework import status
 from video_management.services.smart_preprocessing_service import get_preprocessing_service
 from video_management.models import IndexedVideo, VideoClipCache, Product
 from video_management.views.smart_mix_video_views_helper import _auto_index_manufacturing_folders, _auto_index_by_sku_global
+from video_management.views.mix_progress_store import (
+    progress_set, progress_get, progress_update, progress_exists, progress_get_field
+)
 
 logger = logging.getLogger(__name__)
 
-# Mix progress tracking (same as old mix_video_views.py)
-_mix_progress = {}
+# ── Audio Cache Directory ────────────────────────────────────────────────────
+AUDIO_CACHE_DIR = os.path.join(settings.MEDIA_ROOT, 'audio_cache')
+os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
+
+# ── Concurrent Mix Limiter ───────────────────────────────────────────────────
+# Giới hạn tối đa 3 job mix chạy song song.
+# Nếu nhiều user cùng bấm mix → xếp hàng đợi (không crash server).
+_MIX_MAX_CONCURRENT = 3
+_mix_semaphore = threading.Semaphore(_MIX_MAX_CONCURRENT)
+
+# Backward-compat: vẫn giữ lock cho các hàm nội bộ dùng 
 _mix_progress_lock = threading.Lock()
 
 # Folder types for A4 Formula V3 (7 SIMPLE SLOTS - NO SPLIT)
@@ -326,9 +342,152 @@ def get_voices(request):
         )
 
 
+# ============================================================================
+# AUDIO GENERATION - OPTIMIZED WITH CACHING + PARALLEL CHUNKING
+# ============================================================================
+# Performance improvements:
+# 1. Cache: SHA256(script+voice_id) → instant return if cached (<100ms)
+# 2. Chunking: Long scripts split at sentence boundaries → parallel API calls
+# 3. Merge: ffmpeg concat for multi-chunk audio → ~2-3x faster than sequential
+# ============================================================================
+
+def _split_script_into_chunks(script: str, max_chars: int = 500) -> List[str]:
+    """
+    Split script into chunks at sentence boundaries.
+    Each chunk stays under max_chars to speed up HeyGen API processing.
+    Short scripts (< max_chars) are returned as-is.
+    """
+    if len(script) <= max_chars:
+        return [script]
+
+    # Split by Vietnamese/English sentence endings
+    sentences = re.split(r'(?<=[.!?。！？\n])\s*', script)
+
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if not sentence.strip():
+            continue
+        # If adding this sentence would exceed max_chars, start a new chunk
+        if len(current_chunk) + len(sentence) > max_chars and current_chunk:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            current_chunk += (" " if current_chunk else "") + sentence
+
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks if chunks else [script]
+
+
+def _call_heygen_tts_chunk(chunk_text: str, voice_id: str, api_key: str, chunk_idx: int) -> Dict:
+    """
+    Call HeyGen TTS API for a single text chunk.
+    Returns dict with 'audio_url' or 'error'.
+    """
+    try:
+        import requests as http_requests
+        start = time_module.time()
+
+        response = http_requests.post(
+            f'https://api.heygen.com/v2/voices/{voice_id}/preview',
+            headers={
+                'X-Api-Key': api_key,
+                'Content-Type': 'application/json'
+            },
+            json={
+                'text': chunk_text,
+                'voice_id': voice_id,
+                'text_type': 'text'
+            },
+            timeout=120  # 2 minutes per chunk (shorter chunks = faster)
+        )
+
+        elapsed = time_module.time() - start
+
+        if response.status_code != 200:
+            logger.error(f"❌ Chunk {chunk_idx} failed ({elapsed:.1f}s): {response.text[:200]}")
+            return {'error': f'Chunk {chunk_idx} failed: {response.text[:200]}'}
+
+        data = response.json()
+        audio_url = data.get('audio_url') or data.get('data', {}).get('audio_url')
+
+        if not audio_url:
+            return {'error': f'Chunk {chunk_idx}: No audio_url in response'}
+
+        logger.info(f"✅ Chunk {chunk_idx}: {len(chunk_text)} chars → {elapsed:.1f}s")
+        return {'audio_url': audio_url, 'chunk_idx': chunk_idx}
+
+    except Exception as e:
+        logger.error(f"❌ Chunk {chunk_idx} exception: {e}")
+        return {'error': str(e)}
+
+
+def _download_audio_file(url: str, output_path: str) -> bool:
+    """Download audio from URL to local file."""
+    try:
+        import requests as http_requests
+        response = http_requests.get(url, timeout=60)
+        if response.status_code == 200:
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+            return True
+        logger.error(f"Download failed: status={response.status_code}")
+    except Exception as e:
+        logger.error(f"Download audio error: {e}")
+    return False
+
+
+def _merge_audio_files(audio_paths: List[str], output_path: str) -> bool:
+    """Merge multiple audio files using ffmpeg concat demuxer."""
+    try:
+        # Create concat list file
+        list_path = output_path + '.concat.txt'
+        with open(list_path, 'w', encoding='utf-8') as f:
+            for path in audio_paths:
+                # ffmpeg requires forward slashes or escaped backslashes
+                safe_path = path.replace('\\', '/')
+                f.write(f"file '{safe_path}'\n")
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_path,
+            '-c', 'copy',
+            output_path
+        ]
+
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60
+        )
+
+        # Cleanup concat list
+        if os.path.isfile(list_path):
+            os.unlink(list_path)
+
+        if result.returncode != 0:
+            logger.error(f"ffmpeg merge failed: {result.stderr[:300]}")
+            return False
+
+        return True
+    except Exception as e:
+        logger.error(f"Merge audio error: {e}")
+        return False
+
+
 @api_view(['POST'])
 def generate_audio_from_script(request):
-    """Generate audio from script using selected voice."""
+    """
+    Generate audio from script using selected voice.
+    
+    OPTIMIZED with:
+    - Audio caching (SHA256 of script+voice_id) → instant if cached
+    - Parallel chunking for long scripts → 2-3x faster
+    - Local file storage → reliable playback
+    """
     try:
         script = request.data.get('script')
         voice_id = request.data.get('voice_id')
@@ -342,6 +501,8 @@ def generate_audio_from_script(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        start_time = time_module.time()
+        
         from video_management.models import Voice
         voice = Voice.objects.filter(voice_id=voice_id).first()
         
@@ -351,78 +512,183 @@ def generate_audio_from_script(request):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Generate audio using HeyGen only
-        if voice.provider == 'heygen':
-            # Call HeyGen TTS API
-            import requests
-            heygen_api_key = os.getenv('HEYGEN_API_KEY')
+        # ── STEP 1: Check cache ──────────────────────────────────────────────
+        cache_key = hashlib.sha256(f"{voice_id}:{script}".encode('utf-8')).hexdigest()
+        cache_path = os.path.join(AUDIO_CACHE_DIR, f"{cache_key}.mp3")
+        
+        if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+            elapsed = time_module.time() - start_time
+            logger.info(f"⚡ CACHE HIT! Audio returned in {elapsed:.3f}s (key={cache_key[:12]})")
             
-            if not heygen_api_key:
-                logger.error("❌ HEYGEN_API_KEY not found in environment")
-                return Response(
-                    {'error': 'HeyGen API key not configured'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            logger.info(f"📞 Calling HeyGen API v2 with voice: {voice.voice_id}")
-            logger.info(f"📝 Script length: {len(script)} chars (~{len(script.split())} words)")
-            
-            # Use v2 preview endpoint (may take long for long scripts!)
-            response = requests.post(
-                f'https://api.heygen.com/v2/voices/{voice.voice_id}/preview',
-                headers={
-                    'X-Api-Key': heygen_api_key,
-                    'Content-Type': 'application/json'
-                },
-                json={
-                    'text': script,
-                    'voice_id': voice.voice_id,
-                    'text_type': 'text'  # Required: "text" or "ssml"
-                },
-                timeout=300  # 5 minutes for long scripts (3000+ chars)
-            )
-            
-            logger.info(f"📡 HeyGen Response: Status={response.status_code}")
-            
-            if response.status_code != 200:
-                logger.error(f"❌ HeyGen API failed: {response.text}")
-                return Response(
-                    {'error': f'HeyGen API error: {response.text}'},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-            
-            data = response.json()
-            logger.info(f"✅ HeyGen Response Data: {data}")
-            
-            # v2 API returns audio_url directly or in data object
-            audio_url = data.get('audio_url') or data.get('data', {}).get('audio_url')
-            
-            if not audio_url:
-                logger.error(f"❌ No audio_url in response: {data}")
-                return Response(
-                    {'error': 'No audio URL returned from HeyGen', 'response': data},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+            # Build URL to serve cached audio
+            audio_serve_url = request.build_absolute_uri(f'/api/audio/cache/{cache_key}.mp3')
             
             return Response({
                 'success': True,
-                'audio_url': audio_url,
+                'audio_url': audio_serve_url,
                 'voice_name': voice.name,
-                'provider': 'heygen'
+                'provider': 'heygen',
+                'cached': True,
+                'elapsed': round(elapsed, 3)
             }, status=status.HTTP_200_OK)
         
-        else:
+        # ── STEP 2: Generate audio ───────────────────────────────────────────
+        if voice.provider != 'heygen':
             return Response(
                 {'error': f'Provider {voice.provider} not supported yet'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-    
+        
+        import requests as http_requests
+        heygen_api_key = os.getenv('HEYGEN_API_KEY')
+        
+        if not heygen_api_key:
+            logger.error("❌ HEYGEN_API_KEY not found in environment")
+            return Response(
+                {'error': 'HeyGen API key not configured'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Split script into chunks for parallel processing
+        chunks = _split_script_into_chunks(script, max_chars=500)
+        num_chunks = len(chunks)
+        
+        logger.info(f"📝 Script: {len(script)} chars → {num_chunks} chunk(s)")
+        for i, chunk in enumerate(chunks):
+            logger.info(f"  Chunk {i+1}/{num_chunks}: {len(chunk)} chars")
+        
+        if num_chunks == 1:
+            # ── SINGLE CHUNK: Direct call (no overhead) ──────────────────
+            logger.info(f"📞 Single chunk → direct HeyGen API call")
+            result = _call_heygen_tts_chunk(chunks[0], voice.voice_id, heygen_api_key, 0)
+            
+            if 'error' in result:
+                return Response(
+                    {'error': result['error']},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            audio_url = result['audio_url']
+            
+            # Download and cache locally
+            if _download_audio_file(audio_url, cache_path):
+                elapsed = time_module.time() - start_time
+                logger.info(f"✅ Audio cached locally ({elapsed:.1f}s, key={cache_key[:12]})")
+                audio_serve_url = request.build_absolute_uri(f'/api/audio/cache/{cache_key}.mp3')
+            else:
+                # Fallback to HeyGen URL if download fails
+                audio_serve_url = audio_url
+                elapsed = time_module.time() - start_time
+                logger.warning(f"⚠️ Cache download failed, using HeyGen URL ({elapsed:.1f}s)")
+            
+        else:
+            # ── MULTI CHUNK: Parallel processing ─────────────────────────
+            logger.info(f"🚀 {num_chunks} chunks → PARALLEL HeyGen API calls")
+            
+            chunk_results = [None] * num_chunks
+            
+            # Use ThreadPoolExecutor for parallel API calls
+            with ThreadPoolExecutor(max_workers=min(num_chunks, 4)) as executor:
+                futures = {}
+                for i, chunk in enumerate(chunks):
+                    future = executor.submit(
+                        _call_heygen_tts_chunk,
+                        chunk, voice.voice_id, heygen_api_key, i
+                    )
+                    futures[future] = i
+                
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    chunk_results[idx] = future.result()
+            
+            # Check for errors
+            errors = [r for r in chunk_results if r and 'error' in r]
+            if errors:
+                error_msg = "; ".join([e['error'] for e in errors[:3]])
+                logger.error(f"❌ {len(errors)}/{num_chunks} chunks failed: {error_msg}")
+                return Response(
+                    {'error': f'Audio generation partially failed: {error_msg}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Download all chunk audio files
+            temp_dir = tempfile.mkdtemp(prefix='audio_chunks_')
+            chunk_paths = []
+            
+            try:
+                download_ok = True
+                for i, result in enumerate(chunk_results):
+                    chunk_file = os.path.join(temp_dir, f"chunk_{i:03d}.mp3")
+                    if not _download_audio_file(result['audio_url'], chunk_file):
+                        download_ok = False
+                        break
+                    chunk_paths.append(chunk_file)
+                
+                if not download_ok or len(chunk_paths) != num_chunks:
+                    return Response(
+                        {'error': 'Failed to download audio chunks'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                # Merge all chunks into one file
+                if not _merge_audio_files(chunk_paths, cache_path):
+                    return Response(
+                        {'error': 'Failed to merge audio chunks'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                
+                elapsed = time_module.time() - start_time
+                logger.info(
+                    f"✅ {num_chunks} chunks merged + cached ({elapsed:.1f}s, "
+                    f"key={cache_key[:12]})"
+                )
+                
+            finally:
+                # Cleanup temp files
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            audio_serve_url = request.build_absolute_uri(f'/api/audio/cache/{cache_key}.mp3')
+        
+        elapsed = time_module.time() - start_time
+        return Response({
+            'success': True,
+            'audio_url': audio_serve_url,
+            'voice_name': voice.name,
+            'provider': 'heygen',
+            'cached': False,
+            'chunks': num_chunks,
+            'elapsed': round(elapsed, 2)
+        }, status=status.HTTP_200_OK)
+
     except Exception as e:
         logger.error(f"Generate audio error: {e}", exc_info=True)
         return Response(
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['GET'])
+def serve_cached_audio(request, filename: str):
+    """Serve cached audio files from AUDIO_CACHE_DIR."""
+    from django.http import FileResponse
+
+    # Sanitize filename to prevent path traversal
+    safe_filename = os.path.basename(filename)
+    file_path = os.path.join(AUDIO_CACHE_DIR, safe_filename)
+
+    if not os.path.isfile(file_path):
+        return Response(
+            {'error': 'Audio file not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    return FileResponse(
+        open(file_path, 'rb'),
+        content_type='audio/mpeg',
+        filename=safe_filename
+    )
 
 
 @api_view(['POST'])
@@ -437,7 +703,7 @@ def smart_mix(request):
         "width": 540,
         "height": 960,
         "use_gpu": true,  // Optional: force GPU on/off (null = auto)
-        "use_a4_formula": true  // Optional: Use A4 formula (8 slots with split layout)
+        "use_a4_formula": true  // Optional: Use A4 V3 formula (7 simple slots, no split layout)
     }
     
     Returns:
@@ -518,24 +784,30 @@ def smart_mix(request):
         if product_sku:
             logger.info(f"🏷️ Product SKU: {product_sku}")
         
-        # Create progress tracking
+        # Create progress tracking (Redis-backed, survives server restart)
         progress_id = uuid.uuid4().hex
-        with _mix_progress_lock:
-            _mix_progress[progress_id] = {
-                "status": "processing",
-                "percent": 0,
-                "message": "Initializing...",
-                "num_outputs": num_outputs,
-                "error": None,
-                "output_urls": None,
-                "output_filenames": None,
-            }
-        
+        progress_set(progress_id, {
+            "status": "processing",
+            "percent": 0,
+            "message": "Queued — waiting for available slot...",
+            "num_outputs": num_outputs,
+            "error": None,
+            "output_urls": None,
+            "output_filenames": None,
+        })
+
+        # Check concurrent mix limit BEFORE starting thread
+        # Nếu đã đạt giới hạn → thông báo user xếp hàng (không block request)
+        active_slots = _MIX_MAX_CONCURRENT - _mix_semaphore._value  # số job đang chạy
+        if active_slots >= _MIX_MAX_CONCURRENT:
+            logger.warning(f"⚠️ Mix queue full ({active_slots}/{_MIX_MAX_CONCURRENT}). Job {progress_id} will wait.")
+
         # Start mix task in background
-        # Pass audio_path (string) and whether it's temporary (needs cleanup)
+        # daemon=False: thread không bị kill khi main process nhận SIGTERM
+        # → mix vẫn hoàn thành ngay cả khi server đang reload
         is_temp_audio = temp_audio is not None
-        threading.Thread(
-            target=_run_smart_mix_task,
+        t = threading.Thread(
+            target=_run_smart_mix_task_with_semaphore,
             args=(
                 progress_id,
                 audio_path,
@@ -550,8 +822,10 @@ def smart_mix(request):
                 product_category,
                 product_sku
             ),
-            daemon=True
-        ).start()
+            daemon=False,
+            name=f"smart-mix-{progress_id[:8]}"
+        )
+        t.start()
         
         return Response({
             "progress_id": progress_id,
@@ -568,14 +842,26 @@ def smart_mix(request):
 
 @api_view(['GET'])
 def smart_mix_status(request, progress_id: str):
-    """Get mix progress status (same format as old mix)."""
-    with _mix_progress_lock:
-        if progress_id not in _mix_progress:
-            return Response(
-                {'error': 'Progress ID not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        return Response(_mix_progress[progress_id])
+    """Get mix progress status (reads from Redis, survives restart)."""
+    data = progress_get(progress_id)
+    if data is None:
+        return Response(
+            {'error': 'Progress ID not found. The server may have restarted.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+    return Response(data)
+
+
+def _run_smart_mix_task_with_semaphore(*args, **kwargs):
+    """
+    Wrapper: acquire semaphore trước khi chạy mix → giới hạn concurrent jobs.
+    Nếu 3 job đang chạy, job thứ 4 sẽ đợi (không reject).
+    """
+    progress_id = args[0]
+    progress_update(progress_id, {"message": "Waiting for available slot..."})
+    with _mix_semaphore:  # Block ở đây nếu đã full
+        progress_update(progress_id, {"message": "Initializing..."})
+        _run_smart_mix_task(*args, **kwargs)
 
 
 def _run_smart_mix_task(
@@ -860,25 +1146,22 @@ def _run_smart_mix_task(
         output_filenames = [os.path.basename(f) for f in output_files]
         
         # Complete
-        with _mix_progress_lock:
-            _mix_progress[progress_id].update({
-                "status": "completed",
-                "percent": 100,
-                "message": f"Generated {len(output_files)} videos",
-                "output_urls": output_urls,
-                "output_filenames": output_filenames,
-            })
-        
+        progress_update(progress_id, {
+            "status": "completed",
+            "percent": 100,
+            "message": f"Generated {len(output_files)} videos",
+            "output_urls": output_urls,
+            "output_filenames": output_filenames,
+        })
         logger.info(f"✅ Smart mix completed: {progress_id} ({len(output_files)} videos)")
     
     except Exception as e:
         logger.error(f"Smart mix task error: {e}", exc_info=True)
-        with _mix_progress_lock:
-            _mix_progress[progress_id].update({
-                "status": "error",
-                "error": str(e),
-                "message": f"Error: {str(e)}"
-            })
+        progress_update(progress_id, {
+            "status": "error",
+            "error": str(e),
+            "message": f"Error: {str(e)}"
+        })
     
     finally:
         # Cleanup temp audio if it was uploaded (not a permanent file)
@@ -1267,13 +1550,9 @@ def _replace_audio(video_path: str, audio_path: str, output_path: str, audio_dur
 
 
 def _update_progress(progress_id: str, percent: int, message: str):
-    """Update progress tracking."""
-    with _mix_progress_lock:
-        if progress_id in _mix_progress:
-            _mix_progress[progress_id].update({
-                "percent": percent,
-                "message": message
-            })
+    """Update progress tracking (Redis-backed)."""
+    if progress_exists(progress_id):
+        progress_update(progress_id, {"percent": percent, "message": message})
 
 
 def _get_clip_with_autofill(

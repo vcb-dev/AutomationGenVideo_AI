@@ -89,24 +89,21 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 
-# Database
+# Database — PostgreSQL only (shared with BE service: video_production)
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+# DATABASE_URL must be set in .env, e.g.:
+#   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/video_production
+
+_db_url = env('DATABASE_URL', default='')
+if not _db_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set! "
+        "Add it to .env, e.g.: DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/video_production"
+    )
 
 DATABASES = {
-    'default': env.db('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
+    'default': env.db('DATABASE_URL')
 }
-
-# If you prefer explicit configuration without DATABASE_URL:
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': env('DB_NAME', default='automation_video_ai'),
-#         'USER': env('DB_USER', default='postgres'),
-#         'PASSWORD': env('DB_PASSWORD', default='postgres'),
-#         'HOST': env('DB_HOST', default='localhost'),
-#         'PORT': env('DB_PORT', default='5432'),
-#     }
-# }
 
 
 # Password validation

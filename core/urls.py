@@ -95,6 +95,13 @@ urlpatterns = [
     path('api/', include('video_management.urls')),
 ]
 
+# Cached audio serving endpoint
+from video_management.views.smart_mix_video_views import serve_cached_audio
+
+urlpatterns += [
+    path('api/audio/cache/<str:filename>', serve_cached_audio, name='serve-cached-audio'),
+]
+
 # HeyGen lipsync/motion control endpoints
 from heygen_service import views as heygen_views
 

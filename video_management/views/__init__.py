@@ -38,6 +38,7 @@ from .smart_mix_video_views import (
     cache_stats,
     get_voices,
     generate_audio_from_script,
+    serve_cached_audio,
     index_manufacturing_folder,
     # Pre-generation
     pregen_status,
@@ -77,6 +78,7 @@ __all__ = [
     'cache_stats',
     'get_voices',
     'generate_audio_from_script',
+    'serve_cached_audio',
     'index_manufacturing_folder',
     # Pre-generation views
     'pregen_status',
