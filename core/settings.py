@@ -336,12 +336,8 @@ TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
-    'scan-channels-every-30-minutes': {
-        'task': 'video_management.tasks.scan_tracked_channels',
-        'schedule': crontab(minute='*/30'),
-    },
     'cleanup-cache-daily': {
-        'task': 'video_management.tasks.cleanup_old_cache',
+        'task': 'video_management.cleanup_old_cache',
         'schedule': crontab(hour=0, minute=0),
     },
 }

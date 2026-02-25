@@ -23,7 +23,7 @@ model video_management_scrapedvideo {
   shares_count    Int       @default(0)
   video_url       String?   @db.VarChar(1000)
   download_url    String?   @db.VarChar(1000)
-  thumbnail_url   String?   @db.VarChar(1000)
+  thumbnail_url   String?   @db.VarChar(1000)   
   published_at    DateTime?
   hashtags        Json?
   music_info      Json?
@@ -39,7 +39,7 @@ model video_management_scrapedvideo {
 model video_management_trackedchannel {
   id                  Int       @id @default(autoincrement())
   platform            String    @db.VarChar(20)
-  channel_id          String?   @db.VarChar(255)
+  channel_id          String?   @db.VarChar(255)  
   username            String    @db.VarChar(255)
   display_name        String?   @db.VarChar(255)
   is_active           Boolean   @default(true)
