@@ -46,7 +46,7 @@ from ..serializers import (
 
 )
 
-from ..services.apify_service import create_scraper
+from ..services.apify_service import create_scraper, fetch_tiktok_user_profile
 from ..services.base_scraper import ScraperException
 
 from ..tasks import search_videos_task
@@ -1094,6 +1094,7 @@ class UserVideosView(APIView):
             # --- OTHER PLATFORMS: Use Apify ---
             else:
                 logger.info(f"⚡ Using Apify to fetch videos for @{username} on {platform_str}")
+                # TikTok: still use main scraper for videos; stats come from user-scraper
                 scraper = create_scraper(platform_str)
                 page_info = {}
                 raw_results = scraper.get_user_videos(username, max_results=max_results, until_date=start_date)
@@ -1322,43 +1323,102 @@ class UserVideosView(APIView):
                 
                 # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
                 else: 
-                    # authorMeta is sometimes at root, sometimes nested in raw_data
+                    # With apidojo/tiktok-scraper, profile info lives under "channel".
+                    # For backwards-compatibility we also support legacy authorMeta/authorStats.
                     raw = first_item
-                    # DEBUG LOGS
                     logger.info(f"🔍 TikTok Raw Item Keys: {list(raw.keys())}")
+                    channel = raw.get('channel') or {}
                     if raw.get('authorMeta'):
                         logger.info(f"👤 authorMeta: {raw.get('authorMeta')}")
                     if raw.get('authorStats'):
-                         logger.info(f"📊 authorStats: {raw.get('authorStats')}")
+                        logger.info(f"📊 authorStats: {raw.get('authorStats')}")
                     
-                    author_meta = raw.get('authorMeta') or raw.get('author') or raw.get('raw_data', {}).get('authorMeta') or {}
+                    author_meta = (
+                        channel
+                        or raw.get('authorMeta')
+                        or raw.get('author')
+                        or raw.get('raw_data', {}).get('authorMeta')
+                        or {}
+                    )
                     
                     # Robust extraction with multiple fallbacks
-                    username = author_meta.get('name') or author_meta.get('uniqueId') or author_meta.get('unique_id') or username
-                    display_name = author_meta.get('nickName') or author_meta.get('nickname') or username
+                    username = (
+                        author_meta.get('username')
+                        or author_meta.get('name')
+                        or author_meta.get('uniqueId')
+                        or author_meta.get('unique_id')
+                        or username
+                    )
+                    display_name = (
+                        author_meta.get('display_name')
+                        or author_meta.get('nickname')
+                        or author_meta.get('nickName')
+                        or username
+                    )
                     
                     # Avatar strategies
                     avatar_url = (
-                        author_meta.get('avatarLarger') or 
-                        author_meta.get('avatarMedium') or 
-                        author_meta.get('avatarThumb') or 
-                        author_meta.get('avatar') or 
-                        ''
+                        author_meta.get('avatar')
+                        or author_meta.get('avatarLarger')
+                        or author_meta.get('avatarMedium')
+                        or author_meta.get('avatarThumb')
+                        or author_meta.get('avatarUrl')
+                        or ''
                     )
                     
-                    # Stats strategies - Check authorMeta first, then authorStats if exists
-                    author_stats = raw.get('authorStats') or author_meta # sometimes stats are separate
+                    # Stats strategies - prefer channel fields, then legacy authorStats
+                    author_stats = raw.get('authorStats') or author_meta
                     
-                    follower_count = int(author_stats.get('fans') or author_stats.get('followerCount') or author_stats.get('followers') or 0)
-                    total_likes = int(author_stats.get('heart') or author_stats.get('heartCount') or author_stats.get('diggCount') or 0)
-                    total_videos = int(author_stats.get('video') or author_stats.get('videoCount') or len(normalized))
+                    follower_count = int(
+                        author_meta.get('followers')
+                        or author_meta.get('followersCount')
+                        or author_stats.get('fans')
+                        or author_stats.get('followerCount')
+                        or author_stats.get('followers')
+                        or 0
+                    )
+                    total_likes = int(
+                        author_meta.get('likes')
+                        or author_meta.get('heart')
+                        or author_stats.get('heart')
+                        or author_stats.get('heartCount')
+                        or author_stats.get('diggCount')
+                        or 0
+                    )
+                    total_videos = int(
+                        author_meta.get('videos')
+                        or author_meta.get('videoCount')
+                        or author_stats.get('video')
+                        or author_stats.get('videoCount')
+                        or len(normalized)
+                    )
                     
                     # Calculate aggregated stats from fetched videos
                     fetched_views = sum(v.get('views_count', 0) for v in normalized)
                     fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
                     fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
                     fetched_shares = sum(v.get('shares_count', 0) for v in normalized)
-                    
+
+                    # Fetch precise lifetime stats from TikTok User Scraper
+                    try:
+                        user_stats = fetch_tiktok_user_profile(username)
+                    except Exception as e:
+                        user_stats = None
+                        logger.error(f"⚠️ TikTok user scraper failed for {username}: {e}")
+
+                    if user_stats:
+                        follower_count = int(user_stats.get('followers') or follower_count)
+                        total_likes = int(user_stats.get('likes') or total_likes)
+                        total_videos = int(user_stats.get('videos') or total_videos)
+                        avatar_url = user_stats.get('avatar') or avatar_url
+
+                    # Fallbacks when even user scraper does not provide stats
+                    if total_likes == 0 and fetched_likes > 0:
+                        total_likes = fetched_likes
+                    if not avatar_url and normalized:
+                        # Use first video thumbnail as a lightweight avatar fallback
+                        avatar_url = normalized[0].get('thumbnail_url') or avatar_url
+
                     # Engagement Rate Calculation
                     engagement_rate = 0.0
                     if fetched_views > 0:
