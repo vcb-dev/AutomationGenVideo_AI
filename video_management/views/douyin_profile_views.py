@@ -16,6 +16,8 @@ from rest_framework import status
 from django.conf import settings
 from apify_client import ApifyClient
 
+from video_management.models import TrackedChannel, Platform
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,6 +73,7 @@ def fetch_douyin_channel_profile(request):
         
         if profile and (profile.get('follower_count', 0) > 0 or profile.get('total_likes', 0) > 0):
             logger.info(f"[DouyinProfile] ✅ APPROACH 1 SUCCESS: @{username}")
+            _sync_tracked_channel_with_profile(username, profile)
             return Response({
                 'success': True,
                 'profile': profile,
@@ -82,6 +85,7 @@ def fetch_douyin_channel_profile(request):
             profile_extended = _fetch_profile_by_search(client, actor_id, username, max_posts=10)
             if profile_extended and (profile_extended.get('follower_count', 0) > 0):
                 logger.info(f"[DouyinProfile] ✅ APPROACH 2 SUCCESS: @{username}")
+                _sync_tracked_channel_with_profile(username, profile_extended)
                 return Response({
                     'success': True,
                     'profile': profile_extended,
@@ -96,6 +100,7 @@ def fetch_douyin_channel_profile(request):
                 f"followers={profile.get('follower_count')}, likes={profile.get('total_likes')} "
                 f"- Channel might be private or Apify couldn't fetch full data"
             )
+            _sync_tracked_channel_with_profile(username, profile)
             return Response({
                 'success': True,
                 'profile': profile,
@@ -129,6 +134,55 @@ def fetch_douyin_channel_profile(request):
         return Response(
             {'success': False, 'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+def _sync_tracked_channel_with_profile(username: str, profile: dict) -> None:
+    """
+    Update or create TrackedChannel for Douyin using profile data.
+
+    This is called after a successful profile fetch so that the
+    tracking DB always has up‑to‑date follower_count, display_name, etc.
+    """
+    try:
+        platform_enum = Platform.DOUYIN
+
+        display_name = profile.get('display_name') or username
+        follower_count = profile.get('follower_count', 0) or 0
+
+        channel, created = TrackedChannel.objects.get_or_create(
+            platform=platform_enum,
+            username=username,
+            defaults={
+                'channel_id': username,
+                'display_name': display_name,
+                'follower_count': follower_count,
+            },
+        )
+
+        # Always refresh metadata in case profile changed
+        updated_fields = []
+
+        if channel.display_name != display_name:
+            channel.display_name = display_name
+            updated_fields.append('display_name')
+
+        if follower_count and channel.follower_count != follower_count:
+            channel.follower_count = follower_count
+            updated_fields.append('follower_count')
+
+        if updated_fields:
+            # updated_at will auto‑update
+            channel.save(update_fields=updated_fields + ['updated_at'])
+
+        logger.info(
+            f"[DouyinProfile] Synced TrackedChannel (created={created}) for @{username} "
+            f"followers={channel.follower_count}, display_name={channel.display_name}"
+        )
+    except Exception as exc:
+        logger.error(
+            f"[DouyinProfile] Failed to sync TrackedChannel for @{username}: {exc}",
+            exc_info=True,
         )
 
 
