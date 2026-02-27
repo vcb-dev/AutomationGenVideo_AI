@@ -293,14 +293,15 @@ class ChecklistSubmitView(APIView):
             # 2. Map các câu hỏi sang ReportOutstanding (nếu có nội dung trả lời)
             outstanding_mappings = [
                 # Câu hỏi từ DetailSection (Nhân viên)
-                ("4. Bạn có đóng góp ý tưởng hay đề xuất gì không?", "ý kiến đóng góp cải tiến mới"),
-                ("3. Bạn có gặp khó khăn nào cần hỗ trợ không?", "khó khăn cần hỗ trợ"),
-                ("5. Bạn có sản phẩm (A4 - A5) nào win mới không? (>5k view - >10 cmt hỏi giá?)", "video sản phẩm win"),
-                ("2. Hôm qua có đổi mới sáng tạo gì được áp dụng vào công việc của bạn không?", "ý kiến đóng góp cải tiến mới"),
+                ("4. Bạn có đóng góp ý tưởng hay đề xuất gì không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
+                ("3. Bạn có gặp khó khăn nào cần hỗ trợ không?", "KHÓ KHĂN CẦN HỖ TRỢ"),
+                ("5. Bạn có sản phẩm (A4 - A5) nào win mới không? (>5k view - >10 cmt hỏi giá?)", "VIDEO SẢN PHẨM WIN"),
+                ("2. Hôm qua có đổi mới sáng tạo gì được áp dụng vào công việc của bạn không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
                 
                 # Câu hỏi từ LeaderEvaluationSection (Quản lý)
-                ("3. Team bạn hôm qua có gì đổi mới được áp dụng không?", "ý kiến đóng góp cải tiến mới"),
-                ("5. Team bạn hôm qua có sản phẩm nào win mới không? Đã thông tin lên Group New Product chưa?", "video sản phẩm win"),
+                ("2. Team bạn hôm qua có thành viên nào có video Win nhất?", "VIDEO WIN"),
+                ("3. Team bạn hôm qua có gì đổi mới được áp dụng không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
+                ("5. Team bạn hôm qua có sản phẩm nào win mới không? Đã thông tin lên Group New Product chưa?", "VIDEO SẢN PHẨM WIN"),
             ]
 
             for q_key, content_label in outstanding_mappings:
