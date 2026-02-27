@@ -241,14 +241,20 @@ APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
 
 # Apify Actor IDs for different platforms
 APIFY_ACTORS = {
-    'tiktok': env('APIFY_ACTOR_TIKTOK', default='OtzYfK1ndEGdwWFKQ'),  # TikTok Scraper with full authorMeta
+    # TikTok
+    'tiktok': env('APIFY_ACTOR_TIKTOK', default='apidojo/tiktok-scraper'),
+    'tiktok_profile': env('APIFY_ACTOR_TIKTOK_PROFILE', default='apidojo/tiktok-profile-scraper'),
+    'tiktok_user': env('APIFY_ACTOR_TIKTOK_USER', default='apidojo/tiktok-user-scraper'),
+    # Instagram
     'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
     'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
     'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
+    # Facebook
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
     'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
     'facebook_hashtag': env('APIFY_ACTOR_FACEBOOK_HASHTAG', default='apify/facebook-hashtag-scraper'),  # For keyword/hashtag search
     'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='powerai~facebook-post-search-scraper'),  # DEPRECATED: Returns 503
+    # Douyin
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }
 

@@ -23,7 +23,20 @@ from ..models import Platform
 logger = logging.getLogger(__name__)
 
 
-class ApifyScraperService(BaseScraperService):
+# NOTE:
+# Previously this class inherited from BaseScraperService (an ABC) which
+# declares abstract methods: search_videos, get_user_videos,
+# normalize_video_data. Due to recent refactors, Python started treating
+# ApifyScraperService as still abstract at runtime and refused to
+# instantiate it (TypeError: "Can't instantiate abstract class
+# ApifyScraperService with abstract methods ...").
+#
+# The concrete implementations of these methods already live in this
+# class, and nothing outside relies on the ABC mixin features (cache,
+# retry helpers). To restore correct runtime behaviour and fix the
+# 500 error from /api/search/user-videos/, we now make this a plain
+# concrete class instead of subclassing the ABC.
+class ApifyScraperService:
     """
     Apify-based scraper service supporting multiple platforms.
     
@@ -42,7 +55,9 @@ class ApifyScraperService(BaseScraperService):
         Raises:
             ScraperException: If Apify is not configured
         """
-        super().__init__(platform)
+        # Store basic config that BaseScraperService used to handle
+        self.platform = platform
+        self.logger = logging.getLogger(f"{__name__}.{platform}")
         self.search_type = search_type
         
         # Get Apify configuration
@@ -53,9 +68,13 @@ class ApifyScraperService(BaseScraperService):
         # Initialize Apify client
         self.client = ApifyClient(self.api_token)
         
-        # Get actor ID for platform
+        # Get actor ID for platform / mode
         actors = getattr(settings, 'APIFY_ACTORS', {})
-        self.actor_id = actors.get(platform.value, '')
+        # For TikTok, allow using a dedicated profile actor when search_type == 'profile'
+        if platform == Platform.TIKTOK and search_type == 'profile':
+            self.actor_id = actors.get('tiktok_profile', actors.get(platform.value, ''))
+        else:
+            self.actor_id = actors.get(platform.value, '')
         
         if not self.actor_id:
             raise ScraperException(f"No Apify actor configured for {platform}")
@@ -67,20 +86,87 @@ class ApifyScraperService(BaseScraperService):
             f"Initialized Apify scraper for {platform} "
             f"using actor: {self.actor_id}"
         )
+
+
+def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch TikTok user profile stats (followers, likes, videos, avatar)
+    using the dedicated apidojo/tiktok-user-scraper actor.
+
+    This returns a single user object for the requested username,
+    ignoring follower lists to keep token usage low.
+    """
+    api_token = getattr(settings, "APIFY_API_TOKEN", "")
+    if not api_token:
+        return None
+
+    actors = getattr(settings, "APIFY_ACTORS", {})
+    actor_id = actors.get("tiktok_user")
+    if not actor_id:
+        return None
+
+    client = ApifyClient(api_token)
+    clean_user = username.replace("@", "").strip()
+    profile_url = f"https://www.tiktok.com/@{clean_user}"
+
+    # Per actor docs, single-user runs should still fetch at least
+    # a small follower list; we enable getFollowers with low maxItems.
+    run_input = {
+        "startUrls": [profile_url],
+        "getFollowers": True,
+        "getFollowing": False,
+        "maxItems": 20,
+    }
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"Fetching TikTok user profile for @{clean_user} using {actor_id}")
+        run = client.actor(actor_id).call(run_input=run_input, timeout_secs=getattr(settings, "APIFY_TIMEOUT", 600))
+
+        dataset_id = run.get("defaultDatasetId")
+        if not dataset_id:
+            logger.warning("TikTok user scraper returned no datasetId")
+            return None
+
+        items = list(client.dataset(dataset_id).iterate_items())
+        if not items:
+            logger.warning("TikTok user scraper returned 0 items")
+            return None
+
+        # Prefer the item whose username matches our target; otherwise fallback to first.
+        target = None
+        for item in items:
+            if item.get("username") and item.get("username").lower() == clean_user.lower():
+                target = item
+                break
+
+        if not target:
+            target = items[0]
+
+        logger.info(
+            f"TikTok user stats: username={target.get('username')}, followers={target.get('followers')}, likes={target.get('likes')}, videos={target.get('videos')}"
+        )
+        return target
+    except Exception as e:
+        logger.error(f"Failed to fetch TikTok user profile for {username}: {e}")
+        return None
     
     def _build_tiktok_input(
         self,
         keyword: str,
         max_results: int = 20
     ) -> Dict[str, Any]:
-        """Build input for TikTok Apify actor."""
+        """
+        Build input for TikTok Apify actor (apidojo/tiktok-scraper).
+
+        For keyword/hashtag search we use the 'keywords' field and let
+        the actor discover posts. We cap maxItems to avoid wasting
+        credits.
+        """
         return {
-            "searchQueries": [keyword],
-            "resultsPerPage": min(max_results, self.max_results_limit),
-            "shouldDownloadVideos": False,
-            "shouldDownloadCovers": False,
-            "shouldDownloadSubtitles": False,
-            "shouldDownloadSlideshowImages": False,
+            "keywords": [keyword],
+            "maxItems": min(max_results, self.max_results_limit),
         }
     
     def _build_instagram_input(
@@ -219,6 +305,7 @@ class ApifyScraperService(BaseScraperService):
             Actor input dictionary
         """
         if self.platform == Platform.TIKTOK:
+            # apidojo/tiktok-scraper input schema
             if username:
                 # CLEANING: If user enters full URL, extract the @username
                 # Handles: https://www.tiktok.com/@username?lang=en -> username
@@ -596,86 +683,147 @@ class ApifyScraperService(BaseScraperService):
         }
     
     def _normalize_tiktok_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize TikTok/Douyin data from Apify free-tiktok-scraper."""
+        """
+        Normalize TikTok/Douyin data.
+
+        Supports both the legacy free-tiktok-scraper format and the
+        apidojo/tiktok-scraper output schema.
+        """
         # Video ID
-        video_id = data.get('id', '')
-        
-        # Author info - support multiple formats
-        author_meta = data.get('authorMeta', {}) or data.get('author', {})
-        author_username = author_meta.get('name', '') or author_meta.get('uniqueId', '') or author_meta.get('unique_id', '')
-        author_name = author_meta.get('nickname', '') or author_username
-        
-        # Stats - try root first, then 'stats', then 'statistics' object
-        stats = data.get('stats', {}) or data.get('statistics', {})
-        likes_count = data.get('diggCount') or stats.get('diggCount') or stats.get('digg_count', 0)
-        views_count = data.get('playCount') or stats.get('playCount') or stats.get('play_count', 0)
-        comments_count = data.get('commentCount') or stats.get('commentCount') or stats.get('comment_count', 0)
-        shares_count = data.get('shareCount') or stats.get('shareCount') or stats.get('share_count', 0)
-        
+        video_id = data.get("id", "") or data.get("video_id", "")
+
+        # Author / channel info - support multiple formats
+        channel = data.get("channel", {}) or {}
+        author_meta = (
+            channel
+            or data.get("authorMeta", {})
+            or data.get("author", {})
+        )
+
+        author_username = (
+            author_meta.get("username")
+            or author_meta.get("name", "")
+            or author_meta.get("uniqueId", "")
+            or author_meta.get("unique_id", "")
+        )
+        author_name = (
+            author_meta.get("nickname")
+            or author_meta.get("nickName")
+            or author_meta.get("name")
+            or author_meta.get("display_name")
+            or author_username
+        )
+
+        # Stats - apidojo fields first, then legacy stats objects
+        stats = data.get("stats", {}) or data.get("statistics", {})
+        likes_count = (
+            data.get("likes")
+            or stats.get("diggCount")
+            or stats.get("digg_count", 0)
+        )
+        views_count = (
+            data.get("views")
+            or stats.get("playCount")
+            or stats.get("play_count", 0)
+        )
+        comments_count = (
+            data.get("comments")
+            or stats.get("commentCount")
+            or stats.get("comment_count", 0)
+        )
+        shares_count = (
+            data.get("shares")
+            or stats.get("shareCount")
+            or stats.get("share_count", 0)
+        )
+
         # URLs
-        video_url = data.get('webVideoUrl', '')
+        video_url = (
+            data.get("postPage")
+            or data.get("webVideoUrl", "")
+        )
         if not video_url and author_username and video_id:
-             video_url = f"https://www.tiktok.com/@{author_username}/video/{video_id}"
-        
-        # Download URL
-        download_url = ''
-        video_meta = data.get('videoMeta', {}) or data.get('video', {})
-        if video_meta and isinstance(video_meta, dict):
-             download_url = video_meta.get('downloadAddr', '') or video_meta.get('playAddr', '') or video_meta.get('play_addr', '')
-        
-        if not download_url:
-            media_urls = data.get('mediaUrls', [])
-            if media_urls and isinstance(media_urls, list) and len(media_urls) > 0:
-                download_url = media_urls[0]
-        
-        # Thumbnail - from videoMeta cover or authorMeta avatar as fallback
-        thumbnail_url = ''
-        if video_meta and isinstance(video_meta, dict):
-            thumbnail_url = (
-                video_meta.get('coverUrl', '') or
-                video_meta.get('cover', '') or
-                video_meta.get('dynamicCover', '') or
-                video_meta.get('originCover', '')
+            video_url = f"https://www.tiktok.com/@{author_username}/video/{video_id}"
+
+        # Download / media URLs
+        video_meta = data.get("videoMeta", {}) or data.get("video", {})
+        download_url = ""
+        if isinstance(video_meta, dict):
+            download_url = (
+                video_meta.get("url", "")
+                or video_meta.get("downloadAddr", "")
+                or video_meta.get("playAddr", "")
+                or video_meta.get("play_addr", "")
             )
-        
-        
-        # REMOVED Fallback to author avatar. We want video-specific covers only.
-        # if not thumbnail_url and author_meta:
-        #     thumbnail_url = author_meta.get('avatar', '')
-        
-        # Music info - from musicMeta
-        music_meta = data.get('musicMeta', {})
-        music_title = music_meta.get('musicName', '') if music_meta else ''
-        music_author = music_meta.get('musicAuthor', '') if music_meta else ''
-        
+
+        if not download_url:
+            media_urls = data.get("mediaUrls", [])
+            if media_urls and isinstance(media_urls, list):
+                download_url = media_urls[0]
+
+        # Thumbnail / cover
+        thumbnail_url = ""
+        if isinstance(video_meta, dict):
+            thumbnail_url = (
+                video_meta.get("thumbnail")
+                or video_meta.get("cover")
+                or video_meta.get("coverUrl")
+                or video_meta.get("dynamicCover")
+                or video_meta.get("originCover")
+            )
+
+        # Music info
+        music_meta = data.get("musicMeta", {}) or data.get("song", {})
+        music_title = (
+            music_meta.get("musicName")
+            or music_meta.get("title", "")
+        )
+        music_author = (
+            music_meta.get("musicAuthor")
+            or music_meta.get("artist", "")
+        )
+
         # Duration extraction
-        duration = data.get('videoMeta', {}).get('duration', 0)
-        
+        duration = (
+            data.get("videoMeta", {}).get("duration")
+            or video_meta.get("duration", 0)
+        )
+
         # Published time
-        create_time = data.get('createTime') or data.get('createTimeISO')
-        
+        create_time = (
+            data.get("uploadedAt")
+            or data.get("uploadedAtFormatted")
+            or data.get("createTime")
+            or data.get("createTimeISO")
+        )
+
+        # Hashtags
+        hashtags = data.get("hashtags") or []
+        if hashtags and isinstance(hashtags, list) and isinstance(hashtags[0], dict):
+            hashtags = [tag.get("name", "") for tag in hashtags]
+
         return {
-            'video_id': str(video_id),
-            'duration': duration, # Add duration to normalized data
-            'title': data.get('text', ''),
-            'description': data.get('text', ''),
-            'author_username': author_username,
-            'author_name': author_name,
-            'likes_count': int(likes_count) if likes_count else 0,
-            'views_count': int(views_count) if views_count else 0,
-            'comments_count': int(comments_count) if comments_count else 0,
-            'shares_count': int(shares_count) if shares_count else 0,
-            'video_url': video_url,
-            'download_url': download_url,
-            'thumbnail_url': thumbnail_url,
-            'published_at': self._parse_timestamp(create_time),
-            'hashtags': [tag.get('name', '') for tag in data.get('hashtags', [])],
-            'music_info': {
-                'title': music_title,
-                'author': music_author,
-                'url': '',
+            "video_id": str(video_id),
+            "duration": duration,
+            "title": data.get("title") or data.get("text", ""),
+            "description": data.get("text", "") or data.get("title", ""),
+            "author_username": author_username,
+            "author_name": author_name,
+            "likes_count": int(likes_count) if likes_count else 0,
+            "views_count": int(views_count) if views_count else 0,
+            "comments_count": int(comments_count) if comments_count else 0,
+            "shares_count": int(shares_count) if shares_count else 0,
+            "video_url": video_url,
+            "download_url": download_url,
+            "thumbnail_url": thumbnail_url,
+            "published_at": self._parse_timestamp(create_time),
+            "hashtags": hashtags,
+            "music_info": {
+                "title": music_title,
+                "author": music_author,
+                "url": "",
             },
-            'raw_data': data
+            "raw_data": data,
         }
     
     def _normalize_instagram_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
