@@ -76,7 +76,9 @@ class BaseScraperService(ABC):
         keyword: str,
         min_likes: int = 0,
         min_views: int = 0,
-        max_results: int = 20
+        min_comments: int = 0,
+        max_results: int = 20,
+        search_mode: str = "hashtag"
     ) -> List[Dict[str, Any]]:
         """
         Search for videos on the platform.
@@ -134,7 +136,8 @@ class BaseScraperService(ABC):
         keyword: str,
         min_likes: int = 0,
         min_views: int = 0,
-        max_results: int = 20
+        max_results: int = 20,
+        search_mode: str = "hashtag"
     ) -> Optional[SearchHistory]:
         """
         Check if valid cached results exist for this search.
@@ -151,11 +154,13 @@ class BaseScraperService(ABC):
         try:
             # Only use cache if it was created with at least the requested max_results
             # or if it was created very recently
+            search_mode_val = (search_mode or "hashtag").strip().lower()
             cache_entry = SearchHistory.objects.filter(
                 platform=self.platform,
                 keyword=keyword,
                 min_likes=min_likes,
                 min_views=min_views,
+                search_mode=search_mode_val,
                 status=SearchStatus.COMPLETED,
                 expires_at__gt=timezone.now(),
                 max_results__gte=max_results  # Ensure cache has enough data depth
@@ -178,7 +183,8 @@ class BaseScraperService(ABC):
         min_likes: int = 0,
         min_views: int = 0,
         max_results: int = 20,
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
+        search_mode: str = "hashtag"
     ) -> SearchHistory:
         """
         Create a new search history entry.
@@ -195,6 +201,7 @@ class BaseScraperService(ABC):
         """
         expires_at = timezone.now() + timedelta(seconds=self.cache_ttl)
         
+        search_mode_val = (search_mode or "hashtag").strip().lower()
         return SearchHistory.objects.create(
             platform=self.platform,
             keyword=keyword,
@@ -202,6 +209,7 @@ class BaseScraperService(ABC):
             min_views=min_views,
             max_results=max_results,
             task_id=task_id,
+            search_mode=search_mode_val,
             expires_at=expires_at,
             status=SearchStatus.PROCESSING
         )
@@ -223,16 +231,34 @@ class BaseScraperService(ABC):
         """
         saved_videos = []
         
+        def _safe_url(val: Any, max_len: int = 999) -> str:
+            """Extract URL string from value (handles dict from Apify e.g. {uri: '...'}) and truncate."""
+            if val is None:
+                return ''
+            if isinstance(val, str):
+                return val[:max_len]
+            if isinstance(val, dict):
+                s = val.get('url') or val.get('uri') or val.get('src') or val.get('link') or ''
+                return (s if isinstance(s, str) else str(s) if s else '')[:max_len]
+            return str(val)[:max_len] if val else ''
+
         for video_data in videos_data:
             try:
                 if not video_data.get('video_id'):
                     self.logger.warning("Skipping video with no ID")
                     continue
 
-                # Truncate fields that might exceed DB limits
-                video_url = video_data.get('video_url', '')[:999]
-                download_url = video_data.get('download_url', '')[:999]
-                thumbnail_url = video_data.get('thumbnail_url', '')[:999]
+                # Truncate fields (Apify may return dict e.g. {uri: "..."} - slicing dict causes unhashable type: 'slice')
+                video_url = _safe_url(video_data.get('video_url'))
+                download_url = _safe_url(video_data.get('download_url'))
+                thumbnail_url = _safe_url(video_data.get('thumbnail_url'))
+                # video_url is required; fallback if empty
+                if not video_url:
+                    vid = video_data.get('video_id', '')
+                    if self.platform == Platform.FACEBOOK:
+                        video_url = f"https://www.facebook.com/watch/?v={vid}" if vid else "https://www.facebook.com/"
+                    else:
+                        video_url = f"https://placeholder/{vid}" if vid else "https://placeholder"
 
                 video, created = ScrapedVideo.objects.update_or_create(
                     video_id=video_data['video_id'],
@@ -273,57 +299,54 @@ class BaseScraperService(ABC):
         videos: List[Dict[str, Any]],
         keyword: str = "",
         min_likes: int = 0,
-        min_views: int = 0
+        min_views: int = 0,
+        min_comments: int = 0,
+        filter_mode: str = "and"
     ) -> List[Dict[str, Any]]:
         """
-        Filter video results based on criteria and relevance.
+        Filter video results based on criteria.
         
         Args:
             videos: List of video data
             keyword: The search keyword (for relevance check)
             min_likes: Minimum likes threshold
             min_views: Minimum views threshold
+            min_comments: Minimum comments threshold
+            filter_mode: "and" = all thresholds must pass; "or" = any threshold passes (for Instagram)
             
         Returns:
             Filtered list of videos
         """
         self.logger.info(
             f"Filtering {len(videos)} videos. "
-            f"Criteria: min_likes={min_likes}, min_views={min_views}, keyword='{keyword}'"
+            f"Criteria: min_likes={min_likes}, min_views={min_views}, min_comments={min_comments}, mode={filter_mode}"
         )
             
         filtered = []
-        
-        # Pre-process keyword for comparison
-        # 1. Standard lower
-        kw_standard = keyword.lower().strip()
-        # 2. No spaces (e.g., "trang suc" -> "trangsuc" for hashtag matching)
-        kw_nospace = kw_standard.replace(' ', '')
+        has_filter = min_likes > 0 or min_views > 0 or min_comments > 0
         
         for v in videos:
-            # 1. METRICS FILTER
-            likes = v.get('likes_count', 0)
-            views = v.get('views_count', 0)
+            likes = v.get('likes_count', 0) or 0
+            views = v.get('views_count', 0) or 0
+            comments = v.get('comments_count', 0) or 0
             
-            if likes < min_likes or views < min_views:
-                if likes < min_likes:
-                    self.logger.debug(f"Dropping video {v.get('video_id')}: Likes {likes} < {min_likes}")
-                elif views < min_views:
-                    self.logger.debug(f"Dropping video {v.get('video_id')}: Views {views} < {min_views}")
+            if not has_filter:
+                filtered.append(v)
                 continue
-                
-            # 2. RELEVANCE FILTER (Relaxed)
-            # We trust TikTok's search engine to return relevant results.
-            # Strict filtering rejects too many semantically related videos.
-            # We only filter by metrics now.
             
-            # (Strict logic removed to improve yield and speed)
+            if filter_mode == "or":
+                # Instagram: keep if ANY threshold is met
+                if (likes >= min_likes) or (views >= min_views) or (comments >= min_comments):
+                    filtered.append(v)
+            else:
+                # AND mode (TikTok etc): all thresholds must pass
+                if likes < min_likes or views < min_views:
+                    continue
+                if min_comments > 0 and comments < min_comments:
+                    continue
+                filtered.append(v)
             
-            filtered.append(v)
-            
-        self.logger.info(
-            f"Filtered {len(videos)} videos to {len(filtered)} "
-        )
+        self.logger.info(f"Filtered {len(videos)} videos to {len(filtered)}")
         return filtered
     
     def execute_search(
@@ -331,7 +354,10 @@ class BaseScraperService(ABC):
         keyword: str,
         min_likes: int = 0,
         min_views: int = 0,
+        min_comments: int = 0,
         max_results: int = 20,
+        page: int = 1,
+        search_mode: str = "hashtag",
         use_cache: bool = True,
         save_to_db: bool = True
     ) -> Dict[str, Any]:
@@ -342,7 +368,9 @@ class BaseScraperService(ABC):
             keyword: Search keyword
             min_likes: Minimum likes filter
             min_views: Minimum views filter
-            max_results: Maximum results
+            min_comments: Minimum comments filter (OR with likes/views for Instagram)
+            max_results: Results per page (typically 30)
+            page: Page number (1-based). Page 2 = fetch 60, return items 31-60.
             use_cache: Whether to use cached results
             save_to_db: Whether to save results to database
             
@@ -350,11 +378,12 @@ class BaseScraperService(ABC):
             Dictionary with search results and metadata
         """
         start_time = time.time()
+        page_size = max_results
         
         try:
-            # Check cache first
-            if use_cache:
-                cached = self.check_cache(keyword, min_likes, min_views, max_results)
+            # Check cache first (only for page 1)
+            if use_cache and page == 1:
+                cached = self.check_cache(keyword, min_likes, min_views, max_results, search_mode)
                 if cached:
                     return {
                         'success': True,
@@ -362,57 +391,85 @@ class BaseScraperService(ABC):
                         'results': cached.raw_results,
                         'count': cached.results_count,
                         'execution_time': 0,
-                        'search_id': cached.id
+                        'search_id': cached.id,
+                        'page': 1
                     }
             
-            # Create search history entry
+            # Create search history entry (page 1 only for DB tracking)
             search_history = self.create_search_history(
                 keyword=keyword,
                 min_likes=min_likes,
                 min_views=min_views,
-                max_results=max_results
+                max_results=max_results,
+                search_mode=search_mode
             )
             
             try:
-                # Perform actual search
-                self.logger.info(f"Searching {self.platform} for: {keyword}")
+                # For page > 1: fetch more to cover the offset (Apify has no native pagination)
+                fetch_limit = page_size * page
+                self.logger.info(f"Searching {self.platform} for: {keyword} (page={page}, fetch={fetch_limit})")
                 raw_results = self.search_videos(
                     keyword=keyword,
                     min_likes=min_likes,
                     min_views=min_views,
-                    max_results=max_results
+                    min_comments=min_comments,
+                    max_results=fetch_limit,
+                    search_mode=search_mode
                 )
                 
-                # Normalize results
-                normalized_results = [
-                    self.normalize_video_data(video)
-                    for video in raw_results
-                ]
+                # Normalize results (skip non-dict items and invalid normalizations)
+                normalized_results = []
+                for video in raw_results:
+                    if not isinstance(video, dict):
+                        continue
+                    norm = self.normalize_video_data(video)
+                    if norm and norm.get('video_id'):
+                        normalized_results.append(norm)
                 
-                # Filter results
+                # Filter mode: OR for Instagram & Facebook (views OR likes OR comments)
+                filter_mode = "or" if self.platform in (Platform.INSTAGRAM, Platform.FACEBOOK) else "and"
                 filtered_results = self.filter_results(
                     normalized_results,
                     keyword=keyword,
                     min_likes=min_likes,
-                    min_views=min_views
+                    min_views=min_views,
+                    min_comments=min_comments,
+                    filter_mode=filter_mode
                 )
+                
+                # Fallback: nếu filter trả 0 nhưng có kết quả raw -> hiển thị tất cả, tránh UI trống
+                filter_fallback = False
+                if len(filtered_results) == 0 and len(normalized_results) > 0 and (min_likes > 0 or min_views > 0 or min_comments > 0):
+                    filtered_results = normalized_results
+                    filter_fallback = True
+                    self.logger.info(
+                        f"Filter returned 0 results; showing all {len(normalized_results)} (filter_fallback=True)"
+                    )
+                
+                # Paginate: return only items for this page
+                start_idx = (page - 1) * page_size
+                end_idx = start_idx + page_size
+                page_results = filtered_results[start_idx:end_idx]
                 
                 execution_time = time.time() - start_time
                 
-                # Save to database
-                if save_to_db:
-                    self.save_videos(filtered_results, search_history)
+                # Save to database (only page 1, to avoid duplicates)
+                if save_to_db and page == 1:
+                    self.save_videos(page_results, search_history)
                 
-                # Update search history
-                search_history.mark_completed(filtered_results, execution_time)
+                if page == 1:
+                    search_history.mark_completed(page_results, execution_time)
                 
                 return {
                     'success': True,
                     'cached': False,
-                    'results': filtered_results,
-                    'count': len(filtered_results),
+                    'results': page_results,
+                    'count': len(page_results),
                     'execution_time': execution_time,
-                    'search_id': search_history.id
+                    'search_id': search_history.id,
+                    'page': page,
+                    'has_more': len(filtered_results) > end_idx,
+                    'filter_fallback': filter_fallback
                 }
                 
             except Exception as e:

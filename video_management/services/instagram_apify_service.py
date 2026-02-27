@@ -1,14 +1,13 @@
 """
 Instagram Apify Service - Comprehensive Instagram Data Fetching
 
-This service uses apify/instagram-scraper - the official comprehensive Instagram scraper.
+- Profile: apify/instagram-profile-scraper (chuyên profile, trả profilePicUrl/profilePicUrlHD)
+- Posts/Reels: apify/instagram-scraper (resultsType=posts)
 
 Features:
-- Fetch profile information (followers, following, bio, verified status)
-- Fetch all posts and reels from a username
+- Fetch profile info (followers, bio, avatar) via instagram-profile-scraper
+- Fetch posts & reels via instagram-scraper
 - Automatic data normalization
-- Engagement metrics (likes, comments, views)
-- Better avatar URL quality
 """
 
 import logging
@@ -38,19 +37,17 @@ class InstagramApifyService:
         self.client = ApifyClient(self.api_token)
         
         # Get actor IDs from settings
-        # Using apify/instagram-scraper - the official comprehensive scraper
-        self.scraper_actor = getattr(
-            settings, 
-            'APIFY_ACTOR_INSTAGRAM', 
-            'apify/instagram-scraper'
-        )
+        actors = getattr(settings, 'APIFY_ACTORS', {})
+        self.scraper_actor = actors.get('instagram', 'apify/instagram-scraper')
+        self.profile_actor = actors.get('instagram_profile', 'apify/instagram-profile-scraper')
         
         self.timeout = getattr(settings, 'APIFY_TIMEOUT', 300)
         self.max_results = getattr(settings, 'APIFY_MAX_RESULTS', 100)
         
         logger.info(
             f"Initialized Instagram Apify Service\n"
-            f"  Scraper Actor: {self.scraper_actor}"
+            f"  Profile Actor: {self.profile_actor}\n"
+            f"  Posts Actor: {self.scraper_actor}"
         )
     
     def get_profile_info(self, username: str) -> Dict[str, Any]:
@@ -75,17 +72,12 @@ class InstagramApifyService:
             # Clean username
             clean_username = username.replace('@', '').strip()
             
-            logger.info(f"📊 Fetching profile info for: {clean_username}")
+            logger.info(f"📊 Fetching profile info for: {clean_username} (actor: {self.profile_actor})")
             
-            # Build actor input for instagram-scraper
-            actor_input = {
-                "directUrls": [f"https://www.instagram.com/{clean_username}/"],
-                "resultsType": "details",
-                "resultsLimit": 1
-            }
+            # Dùng instagram-profile-scraper - chuyên profile, trả profilePicUrl/profilePicUrlHD đầy đủ
+            actor_input = {"usernames": [clean_username]}
             
-            # Run the instagram scraper actor
-            run = self.client.actor(self.scraper_actor).call(
+            run = self.client.actor(self.profile_actor).call(
                 run_input=actor_input,
                 timeout_secs=60
             )
@@ -287,14 +279,23 @@ class InstagramApifyService:
         
         username = data.get('username', '')
         
-        # IMPORTANT: Apify always returns incomplete CDN URLs (missing signature params)
-        # Use Instagram's public profile picture endpoint instead - it's reliable and works without auth
-        if username:
+        # 1. Ưu tiên lấy avatar từ raw data Apify (profilePicUrlHD > profilePicUrl)
+        # 2. Fallback: profile_pic.jpg (Instagram endpoint - có thể lỗi 404 trên một số tài khoản)
+        profile_pic = (
+            data.get('profilePicUrlHD') or
+            data.get('profilePicUrlHd') or  # biến thể camelCase
+            data.get('profilePicUrl') or
+            data.get('profile_pic_url') or
+            ''
+        )
+        if profile_pic and isinstance(profile_pic, str) and profile_pic.startswith('http'):
+            logger.info(f"✅ Using avatar from Apify: {profile_pic[:80]}...")
+        elif username:
             profile_pic = f"https://www.instagram.com/{username}/profile_pic.jpg"
-            logger.info(f"✅ Using Instagram public profile pic URL: {profile_pic}")
+            logger.info(f"⚠️ Apify không trả avatar, dùng fallback: {profile_pic}")
         else:
             profile_pic = ''
-            logger.warning("⚠️ No username found, cannot generate profile pic URL")
+            logger.warning("⚠️ No username and no avatar from Apify")
         
         logger.info(f"📸 Final profilePicUrl: {profile_pic[:80] if profile_pic else 'EMPTY'}...")
         
@@ -309,8 +310,8 @@ class InstagramApifyService:
             'isPrivate': data.get('private', False),
             'profilePicUrl': profile_pic,
             'externalUrl': data.get('externalUrl', ''),
-            'category': data.get('category', ''),
-            'joinDate': data.get('joinDate', ''),
+            'category': data.get('category') or data.get('businessCategoryName', ''),
+            'joinDate': data.get('joinDate') or (data.get('about') or {}).get('date_joined', ''),
             'raw_data': data
         }
     

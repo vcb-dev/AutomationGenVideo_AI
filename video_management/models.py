@@ -79,6 +79,13 @@ class SearchHistory(BaseModel):
         validators=[MinValueValidator(1)],
         help_text="Maximum number of results"
     )
+    search_mode = models.CharField(
+        max_length=20,
+        default='hashtag',
+        blank=True,
+        db_index=True,
+        help_text="Search mode: keyword (caption) or hashtag"
+    )
     
     # Results
     results_count = models.IntegerField(

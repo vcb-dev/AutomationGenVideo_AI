@@ -67,6 +67,7 @@ from .views.suggestions_views import (
     get_search_suggestions,
     track_search,
 )
+from .views.image_proxy_views import ImageProxyView
 from .views.virtual_mix_views import (
     virtual_mix,
     stream_video,
@@ -95,6 +96,9 @@ urlpatterns = [
     # Search Suggestions (NEW)
     path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
     path('search/track/', track_search, name='track-search'),
+
+    # Image proxy (bypass CORS for Instagram/Facebook thumbnails)
+    path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     

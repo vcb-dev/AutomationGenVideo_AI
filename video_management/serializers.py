@@ -57,6 +57,23 @@ class SearchRequestSerializer(serializers.Serializer):
         default='posts',
         help_text="Specific content type (e.g., 'reels', 'posts')"
     )
+    page = serializers.IntegerField(
+        default=1,
+        min_value=1,
+        required=False,
+        help_text="Page number for pagination (1-based). Page 2 = next 30 results."
+    )
+    min_comments = serializers.IntegerField(
+        default=0,
+        min_value=0,
+        required=False,
+        help_text="Minimum comments filter (OR with min_likes, min_views for Instagram)"
+    )
+    search_mode = serializers.CharField(
+        required=False,
+        default='hashtag',
+        help_text="For Instagram: 'hashtag' (search by #tag) or 'keyword' (search by keyword in caption/explore)"
+    )
 
 
 class UserVideosRequestSerializer(serializers.Serializer):

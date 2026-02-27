@@ -154,8 +154,10 @@ class SearchView(APIView):
         min_likes = data.get('min_likes', 0)
 
         min_views = data.get('min_views', 0)
-
-        max_results = data.get('max_results', 20)
+        min_comments = data.get('min_comments', 0)
+        page = data.get('page', 1)
+        max_results = data.get('max_results', 30)
+        search_mode = data.get('search_mode', 'hashtag')
 
         use_cache = data.get('use_cache', True)
         async_mode = data.get('async_mode', False)
@@ -167,9 +169,9 @@ class SearchView(APIView):
             logger.info("Instagram search: Forcing fresh scrape (use_cache=False)")
         
         logger.info(
-            f"Search request: platform={platform_str}, type={search_type}, keyword={keyword}, "
-            f"min_likes={min_likes}, min_views={min_views}, "
-            f"max_results={max_results}, async={async_mode}, use_cache={use_cache}"
+            f"Search request: platform={platform_str}, type={search_type}, mode={search_mode}, keyword={keyword}, "
+            f"min_likes={min_likes}, min_views={min_views}, min_comments={min_comments}, "
+            f"page={page}, max_results={max_results}, async={async_mode}, use_cache={use_cache}"
         )
         
         try:
@@ -180,9 +182,12 @@ class SearchView(APIView):
                     keyword=keyword,
                     min_likes=min_likes,
                     min_views=min_views,
+                    min_comments=min_comments,
                     max_results=max_results,
+                    page=page,
                     use_cache=use_cache,
-                    search_type=search_type
+                    search_type=search_type,
+                    search_mode=search_mode
                 )
                 
                 return Response({
@@ -199,9 +204,12 @@ class SearchView(APIView):
                 keyword=keyword,
                 min_likes=min_likes,
                 min_views=min_views,
+                min_comments=min_comments,
                 max_results=max_results,
+                page=page,
+                search_mode=search_mode,
                 use_cache=use_cache,
-                save_to_db=True  # Save to DB for tracking and management
+                save_to_db=True
             )
 
             
@@ -241,7 +249,10 @@ class SearchView(APIView):
                 'search_id': result.get('search_id'),
                 'count': result['count'],
                 'execution_time': result['execution_time'],
-                'results': results_data
+                'results': results_data,
+                'page': result.get('page', 1),
+                'has_more': result.get('has_more', False),
+                'filter_fallback': result.get('filter_fallback', False)
             }
 
             
@@ -1241,10 +1252,11 @@ class UserVideosView(APIView):
                         
                         username = page_info.get('username') or username
                         display_name = page_info.get('fullName') or username
-                        # Enhanced avatar extraction with multiple fallbacks
+                        # Enhanced avatar extraction - match Apify instagram-profile-scraper keys
                         avatar_url = (
-                            page_info.get('profilePicUrl') or 
+                            page_info.get('profilePicUrlHD') or   # Apify: profilePicUrlHD
                             page_info.get('profilePicUrlHd') or 
+                            page_info.get('profilePicUrl') or 
                             page_info.get('profile_pic_url') or 
                             page_info.get('profilePictureUrl') or
                             page_info.get('profilePic') or
@@ -1387,8 +1399,8 @@ class UserVideosView(APIView):
                     )
                     total_videos = int(
                         author_meta.get('videos')
-                        or author_meta.get('videoCount')
-                        or author_stats.get('video')
+                        or author_meta.get('video')
+                        or author_stats.get('videoCount')
                         or author_stats.get('videoCount')
                         or len(normalized)
                     )
@@ -1399,20 +1411,21 @@ class UserVideosView(APIView):
                     fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
                     fetched_shares = sum(v.get('shares_count', 0) for v in normalized)
 
-                    # Fetch precise lifetime stats from TikTok User Scraper
-                    try:
-                        user_stats = fetch_tiktok_user_profile(username)
-                    except Exception as e:
-                        user_stats = None
-                        logger.error(f"⚠️ TikTok user scraper failed for {username}: {e}")
+                    # Skip apidojo/tiktok-user-scraper when clockworks already has profile stats
+                    # (fans, heart, video, avatar) - saves ~30s and extra Apify credits
+                    has_profile_from_video = bool(follower_count or total_likes or avatar_url)
+                    if not has_profile_from_video:
+                        try:
+                            user_stats = fetch_tiktok_user_profile(username)
+                            if user_stats:
+                                follower_count = int(user_stats.get('followers') or follower_count)
+                                total_likes = int(user_stats.get('likes') or total_likes)
+                                total_videos = int(user_stats.get('videos') or total_videos)
+                                avatar_url = user_stats.get('avatar') or avatar_url
+                        except Exception as e:
+                            logger.error(f"⚠️ TikTok user scraper failed for {username}: {e}")
 
-                    if user_stats:
-                        follower_count = int(user_stats.get('followers') or follower_count)
-                        total_likes = int(user_stats.get('likes') or total_likes)
-                        total_videos = int(user_stats.get('videos') or total_videos)
-                        avatar_url = user_stats.get('avatar') or avatar_url
-
-                    # Fallbacks when even user scraper does not provide stats
+                    # Fallbacks when stats still missing
                     if total_likes == 0 and fetched_likes > 0:
                         total_likes = fetched_likes
                     if not avatar_url and normalized:
@@ -1462,8 +1475,38 @@ class UserVideosView(APIView):
                         logger.error(f"⚠️ Failed to save TikTok cache: {e}")
                 
                 logger.info(f"📊 Profile data extracted: {profile_data['follower_count']:,} followers, {profile_data['engagement_rate']}% engagement")
-
-
+            
+            # --- INSTAGRAM PROFILE-ONLY: raw_results rỗng nhưng page_info có (max_results=0) ---
+            if profile_data is None and platform_str.upper() == 'INSTAGRAM' and page_info:
+                logger.info("📸 Instagram profile-only mode: building profile_data from page_info (no posts)")
+                username = page_info.get('username') or username
+                display_name = page_info.get('fullName') or username
+                avatar_url = (
+                    page_info.get('profilePicUrlHD') or
+                    page_info.get('profilePicUrlHd') or
+                    page_info.get('profilePicUrl') or
+                    page_info.get('profile_pic_url') or
+                    ''
+                )
+                profile_data = {
+                    'username': username,
+                    'display_name': display_name,
+                    'avatar_url': avatar_url,
+                    'follower_count': page_info.get('followersCount') or 0,
+                    'following_count': page_info.get('followingCount', 0),
+                    'posts_count': page_info.get('postsCount', 0),
+                    'total_likes': 0,
+                    'total_videos': 0,
+                    'total_views': 0,
+                    'engagement_rate': 0.0,
+                    'platform': platform_str,
+                    'is_verified': page_info.get('isVerified', False),
+                    'is_private': page_info.get('isPrivate', False),
+                    'biography': page_info.get('biography', ''),
+                    'external_url': page_info.get('externalUrl', ''),
+                    'category': page_info.get('category', ''),
+                }
+                logger.info(f"✅ Profile-only profile_data: avatar_url={avatar_url[:80] if avatar_url else 'EMPTY'}...")
 
             # Save videos
             ordered_videos = []

@@ -59,6 +59,8 @@ echo.
 echo Running migrations...
 %PYTHON_CMD% manage.py migrate --noinput
 
+REM IMPORTANT: Close any existing Celery Worker/Beat windows before restart,
+REM or old workers will keep running with stale config.
 REM ── Start Celery Worker (background window) ─────────────────────────────────
 echo.
 echo Starting Celery Worker (background)...
