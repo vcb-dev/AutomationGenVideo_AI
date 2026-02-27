@@ -51,6 +51,7 @@ from .views.facebook_analysis_views import (
     detect_facebook_type,
 )
 from .views.douyin_search_views import search_douyin_videos
+from .views.douyin_profile_views import fetch_douyin_channel_profile
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
@@ -75,7 +76,6 @@ from .views.virtual_mix_views import (
     virtual_mix_render,
 )
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
-from .views.hashtag_check_views import check_hashtag_count
 from .views.translation_views import translate_to_chinese
 
 app_name = 'video_management'
@@ -101,7 +101,6 @@ urlpatterns = [
     path('search/translate/', translate_to_chinese, name='search-translate'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
-    path('hashtags/check/', check_hashtag_count, name='hashtag-check'),
     
     # OLD Mix endpoints (DEPRECATED - slow 2-3 min)
     path('videos/mix/', mix_videos, name='mix-videos'),
@@ -151,6 +150,9 @@ urlpatterns = [
     
     # Douyin Search
     path('douyin/search/', search_douyin_videos, name='douyin-search'),
+    
+    # Douyin Channel Profile (full: followers, avatar, engagement) — called on Update only
+    path('douyin/profile/', fetch_douyin_channel_profile, name='douyin-channel-profile'),
     
     # Xiaohongshu Search
     path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
