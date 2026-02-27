@@ -18,6 +18,7 @@ class Platform(models.TextChoices):
     DOUYIN = 'douyin', 'Douyin'
     INSTAGRAM = 'instagram', 'Instagram'
     FACEBOOK = 'facebook', 'Facebook'
+    XIAOHONGSHU = 'xiaohongshu', 'Xiaohongshu'
 
 
 class SearchStatus(models.TextChoices):

@@ -288,6 +288,15 @@ class ApifyScraperService(BaseScraperService):
             # Similar to TikTok
             return self._build_tiktok_input(keyword, max_results)
         
+        elif self.platform == Platform.XIAOHONGSHU:
+            # Xiaohongshu input using kuaima/xiaohongshu-search format
+            return {
+                "keywords": [username or keyword],
+                "sortType": "general",
+                "maxItems": max_results,
+                "proxyConfig": { "useApifyProxy": True }
+            }
+        
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
     
@@ -506,6 +515,7 @@ class ApifyScraperService(BaseScraperService):
             self.logger.error(f"User video fetch failed: {str(e)}", exc_info=True)
             raise ScraperException(f"User video fetch failed: {str(e)}")
     
+    
     def normalize_video_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize Apify video data to common format.
@@ -523,8 +533,67 @@ class ApifyScraperService(BaseScraperService):
             return self._normalize_instagram_data(raw_data)
         elif self.platform == Platform.FACEBOOK:
             return self._normalize_facebook_data(raw_data)
+        elif self.platform == Platform.XIAOHONGSHU:
+            return self._normalize_xiaohongshu_data(raw_data)
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
+
+    def _normalize_xiaohongshu_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize Xiaohongshu note data."""
+        # Note ID
+        note_id = raw_data.get('id', '') or raw_data.get('note_id', '')
+        
+        # Author
+        user = raw_data.get('user', {})
+        author_username = user.get('id', '') or user.get('user_id', 'unknown')
+        author_name = user.get('nickname', '') or user.get('name', '') or author_username
+        author_avatar = user.get('avatar', '') or user.get('image', '')
+        
+        # Stats
+        likes = raw_data.get('likes', 0) or raw_data.get('liked_count', 0)
+        collects = raw_data.get('collects', 0) or raw_data.get('collected_count', 0)
+        comments = raw_data.get('comments', 0) or raw_data.get('comment_count', 0)
+        shares = raw_data.get('shares', 0) or raw_data.get('share_count', 0)
+        
+        # Images/Video
+        images_list = raw_data.get('images_list', []) or raw_data.get('images', [])
+        image_list_urls = [img.get('url', img) if isinstance(img, dict) else img for img in images_list]
+        
+        cover_url = ''
+        if image_list_urls:
+            cover_url = image_list_urls[0]
+        else:
+            cover_url = raw_data.get('cover', {}).get('url', '')
+            
+        video_url = raw_data.get('video', {}).get('media', {}).get('stream', {}).get('h264', [{}])[0].get('master_url', '')
+
+        # Metadata
+        timestamp = raw_data.get('timestamp') or raw_data.get('create_time', 0)
+        published_at = None
+        if timestamp:
+             try:
+                published_at = self._parse_timestamp(timestamp)
+             except:
+                pass
+
+        return {
+            'video_id': str(note_id),
+            'title': raw_data.get('title', ''),
+            'description': raw_data.get('desc', '') or raw_data.get('description', ''),
+            'author_username': author_username,
+            'author_name': author_name,
+            'likes_count': int(likes) if likes else 0,
+            'views_count': 0, # XHS hides view count usually
+            'comments_count': int(comments) if comments else 0,
+            'shares_count': int(shares) if shares else 0,
+            'video_url': f"https://www.xiaohongshu.com/explore/{note_id}",
+            'download_url': video_url,
+            'thumbnail_url': cover_url,
+            'published_at': published_at,
+            'hashtags': [], 
+            'music_info': {},
+            'raw_data': raw_data
+        }
     
     def _normalize_tiktok_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize TikTok/Douyin data from Apify free-tiktok-scraper."""
