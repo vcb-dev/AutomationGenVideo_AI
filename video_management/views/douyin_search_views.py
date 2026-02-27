@@ -46,7 +46,7 @@ def search_douyin_videos(request):
         # Extract parameters
         search_term = request.data.get('searchTerm', '').strip()
         search_type = request.data.get('searchType', 'keyword')
-        max_posts = int(request.data.get('maxPosts', 50))
+        max_posts = int(request.data.get('maxPosts', 6))
         sort_by = request.data.get('sortBy', 'general')
         publish_time = request.data.get('publishTime', 'all')
         

@@ -107,97 +107,106 @@ def _gemini_store_pool(query_lower: str, pool: list):
 @permission_classes([AllowAny])
 def tiktok_search_suggest(request):
     """
-    Two-phase suggestion strategy:
-    1. YouTube Suggest — instant, real market data for current partial query
-    2. Gemini pool — if available, serves rotating batches (different each search)
-       If not available, triggers background generation for next time.
+    Two-phase suggestion strategy (TikTok, Douyin, Xiaohongshu):
+    1. YouTube/Google Suggest — instant, real market data
+    2. Gemini pool — serves rotating batches, platform-aware
     """
     query = request.GET.get('q', '').strip()
+    platform = request.GET.get('platform', 'tiktok').lower()
     count = min(int(request.GET.get('count', 8)), 20)
 
     if not query:
         return Response({'success': True, 'suggestions': [], 'source': 'none', 'query': ''})
 
     query_lower = query.lower()
+    # Unique key per platform
+    cache_key = f"{platform}:{query_lower}"
 
     # ── Check Gemini pool first (rich, viral-aware, rotates per search) ───────
-    # Only use Gemini pool for "complete words" (query >= 3 chars, not mid-typing)
     if len(query) >= 3:
-        gemini_batch = _gemini_get_next_batch(query_lower, count)
+        gemini_batch = _gemini_get_next_batch(cache_key, count)
         if gemini_batch:
-            logger.info(f"[Suggest] Gemini pool HIT: '{query}' → {len(gemini_batch)} rotated")
+            logger.info(f"[Suggest] Gemini pool HIT ({platform}): '{query}'")
             # Trigger background refresh if pool is getting stale (> 50min)
             with _gemini_lock:
-                entry = _gemini_pool.get(query_lower)
+                entry = _gemini_pool.get(cache_key)
                 if entry and time.time() - entry['ts'] > 3000:
-                    _trigger_gemini_background(query, count)
+                    _trigger_gemini_background(query, platform, count)
             return Response({
                 'success': True,
                 'suggestions': gemini_batch,
                 'source': 'gemini',
                 'query': query,
+                'platform': platform
             })
 
-    # ── YouTube Suggest (always fast, real-time for partial queries) ──────────
-    yt_key = f"yt:{query_lower}"
+    # ── YouTube/Google Suggest fallback ───────────────────────────────────────
+    yt_key = f"yt:{platform}:{query_lower}"
     pool = _yt_get(yt_key)
+    source = 'cache' # Default source if from cache
     if pool:
-        logger.info(f"[Suggest] YouTube cache HIT: '{query}'")
+        logger.info(f"[Suggest] Cache HIT ({platform}): '{query}'")
     else:
-        pool = _fetch_youtube_suggestions(query, YT_FETCH_SIZE)
+        # For Douyin/XHS, maybe Google is better than YouTube? (YT is less Chinese focused)
+        if platform in ['douyin', 'xiaohongshu']:
+            pool = _fetch_google_suggestions(query, YT_FETCH_SIZE)
+            source = 'google'
+        else:
+            pool = _fetch_youtube_suggestions(query, YT_FETCH_SIZE)
+            if not pool:
+                pool = _fetch_google_suggestions(query, YT_FETCH_SIZE)
+                source = 'google'
+            else:
+                source = 'youtube'
+        
         if pool:
             _yt_set(yt_key, pool)
 
-    # Fallback to Google if YouTube empty
-    if not pool:
-        pool = _fetch_google_suggestions(query, YT_FETCH_SIZE)
-        source = 'google'
-    else:
-        source = 'youtube'
-
-    # ── Rotate: each request gets different random sample from pool ───────────
     suggestions = _random_sample_from_pool(pool or [], count)
 
-    # ── Trigger Gemini background generation (if not already running) ─────────
+    # ── Trigger Gemini background generation ──────────────────────────────────
     if len(query) >= 3:
-        _trigger_gemini_background(query, count)
+        _trigger_gemini_background(query, platform, count)
 
     return Response({
         'success': True,
         'suggestions': suggestions,
-        'source': source,
+        'source': source if pool else 'none',
         'query': query,
+        'platform': platform
     })
 
 
-def _trigger_gemini_background(query: str, count: int):
+def _trigger_gemini_background(query: str, platform: str, count: int):
     """Spawn background thread to generate Gemini pool (non-blocking)."""
     query_lower = query.lower()
+    cache_key = f"{platform}:{query_lower}"
+    
     with _gemini_lock:
-        if query_lower in _generating:
+        if cache_key in _generating:
             return
-        if query_lower in _gemini_pool:
-            entry = _gemini_pool[query_lower]
-            # Skip if pool is fresh (< 50 min old)
+        if cache_key in _gemini_pool:
+            entry = _gemini_pool[cache_key]
             if time.time() - entry['ts'] < 3000:
                 return
-        _generating.add(query_lower)
+        _generating.add(cache_key)
 
     def _generate():
         try:
-            logger.info(f"[Suggest] Gemini background generating pool for '{query}'...")
-            pool = _fetch_gemini_pool(query, GEMINI_POOL_SIZE)
+            logger.info(f"[Suggest] Gemini background generating pool for '{query}' ({platform})...")
+            pool = _fetch_gemini_pool(query, platform, GEMINI_POOL_SIZE)
             if pool:
-                _gemini_store_pool(query_lower, pool)
-                logger.info(f"[Suggest] Gemini pool ready: '{query}' → {len(pool)} suggestions")
+                _gemini_store_pool(cache_key, pool)
+                logger.info(f"[Suggest] Gemini pool ready: '{query}' ({platform}) → {len(pool)} items")
         except Exception as e:
-            logger.error(f"[Suggest] Gemini pool generation failed: {e}")
+            logger.error(f"[Suggest] Gemini pool generation failed ({platform}): {e}")
         finally:
             with _gemini_lock:
-                _generating.discard(query_lower)
+                _generating.discard(cache_key)
 
     thread = threading.Thread(target=_generate, daemon=True)
     thread.start()
+
 
 
 # ─── YouTube Suggest ──────────────────────────────────────────────────────────
@@ -242,31 +251,37 @@ def _fetch_google_suggestions(query: str, max_items: int = 25) -> list:
     return []
 
 
-# ─── Gemini with Google Search Grounding (pool generation) ───────────────────
-
-def _fetch_gemini_pool(query: str, pool_size: int = 40) -> list:
-    """
-    Uses Gemini to research the web and generate a rich pool of suggestions.
-    With google_search tool enabled: Gemini actually searches for current
-    viral/trending content related to the query before generating suggestions.
-    Returns pool_size diverse, market-aware suggestions.
-    """
+def _fetch_gemini_pool(query: str, platform: str = 'tiktok', pool_size: int = 40) -> list:
+    """Uses Gemini with platform-specific prompts."""
     api_key = getattr(settings, 'GEMINI_API_KEY', '')
     if not api_key:
-        logger.warning("[Suggest] GEMINI_API_KEY not set — skipping Gemini pool")
         return []
 
     try:
         model = "gemini-2.0-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-        prompt = f"""Bạn là chuyên gia nghiên cứu xu hướng TikTok Việt Nam.
+        # Platform-specific personas
+        if platform == 'douyin':
+            persona = "chuyên gia nghiên cứu xu hướng Douyin (TikTok Trung Quốc)"
+            platform_name = "Douyin"
+            context = "Dựa trên xu hướng, viral, trending hiện tại trên Douyin (Trung Quốc), tập trung vào các từ khóa tiếng Việt mà người dùng muốn tìm về nội dung Trung Quốc hoặc dịch sang tiếng Việt phù hợp."
+        elif platform == 'xiaohongshu':
+            persona = "chuyên gia nghiên cứu xu hướng Xiaohongshu (Tiểu Hồng Thư/Little Red Book)"
+            platform_name = "Xiaohongshu"
+            context = "Dựa trên xu hướng thời trang, làm đẹp, phong cách sống viral trên Xiaohongshu, dịch và bản địa hóa sang các cụm từ người Việt hay tìm kiếm."
+        else:
+            persona = "chuyên gia nghiên cứu xu hướng TikTok Việt Nam"
+            platform_name = "TikTok"
+            context = "Dựa trên xu hướng, viral, trending hiện tại trên TikTok VN."
+
+        prompt = f"""Bạn là {persona}.
 
 Nhiệm vụ: Tạo ra {pool_size} gợi ý tìm kiếm đa dạng và phong phú liên quan đến "{query}" 
-mà người dùng TikTok Việt Nam đang tìm kiếm.
+mà người dùng {platform_name} đang quan tâm.
 
 Yêu cầu:
-- Dựa trên xu hướng, viral, trending hiện tại trên TikTok VN
+- {context}
 - Bao gồm: tên sản phẩm cụ thể, hashtag phổ biến, câu hỏi người dùng hay tìm, 
   tên người nổi tiếng liên quan, địa điểm hot, event đang diễn ra
 - Các gợi ý phải ĐA DẠNG, không trùng lặp, không cùng một pattern
@@ -278,9 +293,9 @@ Chỉ trả về JSON array (không giải thích gì thêm):
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],  # Enable Google Search grounding
+            "tools": [{"google_search": {}}],
             "generationConfig": {
-                "temperature": 1.0,      # High temperature = more diverse results
+                "temperature": 1.0,
                 "maxOutputTokens": 2048,
                 "topP": 0.95,
             }
@@ -290,30 +305,18 @@ Chỉ trả về JSON array (không giải thích gì thêm):
         resp.raise_for_status()
         data = resp.json()
 
-        if 'candidates' not in data or not data['candidates']:
-            logger.warning("[Suggest] Gemini returned no candidates")
-            return []
-
+        if 'candidates' not in data: return []
         text = data['candidates'][0]['content']['parts'][0]['text'].strip()
 
-        # Parse JSON array from response
         start = text.find('[')
         end = text.rfind(']') + 1
-        if start == -1 or end <= start:
-            logger.warning(f"[Suggest] Gemini response has no JSON array: {text[:200]}")
-            return []
+        if start == -1: return []
 
         suggestions = json.loads(text[start:end])
         if isinstance(suggestions, list):
-            clean = [s.strip() for s in suggestions if isinstance(s, str) and s.strip() and len(s.strip()) > 1]
-            logger.info(f"[Suggest] Gemini pool generated: {len(clean)} suggestions for '{query}'")
-            return clean[:pool_size]
+            return [s.strip() for s in suggestions if isinstance(s, str) and s.strip()][:pool_size]
 
-        return []
-
-    except requests.exceptions.Timeout:
-        logger.warning(f"[Suggest] Gemini TIMEOUT for '{query}'")
         return []
     except Exception as e:
-        logger.warning(f"[Suggest] Gemini pool error: {e}")
+        logger.warning(f"[Suggest] Gemini pool error ({platform}): {e}")
         return []

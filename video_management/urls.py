@@ -76,6 +76,7 @@ from .views.virtual_mix_views import (
 )
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
 from .views.hashtag_check_views import check_hashtag_count
+from .views.translation_views import translate_to_chinese
 
 app_name = 'video_management'
 
@@ -97,6 +98,7 @@ urlpatterns = [
     # Search Suggestions (NEW)
     path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
     path('search/track/', track_search, name='track-search'),
+    path('search/translate/', translate_to_chinese, name='search-translate'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     path('hashtags/check/', check_hashtag_count, name='hashtag-check'),
