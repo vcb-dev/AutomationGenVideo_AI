@@ -1136,13 +1136,12 @@ class UserVideosView(APIView):
                     display_name = first_norm.get('author_name') or username
                     avatar_url = first_norm.get('thumbnail_url', '') # Fallback to first post thumb if no avatar
                     
-                    # Try to find better avatar in raw_data
-                    user_obj = first_item.get('user', {})
+                    # Try to find better avatar in raw_data (scraper_one uses 'author')
+                    user_obj = first_item.get('user', {}) or first_item.get('author', {})
                     if isinstance(user_obj, dict):
-                        # Some versions might have profilePic
-                        if user_obj.get('profilePic'): avatar_url = user_obj.get('profilePic')
+                        if user_obj.get('profilePicture'): avatar_url = user_obj.get('profilePicture')  # scraper_one
+                        elif user_obj.get('profilePic'): avatar_url = user_obj.get('profilePic')
                         elif user_obj.get('id'): 
-                            # Try graph fallback (might be broken but better than nothing)
                             avatar_url = f"https://graph.facebook.com/{user_obj.get('id')}/picture?type=large"
                     
                     # 2. Aggregated Stats

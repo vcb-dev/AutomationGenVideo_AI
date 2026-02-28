@@ -97,8 +97,9 @@ urlpatterns = [
     path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
     path('search/track/', track_search, name='track-search'),
 
-    # Image proxy (bypass CORS for Instagram/Facebook thumbnails)
-    path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),
+    # Media fetch (bypass CORS; avoid "image-proxy" name which triggers ad blockers)
+    path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),  # legacy
+    path('media/', ImageProxyView.as_view(), name='media'),
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     

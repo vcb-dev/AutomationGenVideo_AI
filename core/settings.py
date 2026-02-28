@@ -238,6 +238,11 @@ CORS_ALLOW_HEADERS = [
 # APIFY CONFIGURATION (Primary Scraping Service)
 # ==========================================
 APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
+# Proxy password for Apify Residential Proxy (image-proxy cho Facebook CDN).
+# Lấy từ: https://console.apify.com/proxy - khác với API Token. Nếu không set, dùng APIFY_API_TOKEN.
+APIFY_PROXY_PASSWORD = env('APIFY_PROXY_PASSWORD', default='')
+# Country cho Residential Proxy (US, VN, ...). Để trống = random.
+APIFY_PROXY_COUNTRY = env('APIFY_PROXY_COUNTRY', default='US')
 
 # Apify Actor IDs for different platforms
 APIFY_ACTORS = {
@@ -254,9 +259,8 @@ APIFY_ACTORS = {
     # Facebook
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
     'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
-    'facebook_hashtag': env('APIFY_ACTOR_FACEBOOK_HASHTAG', default='apify/facebook-hashtag-scraper'),  # For keyword/hashtag search (posts)
+    'facebook_posts_search': env('APIFY_ACTOR_FACEBOOK_POSTS_SEARCH', default='scraper_one/facebook-posts-search'),
     'facebook_video_search': env('APIFY_ACTOR_FACEBOOK_VIDEO_SEARCH', default='apify/facebook-video-search-scraper'),  # Reels + videos by keyword
-    'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='powerai~facebook-post-search-scraper'),  # DEPRECATED: Returns 503
     # Douyin
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }

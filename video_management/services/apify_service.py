@@ -361,6 +361,45 @@ class ApifyScraperService(BaseScraperService):
                 result.append(tag)
         return result
 
+    def _is_facebook_group_post(self, data: Dict[str, Any]) -> bool:
+        """Detect nếu post từ hội nhóm (group) – cần loại khi muốn chỉ shop/page."""
+        if not data or not isinstance(data, dict):
+            return False
+        url = data.get('url') or data.get('postUrl') or ''
+        if isinstance(url, dict):
+            url = url.get('url') or url.get('uri') or ''
+        url = str(url).lower()
+        return '/groups/' in url or '/group/' in url
+
+    def _is_facebook_reel_or_video(self, data: Dict[str, Any]) -> bool:
+        """Detect if raw Facebook item là reel/video – cần loại khi search_type=posts."""
+        if not data or not isinstance(data, dict):
+            return False
+        atts = data.get('attachments') or []
+        has_photo = any(isinstance(a, dict) and str(a.get('type', '')).lower() in ('photo', 'image') for a in atts)
+        # Post có ảnh sản phẩm (photo/image) → giữ lại dù có video (ảnh + caption là chính)
+        if has_photo:
+            return False
+        # isVideo at root
+        if data.get('isVideo', False):
+            return True
+        # URL chứa /reel/ hoặc /videos/ → reel/video thuần
+        url = data.get('url') or data.get('postUrl') or ''
+        if isinstance(url, dict):
+            url = url.get('url') or url.get('uri') or ''
+        url = str(url)
+        if '/reel/' in url or '/videos/' in url:
+            return True
+        # videoUrl at root VÀ không có photo → video post
+        if (data.get('videoUrl') or data.get('video_url')) and not has_photo:
+            return True
+        # Attachments CHỈ có video (không có photo/image)
+        if atts:
+            types = [str(a.get('type', '')).lower() for a in atts if isinstance(a, dict) and a.get('type')]
+            if types and all(t in ('video', 'reel') for t in types):
+                return True
+        return False
+
     def _caption_contains_keyword(self, post: Dict[str, Any], keyword: str) -> bool:
         """Kiểm tra post có caption chứa keyword (case-insensitive). Chấp nhận cả 'trang sức' và 'trangsuc'. Facebook dùng 'text'."""
         if not post or not isinstance(post, dict):
@@ -471,6 +510,7 @@ class ApifyScraperService(BaseScraperService):
         """
         try:
             actor_input = {}
+            results = None  # Set by FB posts dual-run, else from run_actor below
             use_keyword_mode = False  # Set by platform-specific blocks that need caption filter
             # Facebook Reels: keyword search via facebook-video-search-scraper (trả về reels + videos)
             if (self.platform == Platform.FACEBOOK and self.search_type == 'reels'
@@ -488,35 +528,61 @@ class ApifyScraperService(BaseScraperService):
                     "resultsLimit": limit_capped,
                 }
                 self.logger.info(f"Using Facebook Video Search (reels) for '{search_query}' - limit={limit_capped}")
-            # Facebook Posts: hashtag + caption (hybrid like Instagram)
+            # Facebook Posts: scraper_one/facebook-posts-search (query, resultsCount)
             elif (self.platform == Platform.FACEBOOK and not keyword.startswith('@')
                     and not keyword.startswith('http') and 'facebook.com' not in keyword.lower()):
-                import unicodedata
                 actors_fb = getattr(settings, 'APIFY_ACTORS', {})
-                self.actor_id = actors_fb.get('facebook_hashtag', 'apify/facebook-hashtag-scraper')
-                search_mode_val = (search_mode or "hashtag").strip().lower()
-                use_keyword_mode = search_mode_val == "keyword"
-                search_query = keyword.replace('#', '').strip()
-                clean_keyword = search_query.replace(' ', '').lower()
-                normalized = unicodedata.normalize('NFD', clean_keyword)
-                clean_keyword = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
-                if not clean_keyword:
-                    clean_keyword = search_query.replace(' ', '')
-                limit_capped = min(max_results, self.max_results_limit)
-                if use_keyword_mode:
-                    hashtags_list = self._get_related_hashtags(clean_keyword)[:2]
-                    limit_per_tag = min(50, max(3, (limit_capped * 2) // max(1, len(hashtags_list))))
-                    actor_input = {
-                        "keywordList": hashtags_list,
-                        "resultsLimit": limit_per_tag,
-                    }
-                    self.logger.info(f"Using Facebook Hybrid (keyword) for '{search_query}' - hashtags={hashtags_list}, limit={limit_per_tag}/tag, will filter by caption")
+                self.actor_id = actors_fb.get('facebook_posts_search', 'scraper_one/facebook-posts-search')
+                search_mode_val = (search_mode or 'hashtag').strip().lower()
+                clean_kw = keyword.replace('#', '').strip()
+                # Hashtag: dùng #trangsuc, không thêm "shop" (tìm đúng hashtag)
+                # Keyword: thêm "shop" để bias shop (không hội nhóm)
+                if search_mode_val == 'hashtag':
+                    search_query = f"#{clean_kw}" if clean_kw else keyword
+                else:
+                    search_query = f"{clean_kw} shop" if (clean_kw and 'shop' not in clean_kw.lower()) else clean_kw or keyword
+                limit_capped = min(max(max_results, 5), 100)
+                # Yêu cầu thêm kết quả (x3) để sau khi lọc reels/groups còn đủ posts
+                fetch_count = min(limit_capped * 3, 100) if self.search_type == 'posts' else limit_capped
+                mode_label = "hashtag" if search_mode_val == 'hashtag' else "keyword (shops)"
+
+                # Fetch cả top (viral) và latest (mới nhất), merge + dedupe – ưu tiên viral + mới
+                if self.search_type == 'posts':
+                    fetch_per_run = max(fetch_count // 2, 5)
+                    results_top = self.run_actor({
+                        "query": search_query,
+                        "resultsCount": fetch_per_run,
+                        "searchType": "top",
+                    })
+                    results_latest = self.run_actor({
+                        "query": search_query,
+                        "resultsCount": fetch_per_run,
+                        "searchType": "latest",
+                    })
+                    seen = set()
+                    merged = []
+                    for r in (results_top or []) + (results_latest or []):
+                        if not isinstance(r, dict):
+                            continue
+                        pid = r.get('postId') or r.get('id', '')
+                        if not pid and r.get('video'):
+                            pid = r.get('video', {}).get('id', '')
+                        if not pid and r.get('videoUrl'):
+                            pid = r.get('videoUrl', '')
+                        if pid and pid not in seen:
+                            seen.add(pid)
+                            merged.append(r)
+                    results = merged
+                    self.logger.info(f"Facebook Posts: merged top+latest -> {len(results)} unique (viral + newest)")
                 else:
                     actor_input = {
-                        "keywordList": [clean_keyword],
-                        "resultsLimit": limit_capped,
+                        "query": search_query,
+                        "resultsCount": fetch_count,
+                        "searchType": "latest",
                     }
-                    self.logger.info(f"Using Facebook Hashtag Scraper for #{clean_keyword} - limit={limit_capped}")
+                    results = self.run_actor(actor_input)
+                self.logger.info(f"Using Facebook Posts Search: query='{search_query}' mode={mode_label} - filter reels/groups, return up to {limit_capped}")
+                use_keyword_mode = False
             # Instagram: hashtag vs keyword (different actors for different results)
             elif self.platform == Platform.INSTAGRAM and not keyword.startswith('@') and not keyword.startswith('http'):
                 import unicodedata
@@ -562,8 +628,9 @@ class ApifyScraperService(BaseScraperService):
             else:
                 # Default input builder
                 actor_input = self._build_actor_input(keyword, max_results)
-                
-            results = self.run_actor(actor_input)
+
+            if results is None:
+                results = self.run_actor(actor_input)
 
             # apify/instagram-scraper có thể trả hashtag metadata (name, posts, topPosts, latestPosts) - flatten lấy post thật
             if self.actor_id == 'apify/instagram-scraper' and results:
@@ -585,7 +652,7 @@ class ApifyScraperService(BaseScraperService):
                     results = flat
                     self.logger.info(f"Flattened instagram-scraper results: {len(results)} posts")
             
-            # Facebook: dedupe (có thể trùng khi dùng nhiều hashtag) và shuffle
+            # Facebook: dedupe (đã dedupe trong merge top+latest) và shuffle với seed theo thời gian → mỗi lần search thứ tự khác
             if self.platform == Platform.FACEBOOK and results:
                 seen_ids = set()
                 deduped = []
@@ -601,8 +668,18 @@ class ApifyScraperService(BaseScraperService):
                             deduped.append(r)
                 if deduped:
                     results = deduped
-                    random.shuffle(results)
-                    self.logger.info(f"Deduped to {len(results)} unique Facebook posts, shuffled")
+                    import time
+                    rng = random.Random(int(time.time() * 1000))
+                    rng.shuffle(results)
+                    self.logger.info(f"Deduped to {len(results)} unique Facebook posts, shuffled (variety per search)")
+
+            # Facebook Posts: loại bỏ reels/videos và bài từ hội nhóm – chỉ giữ posts từ shop/page
+            if (self.platform == Platform.FACEBOOK and self.search_type == 'posts' and results):
+                before = len(results)
+                results = [r for r in results if isinstance(r, dict) and not self._is_facebook_reel_or_video(r)
+                           and not self._is_facebook_group_post(r)]
+                if before > len(results):
+                    self.logger.info(f"Facebook posts filter: excluded {before - len(results)} reels/videos/group posts, kept {len(results)} posts")
 
             # Facebook KEYWORD mode: filter theo caption (text) chứa keyword
             if self.platform == Platform.FACEBOOK and results and use_keyword_mode:
@@ -1028,23 +1105,43 @@ class ApifyScraperService(BaseScraperService):
         if not post_id and data.get('video'):
             post_id = data.get('video', {}).get('id', '')
         
-        # Stats (hashtag-scraper uses likesCount/commentsCount/sharesCount)
-        likes = data.get('likes') or data.get('likesCount', 0)
-        comments = data.get('comments') or data.get('commentsCount', 0)
-        shares = data.get('shares') or data.get('sharesCount', 0)
-        
-        # Parse 'shares' if it's a dict (sometimes Apify returns { count: 123 }) or int
+        # Stats (scraper_one: reactionsCount; hashtag: likesCount; video-search: reaction_count)
+        likes = (data.get('reactionsCount') or data.get('likes') or data.get('likesCount') or
+                 data.get('like_count') or data.get('reaction_count') or data.get('reactionCount') or 0)
+        if isinstance(likes, dict):
+            likes = likes.get('count', 0) or likes.get('totalCount', 0)
+        comments = (data.get('comments') or data.get('commentsCount') or data.get('comment_count') or 0)
+        if isinstance(comments, dict):
+            comments = comments.get('count', 0)
+        shares = (data.get('shares') or data.get('sharesCount') or data.get('share_count') or 0)
         if isinstance(shares, dict):
             shares = shares.get('count', 0)
+        # Nested feedback (GraphQL-style)
+        feedback = data.get('feedback', {}) or {}
+        if isinstance(feedback, dict):
+            if likes in (0, None, '') and feedback.get('reaction_count'):
+                likes = feedback['reaction_count']
+            if comments in (0, None, '') and feedback.get('comment_count'):
+                comments = feedback['comment_count']
+            if shares in (0, None, '') and feedback.get('share_count'):
+                shares = feedback['share_count']
         
-        # User Info
-        user_data = data.get('user', {})
+        # User Info (scraper_one: author; hashtag: user; video-search: video_owner_profile)
+        user_data = data.get('user', {}) or data.get('author', {})
         author_username = ''
         author_name = ''
         
         if isinstance(user_data, dict):
-            author_username = user_data.get('username') or user_data.get('id', '')
+            author_username = user_data.get('username') or user_data.get('uri_token', '') or user_data.get('id', '')
             author_name = user_data.get('name', '')
+            # scraper_one: extract username from profileUrl (facebook.com/jeff.moerke.1)
+            if not author_username and user_data.get('profileUrl'):
+                try:
+                    parts = str(user_data['profileUrl']).split('facebook.com/')[-1].split('/')
+                    if parts:
+                        author_username = parts[0]
+                except Exception:
+                    pass
         
         # Fallback for flat structure or missing user object (hashtag-scraper uses pageName)
         if not author_username:
@@ -1101,6 +1198,13 @@ class ApifyScraperService(BaseScraperService):
 
         # Media (Video/Image)
         video_url = _extract_url(data.get('videoUrl'))
+        # scraper_one: attachments[{type:'video',url}]
+        if not video_url and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if isinstance(att, dict) and att.get('type') == 'video' and att.get('url'):
+                    video_url = _extract_url(att['url'])
+                    if video_url:
+                        break
         
         # THUMBNAIL EXTRACTION STRATEGY
         # 1. Direct keys (may be dict from Apify)
@@ -1117,11 +1221,61 @@ class ApifyScraperService(BaseScraperService):
             if len(data['images']) > 0:
                 thumbnail_url = _extract_url(data['images'][0]) if data['images'] else ''
 
-        # 3. Attachments (common for link previews or album covers)
+        # 3a. scraper_one: attachments[{type:'photo'|'image'|'video',url,id,image,fullImage}]
+        # NOTE: Do NOT use graph.facebook.com/{id}/picture - attachment IDs are NOT Graph API IDs.
+        # scraper_one photo url thường là photo.php; ưu tiên image/fullImage nếu có (direct CDN).
+        if not thumbnail_url and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if not isinstance(att, dict):
+                    continue
+                att_type = (att.get('type') or '').lower()
+                # Photo: scraper_one có thể có image/fullImage (direct fbcdn)
+                if att_type in ('photo', 'image'):
+                    att_url = _extract_url(
+                        att.get('image') or att.get('fullImage') or att.get('url') or
+                        att.get('src') or att.get('link') or ''
+                    )
+                    if att_url and 'fbcdn.net' in att_url:
+                        thumbnail_url = att_url
+                        break
+                    if att_url and att_url.startswith('http'):
+                        thumbnail_url = att_url
+                        break
+                    media = att.get('media') or {}
+                    if isinstance(media, dict):
+                        img_obj = media.get('image') or {}
+                        if isinstance(img_obj, dict):
+                            uri = img_obj.get('uri') or img_obj.get('src') or img_obj.get('url') or ''
+                            if uri:
+                                thumbnail_url = uri
+                                break
+                # Video thumbnails
+                if att_type == 'video':
+                    att_url = _extract_url(att.get('thumbnail') or att.get('image') or att.get('src') or '')
+                    if att_url and ('fbcdn.net' in att_url or att_url.startswith('http')):
+                        thumbnail_url = att_url
+                        break
+                    media = att.get('media') or {}
+                    if isinstance(media, dict):
+                        img_obj = media.get('image') or media.get('thumbnail') or {}
+                        if isinstance(img_obj, dict):
+                            uri = img_obj.get('uri') or img_obj.get('src') or ''
+                            if uri:
+                                thumbnail_url = uri
+                                break
+        # 3b. hashtag-scraper: all_subattachments.nodes[].media.image.uri
         if not thumbnail_url and data.get('attachments') and isinstance(data.get('attachments'), list):
             for att in data['attachments']:
-                if att.get('media', {}).get('image', {}).get('src'):
-                    thumbnail_url = att['media']['image']['src']
+                nodes = (att.get('all_subattachments') or {}).get('nodes') if isinstance(att.get('all_subattachments'), dict) else []
+                for node in (nodes or [])[:3]:
+                    if not isinstance(node, dict):
+                        continue
+                    img = ((node.get('media') or {}).get('image') or {}) if isinstance(node.get('media'), dict) else {}
+                    if isinstance(img, dict):
+                        thumbnail_url = _extract_url(img.get('uri') or img.get('src') or img.get('url'))
+                    if thumbnail_url:
+                        break
+                if thumbnail_url:
                     break
                     
         # 4. Preferred Thumbnail (Common for videos at root)
@@ -1135,9 +1289,19 @@ class ApifyScraperService(BaseScraperService):
             thumb_img = data['thumbnail_image']
             if isinstance(thumb_img, dict) and thumb_img.get('uri'):
                 thumbnail_url = thumb_img['uri']
+        # 6. Fallback: author profile picture (text-only posts)
+        if not thumbnail_url and isinstance(user_data, dict) and user_data.get('profilePicture'):
+            pic_url = _extract_url(user_data['profilePicture'])
+            if pic_url and 'fbcdn.net' in pic_url:
+                # Replace s40x40/s100x100 with s720x720 for larger thumbnail
+                import re as _re2
+                pic_url = _re2.sub(r'_s\d+x\d+', '_s720x720', pic_url)
+            thumbnail_url = pic_url or ''
         
         # Construct Web URL (Permalink) - MUST BE BEFORE is_video detection (video-search uses videoUrl)
         permalink = _extract_url(data.get('url') or data.get('postUrl') or data.get('videoUrl'))
+        if permalink and 'undefined' in permalink.lower():
+            permalink = ''
         
         # Determine if it's a video
         # Apify fb scraper often puts isVideo=True at root
@@ -1188,23 +1352,61 @@ class ApifyScraperService(BaseScraperService):
 
         # If no URL but we have postId (and maybe username), construct it
         if not permalink and post_id:
-            # Prefer username, fallback to ID, fallback to 'watch' format if video
-            user_handle = author_username or data.get('pageName') or 'watch'
-            if is_video:
-                 permalink = f"https://www.facebook.com/{user_handle}/videos/{post_id}/"
+            user_handle = (author_username or data.get('pageName') or '').strip()
+            if not user_handle or user_handle.lower() in ('undefined', 'null', 'none'):
+                if is_video:
+                    permalink = f"https://www.facebook.com/watch/?v={post_id}"
+                else:
+                    permalink = f"https://www.facebook.com/permalink.php?story_fbid={post_id}"
             else:
-                 permalink = f"https://www.facebook.com/{user_handle}/posts/{post_id}/"
+                if is_video:
+                    permalink = f"https://www.facebook.com/{user_handle}/videos/{post_id}/"
+                else:
+                    permalink = f"https://www.facebook.com/{user_handle}/posts/{post_id}/"
+
+        # Content (scraper_one: postText; hashtag: text; posts-scraper: message)
+        content = (data.get('postText') or data.get('text') or data.get('message') or data.get('title') or
+                   data.get('description') or data.get('caption') or data.get('post_text') or data.get('content') or '')
+        # Extract from nested video object (video-search-scraper)
+        video_obj = data.get('video', {}) or {}
+        if isinstance(video_obj, dict) and not content:
+            content = video_obj.get('title') or video_obj.get('description') or ''
+        # scraper_one: attachments[].accessibilityCaption trực tiếp trên attachment (không trong media)
+        if not content and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if not isinstance(att, dict):
+                    continue
+                cap = att.get('accessibilityCaption') or att.get('accessibility_caption')
+                if cap:
+                    content = str(cap)
+                    break
+                media = att.get('media') or {}
+                cap = (media.get('accessibility_caption') or media.get('caption') if isinstance(media, dict) else None)
+                if cap:
+                    content = str(cap)
+                    break
+
+        def _safe_int(val):
+            if val is None:
+                return 0
+            if isinstance(val, int) and not isinstance(val, bool):
+                return max(0, val)
+            if isinstance(val, float):
+                return max(0, int(val))
+            if isinstance(val, str) and val.strip().replace('.', '').isdigit():
+                return max(0, int(float(val)))
+            return 0
 
         return {
             'video_id': str(post_id),
-            'title': data.get('text', '') or data.get('message', '') or data.get('title', '') or 'No Content',
-            'description': data.get('text', '') or data.get('message', '') or data.get('save_description', ''),
-            'author_username': str(author_username),
-            'author_name': str(author_name),
-            'likes_count': int(likes) if isinstance(likes, (int, float, str)) and str(likes).isdigit() else 0,
-            'views_count': int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or 0),
-            'comments_count': int(comments) if isinstance(comments, (int, float, str)) and str(comments).isdigit() else 0,
-            'shares_count': int(shares) if isinstance(shares, (int, float, str)) and str(shares).isdigit() else 0,
+            'title': content or '',
+            'description': content or '',
+            'author_username': str(author_username or ''),
+            'author_name': str(author_name or ''),
+            'likes_count': _safe_int(likes),
+            'views_count': _safe_int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or video_obj.get('view_count')),
+            'comments_count': _safe_int(comments),
+            'shares_count': _safe_int(shares),
             'video_url': permalink, # Normalized Web URL
             'download_url': video_url, # Direct file URL
             'thumbnail_url': thumbnail_url,
@@ -1233,9 +1435,12 @@ class ApifyScraperService(BaseScraperService):
             if isinstance(timestamp, datetime):
                 return timestamp
             
-            # If Unix timestamp (integer or float)
+            # If Unix timestamp (integer or float); scraper_one uses milliseconds
             if isinstance(timestamp, (int, float)):
-                return datetime.fromtimestamp(timestamp, timezone.utc)
+                ts = float(timestamp)
+                if ts > 1e12:  # milliseconds (e.g. 1743735597000)
+                    ts = ts / 1000
+                return datetime.fromtimestamp(int(ts), timezone.utc)
             
             # If ISO string
             if isinstance(timestamp, str):
