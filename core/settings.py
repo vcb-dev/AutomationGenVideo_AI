@@ -238,22 +238,29 @@ CORS_ALLOW_HEADERS = [
 # APIFY CONFIGURATION (Primary Scraping Service)
 # ==========================================
 APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
+# Proxy password for Apify Residential Proxy (image-proxy cho Facebook CDN).
+# Lấy từ: https://console.apify.com/proxy - khác với API Token. Nếu không set, dùng APIFY_API_TOKEN.
+APIFY_PROXY_PASSWORD = env('APIFY_PROXY_PASSWORD', default='')
+# Country cho Residential Proxy (US, VN, ...). Để trống = random.
+APIFY_PROXY_COUNTRY = env('APIFY_PROXY_COUNTRY', default='US')
 
 # Apify Actor IDs for different platforms
 APIFY_ACTORS = {
     # TikTok
-    'tiktok': env('APIFY_ACTOR_TIKTOK', default='apidojo/tiktok-scraper'),
+    'tiktok': env('APIFY_ACTOR_TIKTOK', default='clockworks/free-tiktok-scraper'),
     'tiktok_profile': env('APIFY_ACTOR_TIKTOK_PROFILE', default='apidojo/tiktok-profile-scraper'),
     'tiktok_user': env('APIFY_ACTOR_TIKTOK_USER', default='apidojo/tiktok-user-scraper'),
     # Instagram
     'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
+    'instagram_profile': env('APIFY_ACTOR_INSTAGRAM_PROFILE', default='apify/instagram-profile-scraper'),  # Chuyên profile + avatar
     'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
     'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
+    'instagram_keyword': env('APIFY_ACTOR_INSTAGRAM_KEYWORD', default='crawlerbros/instagram-keyword-search-scraper'),  # Search by caption
     # Facebook
     'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
     'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
-    'facebook_hashtag': env('APIFY_ACTOR_FACEBOOK_HASHTAG', default='apify/facebook-hashtag-scraper'),  # For keyword/hashtag search
-    'facebook_search': env('APIFY_ACTOR_FACEBOOK_SEARCH', default='powerai~facebook-post-search-scraper'),  # DEPRECATED: Returns 503
+    'facebook_posts_search': env('APIFY_ACTOR_FACEBOOK_POSTS_SEARCH', default='scraper_one/facebook-posts-search'),
+    'facebook_video_search': env('APIFY_ACTOR_FACEBOOK_VIDEO_SEARCH', default='apify/facebook-video-search-scraper'),  # Reels + videos by keyword
     # Douyin
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
 }
@@ -261,6 +268,9 @@ APIFY_ACTORS = {
 # Apify timeout settings (in seconds)
 APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=900)  # 15 minutes
 APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=10000)
+
+# Instagram keyword search (requires login cookies - JSON array format)
+INSTAGRAM_COOKIES = env('INSTAGRAM_COOKIES', default='')
 
 # ==========================================
 # FACEBOOK GRAPH API CONFIGURATION

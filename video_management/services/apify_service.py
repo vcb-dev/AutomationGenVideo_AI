@@ -6,6 +6,8 @@ Facebook, and Douyin.
 """
 
 import logging
+import random
+import unicodedata
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from django.conf import settings
@@ -21,71 +23,6 @@ from .base_scraper import (
 from ..models import Platform
 
 logger = logging.getLogger(__name__)
-
-
-# NOTE:
-# Previously this class inherited from BaseScraperService (an ABC) which
-# declares abstract methods: search_videos, get_user_videos,
-# normalize_video_data. Due to recent refactors, Python started treating
-# ApifyScraperService as still abstract at runtime and refused to
-# instantiate it (TypeError: "Can't instantiate abstract class
-# ApifyScraperService with abstract methods ...").
-#
-# The concrete implementations of these methods already live in this
-# class, and nothing outside relies on the ABC mixin features (cache,
-# retry helpers). To restore correct runtime behaviour and fix the
-# 500 error from /api/search/user-videos/, we now make this a plain
-# concrete class instead of subclassing the ABC.
-class ApifyScraperService:
-    """
-    Apify-based scraper service supporting multiple platforms.
-    
-    This service uses Apify actors to scrape data from various social media
-    platforms in a unified way.
-    """
-    
-    def __init__(self, platform: Platform, search_type: str = 'posts'):
-        """
-        Initialize Apify scraper.
-        
-        Args:
-            platform: Target platform to scrape
-            search_type: Search type ('posts', 'reels', etc.)
-            
-        Raises:
-            ScraperException: If Apify is not configured
-        """
-        # Store basic config that BaseScraperService used to handle
-        self.platform = platform
-        self.logger = logging.getLogger(f"{__name__}.{platform}")
-        self.search_type = search_type
-        
-        # Get Apify configuration
-        self.api_token = getattr(settings, 'APIFY_API_TOKEN', '')
-        if not self.api_token:
-            raise ScraperException("APIFY_API_TOKEN not configured")
-        
-        # Initialize Apify client
-        self.client = ApifyClient(self.api_token)
-        
-        # Get actor ID for platform / mode
-        actors = getattr(settings, 'APIFY_ACTORS', {})
-        # For TikTok, allow using a dedicated profile actor when search_type == 'profile'
-        if platform == Platform.TIKTOK and search_type == 'profile':
-            self.actor_id = actors.get('tiktok_profile', actors.get(platform.value, ''))
-        else:
-            self.actor_id = actors.get(platform.value, '')
-        
-        if not self.actor_id:
-            raise ScraperException(f"No Apify actor configured for {platform}")
-        
-        self.timeout = getattr(settings, 'APIFY_TIMEOUT', 300)
-        self.max_results_limit = getattr(settings, 'APIFY_MAX_RESULTS', 100)
-        
-        self.logger.info(
-            f"Initialized Apify scraper for {platform} "
-            f"using actor: {self.actor_id}"
-        )
 
 
 def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
@@ -118,8 +55,6 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         "maxItems": 20,
     }
 
-    logger = logging.getLogger(__name__)
-
     try:
         logger.info(f"Fetching TikTok user profile for @{clean_user} using {actor_id}")
         run = client.actor(actor_id).call(run_input=run_input, timeout_secs=getattr(settings, "APIFY_TIMEOUT", 600))
@@ -151,6 +86,63 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to fetch TikTok user profile for {username}: {e}")
         return None
+
+
+class ApifyScraperService(BaseScraperService):
+    """
+    Apify-based scraper service supporting multiple platforms.
+    
+    This service uses Apify actors to scrape data from various social media
+    platforms in a unified way.
+    """
+    
+    def __init__(self, platform: Platform, search_type: str = 'posts'):
+        """
+        Initialize Apify scraper.
+        
+        Args:
+            platform: Target platform to scrape
+            search_type: Search type ('posts', 'reels', etc.)
+            
+        Raises:
+            ScraperException: If Apify is not configured
+        """
+        # Call base class init
+        super().__init__(platform)
+        self.search_type = search_type
+        
+        # Get Apify configuration
+        self.api_token = getattr(settings, 'APIFY_API_TOKEN', '')
+        if not self.api_token:
+            raise ScraperException("APIFY_API_TOKEN not configured")
+        
+        # Initialize Apify client
+        self.client = ApifyClient(self.api_token)
+        
+        # Get actor ID for platform / mode
+        actors = getattr(settings, 'APIFY_ACTORS', {})
+        # For TikTok, allow using a dedicated profile actor when search_type == 'profile'
+        if platform == Platform.TIKTOK and search_type == 'profile':
+            self.actor_id = actors.get('tiktok_profile', actors.get(platform.value, ''))
+        else:
+            self.actor_id = actors.get(platform.value, '')
+        
+        # Fallback: apidojo/tiktok-scraper (old) returns "Actor not found" without billing
+        # apidojo/tiktok-scraper-api works; only fallback the old actor
+        if platform == Platform.TIKTOK and self.actor_id == 'apidojo/tiktok-scraper':
+            self.actor_id = 'clockworks/free-tiktok-scraper'
+            self.logger.info("Using clockworks/free-tiktok-scraper (apidojo fallback)")
+        
+        if not self.actor_id:
+            raise ScraperException(f"No Apify actor configured for {platform}")
+        
+        self.timeout = getattr(settings, 'APIFY_TIMEOUT', 300)
+        self.max_results_limit = getattr(settings, 'APIFY_MAX_RESULTS', 100)
+        
+        self.logger.info(
+            f"Initialized Apify scraper for {platform} "
+            f"using actor: {self.actor_id}"
+        )
     
     def _build_tiktok_input(
         self,
@@ -158,16 +150,18 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         max_results: int = 20
     ) -> Dict[str, Any]:
         """
-        Build input for TikTok Apify actor (apidojo/tiktok-scraper).
-
-        For keyword/hashtag search we use the 'keywords' field and let
-        the actor discover posts. We cap maxItems to avoid wasting
-        credits.
+        Build input for TikTok Apify actor.
+        Supports: clockworks (searchQueries/hashtags/resultsPerPage),
+        apidojo/tiktok-scraper, apidojo/tiktok-scraper-api (keywords/maxItems).
         """
-        return {
-            "keywords": [keyword],
-            "maxItems": min(max_results, self.max_results_limit),
-        }
+        limit = min(max_results, self.max_results_limit)
+        if "clockworks/free-tiktok-scraper" in (self.actor_id or ""):
+            clean = keyword.strip().replace("#", "")
+            if keyword.strip().startswith("#"):
+                return {"hashtags": [clean], "resultsPerPage": limit}
+            return {"searchQueries": [keyword], "resultsPerPage": limit}
+        # apidojo (tiktok-scraper, tiktok-scraper-api)
+        return {"keywords": [keyword], "maxItems": limit}
     
     def _build_instagram_input(
         self,
@@ -305,41 +299,15 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
             Actor input dictionary
         """
         if self.platform == Platform.TIKTOK:
-            # apidojo/tiktok-scraper input schema
             if username:
-                # CLEANING: If user enters full URL, extract the @username
-                # Handles: https://www.tiktok.com/@username?lang=en -> username
-                clean_username = username.strip()
-                if 'tiktok.com/' in clean_username:
-                    import re
-                    match = re.search(r'tiktok\.com/@([^/?#]+)', clean_username)
-                    if match:
-                        clean_username = match.group(1)
-                
-                clean_username = clean_username.replace('@', '').split('?')[0].strip()
-                
-                # Optimized Fetch Logic
-                effective_limit = max_results
-                limit_to_use = min(effective_limit, 300)
+                clean_user = username.replace("@", "").strip()
+                limit = min(max_results, self.max_results_limit)
+                if "clockworks/free-tiktok-scraper" in (self.actor_id or ""):
+                    return {"profiles": [clean_user], "resultsPerPage": limit}
+                # apidojo (tiktok-scraper, tiktok-scraper-api)
+                profile_url = f"https://www.tiktok.com/@{clean_user}"
+                return {"startUrls": [profile_url], "maxItems": limit}
 
-                should_download_videos = True
-                if max_results <= 10:
-                    should_download_videos = False
-                
-                input_data = {
-                    "profiles": [clean_username],
-                    "resultsPerPage": limit_to_use,
-                    "postsCount": limit_to_use,
-                    "maxItems": limit_to_use,
-                    "shouldDownloadVideos": should_download_videos, 
-                    "shouldDownloadCovers": True, 
-                }
-                
-                if until_date:
-                    input_data["oldestPostDate"] = until_date
-                    self.logger.info(f"⏱️ TikTok Smart Stop enabled: Scraper will halt at {until_date}")
-                    
-                return input_data
             return self._build_tiktok_input(keyword, max_results)
         
         elif self.platform == Platform.INSTAGRAM:
@@ -387,6 +355,90 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
     
+    def _get_related_hashtags(self, base: str) -> List[str]:
+        """Tạo danh sách hashtag liên quan để mở rộng pool kết quả, tránh lặp 18 bài mỗi lần."""
+        base = (base or '').strip().lower()
+        if not base:
+            return []
+        seen = {base}
+        result = [base]
+        suffixes = ('dep', 'vang', 'bac', 'vietnam', 'ngoc', 'kimcuong', 'hot', 'trend')
+        for s in suffixes:
+            tag = base + s
+            if tag not in seen and len(result) < 5:
+                seen.add(tag)
+                result.append(tag)
+        return result
+
+    def _is_facebook_group_post(self, data: Dict[str, Any]) -> bool:
+        """Detect nếu post từ hội nhóm (group) – cần loại khi muốn chỉ shop/page."""
+        if not data or not isinstance(data, dict):
+            return False
+        url = data.get('url') or data.get('postUrl') or ''
+        if isinstance(url, dict):
+            url = url.get('url') or url.get('uri') or ''
+        url = str(url).lower()
+        return '/groups/' in url or '/group/' in url
+
+    def _is_facebook_reel_or_video(self, data: Dict[str, Any]) -> bool:
+        """Detect if raw Facebook item là reel/video – cần loại khi search_type=posts."""
+        if not data or not isinstance(data, dict):
+            return False
+        atts = data.get('attachments') or []
+        has_photo = any(isinstance(a, dict) and str(a.get('type', '')).lower() in ('photo', 'image') for a in atts)
+        # Post có ảnh sản phẩm (photo/image) → giữ lại dù có video (ảnh + caption là chính)
+        if has_photo:
+            return False
+        # isVideo at root
+        if data.get('isVideo', False):
+            return True
+        # URL chứa /reel/ hoặc /videos/ → reel/video thuần
+        url = data.get('url') or data.get('postUrl') or ''
+        if isinstance(url, dict):
+            url = url.get('url') or url.get('uri') or ''
+        url = str(url)
+        if '/reel/' in url or '/videos/' in url:
+            return True
+        # videoUrl at root VÀ không có photo → video post
+        if (data.get('videoUrl') or data.get('video_url')) and not has_photo:
+            return True
+        # Attachments CHỈ có video (không có photo/image)
+        if atts:
+            types = [str(a.get('type', '')).lower() for a in atts if isinstance(a, dict) and a.get('type')]
+            if types and all(t in ('video', 'reel') for t in types):
+                return True
+        return False
+
+    def _caption_contains_keyword(self, post: Dict[str, Any], keyword: str) -> bool:
+        """Kiểm tra post có caption chứa keyword (case-insensitive). Chấp nhận cả 'trang sức' và 'trangsuc'. Facebook dùng 'text'."""
+        if not post or not isinstance(post, dict):
+            return False
+        caption = post.get('caption', '') or post.get('description', '') or post.get('text', '') or ''
+        if not caption:
+            return False
+        kw = (keyword or '').strip()
+        if not kw:
+            return True
+        cap_lower = str(caption).lower()
+        if kw.lower() in cap_lower:
+            return True
+        kw_no_space = kw.replace(' ', '').lower()
+        if kw_no_space and kw_no_space in cap_lower.replace(' ', ''):
+            return True
+        return False
+
+    def _sort_by_caption_relevance(self, results: List[Dict], keyword: str) -> List[Dict]:
+        """Sắp xếp: bài có caption chứa keyword lên trước."""
+        kw = (keyword or '').strip().lower()
+        if not kw:
+            return results
+
+        def score(r):
+            cap = ((r.get('caption') or r.get('description') or '') if isinstance(r, dict) else '')
+            return 0 if kw in str(cap).lower() else 1
+
+        return sorted(results, key=score)
+
     def run_actor(
         self,
         actor_input: Dict[str, Any],
@@ -449,7 +501,9 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         keyword: str,
         min_likes: int = 0,
         min_views: int = 0,
-        max_results: int = 20
+        min_comments: int = 0,
+        max_results: int = 20,
+        search_mode: str = "hashtag"
     ) -> List[Dict[str, Any]]:
         """
         Search for videos using Apify.
@@ -465,56 +519,224 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         """
         try:
             actor_input = {}
-            # Instagram only supports hashtag search (not keyword search in captions)
-            if self.platform == Platform.INSTAGRAM and not keyword.startswith('@') and not keyword.startswith('http'):
-                # Use Instagram Hashtag Scraper - only way to search Instagram
-                self.actor_id = 'apify/instagram-hashtag-scraper'
-                self.logger.info(f"Using Instagram Hashtag Scraper for hashtag: {keyword}")
-                
-                # Build Instagram explore URL
-                # Remove diacritics for better results (Instagram hashtags are usually ASCII)
-                import unicodedata
-                clean_keyword = keyword.replace('#', '').replace(' ', '').strip()
-                
-                # Normalize Unicode: Remove Vietnamese diacritics
-                # 'trang sức' -> 'trangsuc'
-                normalized = unicodedata.normalize('NFD', clean_keyword)
-                clean_keyword = ''.join(char for char in normalized if unicodedata.category(char) != 'Mn')
-                
-                # If filtering by likes, fetch more results to ensure we have enough after filtering
-                limit_to_fetch = max_results
-                if min_likes > 0:
-                    # Fetch 5x requested amount to account for low quality posts, capped at 100
-                    limit_to_fetch = min(max_results * 5, 100)
-                    self.logger.info(f"Filtering by min_likes={min_likes}, increasing fetch limit from {max_results} to {limit_to_fetch}")
-                
-                # CRITICAL: Use proper input format for instagram-hashtag-scraper
-                # Documentation: https://apify.com/apify/instagram-hashtag-scraper
-                
-                # Dynamic resultsType based on user selection (posts vs reels)
-                # Valid values: "posts", "reels", "stories"
-                # "top_posts" is NOT a valid input parameter, even if we want top posts.
-                # We use "posts" to get general posts.
-                results_type = "reels" if self.search_type == "reels" else "posts"
-                
+            results = None  # Set by FB posts dual-run, else from run_actor below
+            use_keyword_mode = False  # Set by platform-specific blocks that need caption filter
+            # Facebook Reels: keyword search via facebook-video-search-scraper (trả về reels + videos)
+            if (self.platform == Platform.FACEBOOK and self.search_type == 'reels'
+                    and not keyword.startswith('@') and not keyword.startswith('http')
+                    and 'facebook.com' not in keyword.lower()):
+                import urllib.parse
+                actors_fb = getattr(settings, 'APIFY_ACTORS', {})
+                self.actor_id = actors_fb.get('facebook_video_search', 'apify/facebook-video-search-scraper')
+                search_query = keyword.replace('#', '').strip()
+                limit_capped = min(max_results, self.max_results_limit)
+                search_url = f"https://www.facebook.com/watch/search?q={urllib.parse.quote(search_query)}"
                 actor_input = {
-                    "hashtags": [clean_keyword],  # Array of hashtags (without #)
-                    "resultsType": results_type,  # Dynamic: 'reels' or 'posts'
-                    "resultsLimit": min(limit_to_fetch, self.max_results_limit),
-                    "searchLimit": min(limit_to_fetch, self.max_results_limit),  # Additional limit parameter
-                    "searchType": "hashtag",  # Explicitly set search type
+                    "startUrls": [{"url": search_url}],
+                    "searchTerm": search_query,
+                    "resultsLimit": limit_capped,
                 }
-                self.logger.info(f"Using Instagram Hashtag Scraper for '#{clean_keyword}' - resultsType={results_type}, limit={limit_to_fetch}")
+                self.logger.info(f"Using Facebook Video Search (reels) for '{search_query}' - limit={limit_capped}")
+            # Facebook Posts: scraper_one/facebook-posts-search (query, resultsCount)
+            elif (self.platform == Platform.FACEBOOK and not keyword.startswith('@')
+                    and not keyword.startswith('http') and 'facebook.com' not in keyword.lower()):
+                actors_fb = getattr(settings, 'APIFY_ACTORS', {})
+                self.actor_id = actors_fb.get('facebook_posts_search', 'scraper_one/facebook-posts-search')
+                search_mode_val = (search_mode or 'hashtag').strip().lower()
+                clean_kw = keyword.replace('#', '').strip()
+                # Hashtag: dùng #trangsuc, không thêm "shop" (tìm đúng hashtag)
+                # Keyword: thêm "shop" để bias shop (không hội nhóm)
+                if search_mode_val == 'hashtag':
+                    search_query = f"#{clean_kw}" if clean_kw else keyword
+                else:
+                    search_query = f"{clean_kw} shop" if (clean_kw and 'shop' not in clean_kw.lower()) else clean_kw or keyword
+                limit_capped = min(max(max_results, 5), 100)
+                # Yêu cầu thêm kết quả (x3) để sau khi lọc reels/groups còn đủ posts
+                fetch_count = min(limit_capped * 3, 100) if self.search_type == 'posts' else limit_capped
+                mode_label = "hashtag" if search_mode_val == 'hashtag' else "keyword (shops)"
+
+                # Fetch cả top (viral) và latest (mới nhất), merge + dedupe – ưu tiên viral + mới
+                if self.search_type == 'posts':
+                    fetch_per_run = max(fetch_count // 2, 5)
+                    results_top = self.run_actor({
+                        "query": search_query,
+                        "resultsCount": fetch_per_run,
+                        "searchType": "top",
+                    })
+                    results_latest = self.run_actor({
+                        "query": search_query,
+                        "resultsCount": fetch_per_run,
+                        "searchType": "latest",
+                    })
+                    seen = set()
+                    merged = []
+                    for r in (results_top or []) + (results_latest or []):
+                        if not isinstance(r, dict):
+                            continue
+                        pid = r.get('postId') or r.get('id', '')
+                        if not pid and r.get('video'):
+                            pid = r.get('video', {}).get('id', '')
+                        if not pid and r.get('videoUrl'):
+                            pid = r.get('videoUrl', '')
+                        if pid and pid not in seen:
+                            seen.add(pid)
+                            merged.append(r)
+                    results = merged
+                    self.logger.info(f"Facebook Posts: merged top+latest -> {len(results)} unique (viral + newest)")
+                else:
+                    actor_input = {
+                        "query": search_query,
+                        "resultsCount": fetch_count,
+                        "searchType": "latest",
+                    }
+                    results = self.run_actor(actor_input)
+                self.logger.info(f"Using Facebook Posts Search: query='{search_query}' mode={mode_label} - filter reels/groups, return up to {limit_capped}")
+                use_keyword_mode = False
+            # Instagram: hashtag vs keyword (different actors for different results)
+            elif self.platform == Platform.INSTAGRAM and not keyword.startswith('@') and not keyword.startswith('http'):
+                import unicodedata
+                search_mode_val = (search_mode or "hashtag").strip().lower()
+                use_keyword_mode = search_mode_val == "keyword"
+
+                # Luôn chỉ fetch đúng max_results (30) - không tăng để tránh tốn token Apify
+                limit_capped = min(max_results, self.max_results_limit)
+                results_type = "reels" if self.search_type == "reels" else "posts"
+
+                # Keyword mode: Hybrid = hashtag scraper + filter caption chứa keyword
+                # Dùng 2 hashtag liên quan để lấy pool rộng hơn, sau đó filter theo caption
+                # Hashtag mode: 1 hashtag chính
+                self.actor_id = 'apify/instagram-hashtag-scraper'
+                search_query = keyword.replace('#', '').strip()
+                clean_keyword = search_query.replace(' ', '').strip()
+                normalized = unicodedata.normalize('NFD', clean_keyword)
+                clean_keyword = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+                if not clean_keyword:
+                    clean_keyword = search_query.replace(' ', '')
+                if use_keyword_mode:
+                    hashtags_list = self._get_related_hashtags(clean_keyword)[:2]
+                    # Không floor 15 - dùng đúng limit_capped để tiết kiệm token Apify
+                    limit_per_tag = min(30, max(3, (limit_capped * 2) // len(hashtags_list)))
+                    actor_input = {
+                        "hashtags": hashtags_list,
+                        "resultsType": results_type,
+                        "resultsLimit": limit_per_tag,
+                        "searchLimit": limit_per_tag,
+                        "searchType": "hashtag",
+                    }
+                    self.logger.info(f"Using Instagram Hybrid (keyword) for '{search_query}' - hashtags={hashtags_list}, limit={limit_per_tag}/tag, will filter by caption")
+                else:
+                    hashtags_list = [clean_keyword]
+                    actor_input = {
+                        "hashtags": hashtags_list,
+                        "resultsType": results_type,
+                        "resultsLimit": limit_capped,
+                        "searchLimit": limit_capped,
+                        "searchType": "hashtag",
+                    }
+                    self.logger.info(f"Using Instagram Hashtag Scraper for #{clean_keyword} - limit={limit_capped}")
             else:
                 # Default input builder
                 actor_input = self._build_actor_input(keyword, max_results)
-                
-            results = self.run_actor(actor_input)
+
+            if results is None:
+                results = self.run_actor(actor_input)
+
+            # apify/instagram-scraper có thể trả hashtag metadata (name, posts, topPosts, latestPosts) - flatten lấy post thật
+            if self.actor_id == 'apify/instagram-scraper' and results:
+                flat = []
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    if 'topPosts' in item or 'latestPosts' in item:
+                        for p in item.get('topPosts', []) + item.get('latestPosts', []):
+                            if isinstance(p, dict) and (p.get('shortCode') or p.get('id') or p.get('displayUrl')):
+                                flat.append(p)
+                    elif 'posts' in item:
+                        for p in item.get('posts', []):
+                            if isinstance(p, dict) and (p.get('shortCode') or p.get('id') or p.get('displayUrl')):
+                                flat.append(p)
+                    elif item.get('shortCode'):
+                        flat.append(item)
+                if flat:
+                    results = flat
+                    self.logger.info(f"Flattened instagram-scraper results: {len(results)} posts")
             
-            self.logger.info(
-                f"Found {len(results)} videos for keyword: {keyword}"
-            )
+            # Facebook: dedupe (đã dedupe trong merge top+latest) và shuffle với seed theo thời gian → mỗi lần search thứ tự khác
+            if self.platform == Platform.FACEBOOK and results:
+                seen_ids = set()
+                deduped = []
+                for r in results:
+                    if isinstance(r, dict):
+                        pid = r.get('postId') or r.get('id', '')
+                        if not pid and r.get('video'):
+                            pid = r.get('video', {}).get('id', '')
+                        if not pid and r.get('videoUrl'):
+                            pid = r.get('videoUrl', '')
+                        if pid and pid not in seen_ids:
+                            seen_ids.add(pid)
+                            deduped.append(r)
+                if deduped:
+                    results = deduped
+                    import time
+                    rng = random.Random(int(time.time() * 1000))
+                    rng.shuffle(results)
+                    self.logger.info(f"Deduped to {len(results)} unique Facebook posts, shuffled (variety per search)")
+
+            # Facebook Posts: loại bỏ reels/videos và bài từ hội nhóm – chỉ giữ posts từ shop/page
+            if (self.platform == Platform.FACEBOOK and self.search_type == 'posts' and results):
+                before = len(results)
+                results = [r for r in results if isinstance(r, dict) and not self._is_facebook_reel_or_video(r)
+                           and not self._is_facebook_group_post(r)]
+                if before > len(results):
+                    self.logger.info(f"Facebook posts filter: excluded {before - len(results)} reels/videos/group posts, kept {len(results)} posts")
+
+            # Facebook KEYWORD mode: filter theo caption (text) chứa keyword
+            if self.platform == Platform.FACEBOOK and results and use_keyword_mode:
+                search_query = keyword.replace('#', '').strip()
+                before_count = len(results)
+                results_before_caption = list(results)
+                results = [r for r in results if isinstance(r, dict) and self._caption_contains_keyword(r, search_query)]
+                self.logger.info(f"Facebook caption filter: {before_count} -> {len(results)} posts (keyword='{search_query}')")
+                if len(results) < before_count * 0.3 and before_count >= 10:
+                    self.logger.info("Caption filter quá chặt, giữ thêm bài không khớp caption")
+                    results = self._sort_by_caption_relevance(results_before_caption, search_query)
+
+            # Facebook: truncate
+            if self.platform == Platform.FACEBOOK and len(results) > max_results:
+                results = results[:max_results]
+                self.logger.info(f"Truncated to {max_results} Facebook posts")
+
+            # Instagram: dedupe (có thể trùng khi dùng nhiều hashtag) và shuffle
+            if self.platform == Platform.INSTAGRAM and results:
+                seen_ids = set()
+                deduped = []
+                for r in results:
+                    if isinstance(r, dict):
+                        vid = r.get('id') or r.get('shortCode', '')
+                        if vid and vid not in seen_ids:
+                            seen_ids.add(vid)
+                            deduped.append(r)
+                if deduped:
+                    results = deduped
+                    random.shuffle(results)
+                    self.logger.info(f"Deduped to {len(results)} unique posts, shuffled for variety")
             
+            # KEYWORD mode (hybrid): filter theo caption chứa keyword
+            if self.platform == Platform.INSTAGRAM and results and use_keyword_mode:
+                search_query = keyword.replace('#', '').strip()
+                before_count = len(results)
+                results_before_caption = list(results)
+                results = [r for r in results if isinstance(r, dict) and self._caption_contains_keyword(r, search_query)]
+                self.logger.info(f"Caption filter: {before_count} -> {len(results)} posts (keyword='{search_query}')")
+                if len(results) < before_count * 0.3 and before_count >= 10:
+                    self.logger.info("Caption filter quá chặt, giữ thêm bài không khớp caption để đủ kết quả")
+                    results = self._sort_by_caption_relevance(results_before_caption, search_query)
+            
+            # Chỉ trả tối đa max_results (30) để tránh tốn token Apify
+            if self.platform == Platform.INSTAGRAM and len(results) > max_results:
+                results = results[:max_results]
+                self.logger.info(f"Truncated to {max_results} videos (Apify limit)")
+            self.logger.info(f"Found {len(results)} videos for keyword: {keyword}")
             return results
             
         except Exception as e:
@@ -714,25 +936,29 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
             or author_username
         )
 
-        # Stats - apidojo fields first, then legacy stats objects
+        # Stats - apidojo, clockworks (flat), legacy stats objects
         stats = data.get("stats", {}) or data.get("statistics", {})
         likes_count = (
             data.get("likes")
+            or data.get("diggCount")
             or stats.get("diggCount")
             or stats.get("digg_count", 0)
         )
         views_count = (
             data.get("views")
+            or data.get("playCount")
             or stats.get("playCount")
             or stats.get("play_count", 0)
         )
         comments_count = (
             data.get("comments")
+            or data.get("commentCount")
             or stats.get("commentCount")
             or stats.get("comment_count", 0)
         )
         shares_count = (
             data.get("shares")
+            or data.get("shareCount")
             or stats.get("shareCount")
             or stats.get("share_count", 0)
         )
@@ -827,20 +1053,59 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         }
     
     def _normalize_instagram_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize Instagram data."""
-        # DEBUG: Log raw data to understand structure
-        self.logger.info(f"Normalizing Instagram Data. Keys: {list(data.keys())}")
+        """Normalize Instagram data (hashtag scraper + crawlerbros keyword scraper)."""
+        if not isinstance(data, dict):
+            self.logger.warning(f"Skipping non-dict Instagram item: {type(data)}")
+            return {}
+        # crawlerbros/instagram-keyword-search-scraper format mapping
+        if data.get('post_id') or data.get('post_url'):
+            data = dict(data)
+            data.setdefault('id', data.get('post_id'))
+            data.setdefault('shortCode', data.get('post_id'))
+            data.setdefault('url', data.get('post_url'))
+            data.setdefault('postUrl', data.get('post_url'))
+            data.setdefault('ownerUsername', data.get('username'))
+            data.setdefault('displayUrl', data.get('thumbnail_url'))
+            data.setdefault('thumbnailUrl', data.get('thumbnail_url'))
+            urls = data.get('media_urls') or []
+            if data.get('media_type') == 'video' and urls:
+                data.setdefault('videoUrl', urls[0] if isinstance(urls[0], str) else urls[0].get('url', ''))
+            data.setdefault('likesCount', data.get('likes_count', 0))
+            data.setdefault('commentsCount', data.get('comments_count', 0))
+            data.setdefault('videoViewCount', data.get('views_count', 0))
+        self.logger.debug(f"Normalizing Instagram Data. Keys: {list(data.keys())}")
         
-        # Thumbnail fallback logic
+        # Thumbnail fallback logic - Apify Instagram có thể trả về nhiều format khác nhau
         thumbnail = ''
         if data.get('images') and len(data['images']) > 0:
-            thumbnail = data['images'][0]
-        else:
+            thumb = data['images'][0]
+            if isinstance(thumb, str) and thumb:
+                thumbnail = thumb
+            elif isinstance(thumb, dict) and thumb:
+                thumbnail = thumb.get('url') or thumb.get('src') or ''
+        if not thumbnail:
             thumbnail = (
-                data.get('displayUrl') or 
-                data.get('thumbnailUrl') or 
-                data.get('url')  # Sometimes url is the image itself if type is image
+                data.get('displayUrl') or
+                data.get('thumbnailUrl') or
+                data.get('url')
             )
+        # Carousel/có childPosts: lấy thumbnail từ slide đầu
+        if not thumbnail and data.get('childPosts'):
+            for c in data.get('childPosts', []) or []:
+                if isinstance(c, dict):
+                    t = c.get('displayUrl') or (c.get('images', []) or [None])[0]
+                    if t and isinstance(t, str):
+                        thumbnail = t
+                        break
+        # displayResources (array of quality URLs)
+        if not thumbnail and data.get('displayResources'):
+            res = data['displayResources']
+            if isinstance(res, list) and res:
+                first = res[0]
+                if isinstance(first, dict) and first.get('src'):
+                    thumbnail = first['src']
+                elif isinstance(first, str):
+                    thumbnail = first
 
         # Author fallback logic
         author_username = data.get('ownerUsername', '')
@@ -892,33 +1157,73 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         }
     
     def _normalize_facebook_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize Facebook data."""
-        # Clean ID
+        """Normalize Facebook data (posts-scraper, hashtag-scraper, video-search-scraper)."""
+
+        def _extract_url(val: Any) -> str:
+            """Extract URL string from value; Apify may return dict e.g. {uri: '...'}."""
+            if not val:
+                return ''
+            if isinstance(val, str):
+                return val
+            if isinstance(val, dict):
+                return val.get('url') or val.get('uri') or val.get('src') or val.get('link') or ''
+            return str(val)
+
+        # Clean ID (video-search-scraper uses video.id)
         post_id = data.get('postId') or data.get('id', '')
+        if not post_id and data.get('video'):
+            post_id = data.get('video', {}).get('id', '')
         
-        # Stats
-        likes = data.get('likes', 0)
-        comments = data.get('comments', 0)
-        shares = data.get('shares', 0)
-        
-        # Parse 'shares' if it's a dict (sometimes Apify returns { count: 123 }) or int
+        # Stats (scraper_one: reactionsCount; hashtag: likesCount; video-search: reaction_count)
+        likes = (data.get('reactionsCount') or data.get('likes') or data.get('likesCount') or
+                 data.get('like_count') or data.get('reaction_count') or data.get('reactionCount') or 0)
+        if isinstance(likes, dict):
+            likes = likes.get('count', 0) or likes.get('totalCount', 0)
+        comments = (data.get('comments') or data.get('commentsCount') or data.get('comment_count') or 0)
+        if isinstance(comments, dict):
+            comments = comments.get('count', 0)
+        shares = (data.get('shares') or data.get('sharesCount') or data.get('share_count') or 0)
         if isinstance(shares, dict):
             shares = shares.get('count', 0)
+        # Nested feedback (GraphQL-style)
+        feedback = data.get('feedback', {}) or {}
+        if isinstance(feedback, dict):
+            if likes in (0, None, '') and feedback.get('reaction_count'):
+                likes = feedback['reaction_count']
+            if comments in (0, None, '') and feedback.get('comment_count'):
+                comments = feedback['comment_count']
+            if shares in (0, None, '') and feedback.get('share_count'):
+                shares = feedback['share_count']
         
-        # User Info
-        user_data = data.get('user', {})
+        # User Info (scraper_one: author; hashtag: user; video-search: video_owner_profile)
+        user_data = data.get('user', {}) or data.get('author', {})
         author_username = ''
         author_name = ''
         
         if isinstance(user_data, dict):
-            author_username = user_data.get('username') or user_data.get('id', '')
+            author_username = user_data.get('username') or user_data.get('uri_token', '') or user_data.get('id', '')
             author_name = user_data.get('name', '')
+            # scraper_one: extract username from profileUrl (facebook.com/jeff.moerke.1)
+            if not author_username and user_data.get('profileUrl'):
+                try:
+                    parts = str(user_data['profileUrl']).split('facebook.com/')[-1].split('/')
+                    if parts:
+                        author_username = parts[0]
+                except Exception:
+                    pass
         
-        # Fallback for flat structure or missing user object
+        # Fallback for flat structure or missing user object (hashtag-scraper uses pageName)
         if not author_username:
              author_username = data.get('postAuthor', '') or data.get('pageName', '')
         if not author_name:
              author_name = data.get('postAuthor', '') or data.get('pageName', '')
+        # video-search-scraper uses video_owner_profile: {name, url, uri_token, id}
+        owner_profile = data.get('video_owner_profile', {})
+        if isinstance(owner_profile, dict):
+            if not author_name:
+                author_name = owner_profile.get('name', '')
+            if not author_username:
+                author_username = owner_profile.get('uri_token', '') or owner_profile.get('url', '').split('facebook.com/')[-1].split('/')[0] if owner_profile.get('url') else owner_profile.get('id', '')
              
         # Extract from URL if still empty
         if not author_username:
@@ -935,7 +1240,7 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         if not post_id:
             # Try to extract from URL if API didn't return ID
             import re
-            url_to_check = data.get('url') or data.get('postUrl') or ''
+            url_to_check = _extract_url(data.get('url') or data.get('postUrl') or data.get('videoUrl', ''))
             
             # Match patterns: /posts/123, /videos/123, /reel/123, ?fbid=123, /photo.php?fbid=123
             id_patterns = [
@@ -961,11 +1266,18 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
                 logger.info(f"⚠️ Generated hash ID for post: {post_id} from {url_to_check}")
 
         # Media (Video/Image)
-        video_url = data.get('videoUrl', '')
+        video_url = _extract_url(data.get('videoUrl'))
+        # scraper_one: attachments[{type:'video',url}]
+        if not video_url and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if isinstance(att, dict) and att.get('type') == 'video' and att.get('url'):
+                    video_url = _extract_url(att['url'])
+                    if video_url:
+                        break
         
         # THUMBNAIL EXTRACTION STRATEGY
-        # 1. Direct keys
-        thumbnail_url = (
+        # 1. Direct keys (may be dict from Apify)
+        thumbnail_url = _extract_url(
             data.get('image') or 
             data.get('imageUrl') or 
             data.get('thumbnail') or 
@@ -976,13 +1288,63 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         # 2. Images list (often contains high-res photo URL)
         if not thumbnail_url and data.get('images') and isinstance(data.get('images'), list):
             if len(data['images']) > 0:
-                thumbnail_url = data['images'][0]
+                thumbnail_url = _extract_url(data['images'][0]) if data['images'] else ''
 
-        # 3. Attachments (common for link previews or album covers)
+        # 3a. scraper_one: attachments[{type:'photo'|'image'|'video',url,id,image,fullImage}]
+        # NOTE: Do NOT use graph.facebook.com/{id}/picture - attachment IDs are NOT Graph API IDs.
+        # scraper_one photo url thường là photo.php; ưu tiên image/fullImage nếu có (direct CDN).
+        if not thumbnail_url and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if not isinstance(att, dict):
+                    continue
+                att_type = (att.get('type') or '').lower()
+                # Photo: scraper_one có thể có image/fullImage (direct fbcdn)
+                if att_type in ('photo', 'image'):
+                    att_url = _extract_url(
+                        att.get('image') or att.get('fullImage') or att.get('url') or
+                        att.get('src') or att.get('link') or ''
+                    )
+                    if att_url and 'fbcdn.net' in att_url:
+                        thumbnail_url = att_url
+                        break
+                    if att_url and att_url.startswith('http'):
+                        thumbnail_url = att_url
+                        break
+                    media = att.get('media') or {}
+                    if isinstance(media, dict):
+                        img_obj = media.get('image') or {}
+                        if isinstance(img_obj, dict):
+                            uri = img_obj.get('uri') or img_obj.get('src') or img_obj.get('url') or ''
+                            if uri:
+                                thumbnail_url = uri
+                                break
+                # Video thumbnails
+                if att_type == 'video':
+                    att_url = _extract_url(att.get('thumbnail') or att.get('image') or att.get('src') or '')
+                    if att_url and ('fbcdn.net' in att_url or att_url.startswith('http')):
+                        thumbnail_url = att_url
+                        break
+                    media = att.get('media') or {}
+                    if isinstance(media, dict):
+                        img_obj = media.get('image') or media.get('thumbnail') or {}
+                        if isinstance(img_obj, dict):
+                            uri = img_obj.get('uri') or img_obj.get('src') or ''
+                            if uri:
+                                thumbnail_url = uri
+                                break
+        # 3b. hashtag-scraper: all_subattachments.nodes[].media.image.uri
         if not thumbnail_url and data.get('attachments') and isinstance(data.get('attachments'), list):
             for att in data['attachments']:
-                if att.get('media', {}).get('image', {}).get('src'):
-                    thumbnail_url = att['media']['image']['src']
+                nodes = (att.get('all_subattachments') or {}).get('nodes') if isinstance(att.get('all_subattachments'), dict) else []
+                for node in (nodes or [])[:3]:
+                    if not isinstance(node, dict):
+                        continue
+                    img = ((node.get('media') or {}).get('image') or {}) if isinstance(node.get('media'), dict) else {}
+                    if isinstance(img, dict):
+                        thumbnail_url = _extract_url(img.get('uri') or img.get('src') or img.get('url'))
+                    if thumbnail_url:
+                        break
+                if thumbnail_url:
                     break
                     
         # 4. Preferred Thumbnail (Common for videos at root)
@@ -991,9 +1353,24 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
              if isinstance(pref, dict):
                  if pref.get('image') and pref['image'].get('uri'):
                      thumbnail_url = pref['image']['uri']
+        # 5. video-search-scraper uses thumbnail_image.uri
+        if not thumbnail_url and data.get('thumbnail_image'):
+            thumb_img = data['thumbnail_image']
+            if isinstance(thumb_img, dict) and thumb_img.get('uri'):
+                thumbnail_url = thumb_img['uri']
+        # 6. Fallback: author profile picture (text-only posts)
+        if not thumbnail_url and isinstance(user_data, dict) and user_data.get('profilePicture'):
+            pic_url = _extract_url(user_data['profilePicture'])
+            if pic_url and 'fbcdn.net' in pic_url:
+                # Replace s40x40/s100x100 with s720x720 for larger thumbnail
+                import re as _re2
+                pic_url = _re2.sub(r'_s\d+x\d+', '_s720x720', pic_url)
+            thumbnail_url = pic_url or ''
         
-        # Construct Web URL (Permalink) - MUST BE BEFORE is_video detection
-        permalink = data.get('url') or data.get('postUrl') or ''
+        # Construct Web URL (Permalink) - MUST BE BEFORE is_video detection (video-search uses videoUrl)
+        permalink = _extract_url(data.get('url') or data.get('postUrl') or data.get('videoUrl'))
+        if permalink and 'undefined' in permalink.lower():
+            permalink = ''
         
         # Determine if it's a video
         # Apify fb scraper often puts isVideo=True at root
@@ -1006,7 +1383,7 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         # Detect if videoUrl exists at root
         if not is_video and (data.get('videoUrl') or data.get('video_url')):
             is_video = True
-            video_url = data.get('videoUrl') or data.get('video_url') or video_url
+            video_url = _extract_url(data.get('videoUrl') or data.get('video_url')) or video_url
 
         # 5. Advanced "media" list Extraction
         if data.get('media'):
@@ -1044,27 +1421,65 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
 
         # If no URL but we have postId (and maybe username), construct it
         if not permalink and post_id:
-            # Prefer username, fallback to ID, fallback to 'watch' format if video
-            user_handle = author_username or data.get('pageName') or 'watch'
-            if is_video:
-                 permalink = f"https://www.facebook.com/{user_handle}/videos/{post_id}/"
+            user_handle = (author_username or data.get('pageName') or '').strip()
+            if not user_handle or user_handle.lower() in ('undefined', 'null', 'none'):
+                if is_video:
+                    permalink = f"https://www.facebook.com/watch/?v={post_id}"
+                else:
+                    permalink = f"https://www.facebook.com/permalink.php?story_fbid={post_id}"
             else:
-                 permalink = f"https://www.facebook.com/{user_handle}/posts/{post_id}/"
+                if is_video:
+                    permalink = f"https://www.facebook.com/{user_handle}/videos/{post_id}/"
+                else:
+                    permalink = f"https://www.facebook.com/{user_handle}/posts/{post_id}/"
+
+        # Content (scraper_one: postText; hashtag: text; posts-scraper: message)
+        content = (data.get('postText') or data.get('text') or data.get('message') or data.get('title') or
+                   data.get('description') or data.get('caption') or data.get('post_text') or data.get('content') or '')
+        # Extract from nested video object (video-search-scraper)
+        video_obj = data.get('video', {}) or {}
+        if isinstance(video_obj, dict) and not content:
+            content = video_obj.get('title') or video_obj.get('description') or ''
+        # scraper_one: attachments[].accessibilityCaption trực tiếp trên attachment (không trong media)
+        if not content and data.get('attachments'):
+            for att in (data['attachments'] or []):
+                if not isinstance(att, dict):
+                    continue
+                cap = att.get('accessibilityCaption') or att.get('accessibility_caption')
+                if cap:
+                    content = str(cap)
+                    break
+                media = att.get('media') or {}
+                cap = (media.get('accessibility_caption') or media.get('caption') if isinstance(media, dict) else None)
+                if cap:
+                    content = str(cap)
+                    break
+
+        def _safe_int(val):
+            if val is None:
+                return 0
+            if isinstance(val, int) and not isinstance(val, bool):
+                return max(0, val)
+            if isinstance(val, float):
+                return max(0, int(val))
+            if isinstance(val, str) and val.strip().replace('.', '').isdigit():
+                return max(0, int(float(val)))
+            return 0
 
         return {
             'video_id': str(post_id),
-            'title': data.get('text', '') or data.get('message', '') or 'No Content',
-            'description': data.get('text', '') or data.get('message', ''),
-            'author_username': str(author_username),
-            'author_name': str(author_name),
-            'likes_count': int(likes) if isinstance(likes, (int, float, str)) and str(likes).isdigit() else 0,
-            'views_count': int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or 0),
-            'comments_count': int(comments) if isinstance(comments, (int, float, str)) and str(comments).isdigit() else 0,
-            'shares_count': int(shares) if isinstance(shares, (int, float, str)) and str(shares).isdigit() else 0,
+            'title': content or '',
+            'description': content or '',
+            'author_username': str(author_username or ''),
+            'author_name': str(author_name or ''),
+            'likes_count': _safe_int(likes),
+            'views_count': _safe_int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or video_obj.get('view_count')),
+            'comments_count': _safe_int(comments),
+            'shares_count': _safe_int(shares),
             'video_url': permalink, # Normalized Web URL
             'download_url': video_url, # Direct file URL
             'thumbnail_url': thumbnail_url,
-            'published_at': self._parse_timestamp(data.get('time') or data.get('timestamp')),
+            'published_at': self._parse_timestamp(data.get('time') or data.get('timestamp') or data.get('date')),
             'hashtags': [],
             'music_info': {},
             'is_video': is_video, # Keep explicit flag for immediate usage
@@ -1089,9 +1504,12 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
             if isinstance(timestamp, datetime):
                 return timestamp
             
-            # If Unix timestamp (integer or float)
+            # If Unix timestamp (integer or float); scraper_one uses milliseconds
             if isinstance(timestamp, (int, float)):
-                return datetime.fromtimestamp(timestamp, timezone.utc)
+                ts = float(timestamp)
+                if ts > 1e12:  # milliseconds (e.g. 1743735597000)
+                    ts = ts / 1000
+                return datetime.fromtimestamp(int(ts), timezone.utc)
             
             # If ISO string
             if isinstance(timestamp, str):

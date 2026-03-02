@@ -29,9 +29,12 @@ def search_videos_task(
     keyword: str,
     min_likes: int = 0,
     min_views: int = 0,
-    max_results: int = 20,
+    min_comments: int = 0,
+    max_results: int = 30,
+    page: int = 1,
     use_cache: bool = True,
-    search_type: str = 'posts'
+    search_type: str = 'posts',
+    search_mode: str = 'hashtag'
 ) -> Dict[str, Any]:
     """
     Asynchronous video search task.
@@ -59,7 +62,10 @@ def search_videos_task(
             keyword=keyword,
             min_likes=min_likes,
             min_views=min_views,
+            min_comments=min_comments,
             max_results=max_results,
+            page=page,
+            search_mode=search_mode,
             use_cache=use_cache,
             save_to_db=True
         )
