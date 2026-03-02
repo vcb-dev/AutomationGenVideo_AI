@@ -589,13 +589,11 @@ class ApifyScraperService(BaseScraperService):
                 search_mode_val = (search_mode or "hashtag").strip().lower()
                 use_keyword_mode = search_mode_val == "keyword"
 
-                # Luôn chỉ fetch đúng max_results (30) - không tăng để tránh tốn token Apify
-                limit_capped = min(max_results, self.max_results_limit)
+                # Để tạo kết quả khác nhau mỗi lần search cùng hashtag:
+                # Luôn fetch pool LỚN (tối thiểu 30) từ Apify, sau đó random.sample để lấy ngỪu nhiên
+                POOL_SIZE = max(30, min(max_results * 3, self.max_results_limit))
                 results_type = "reels" if self.search_type == "reels" else "posts"
 
-                # Keyword mode: Hybrid = hashtag scraper + filter caption chứa keyword
-                # Dùng 2 hashtag liên quan để lấy pool rộng hơn, sau đó filter theo caption
-                # Hashtag mode: 1 hashtag chính
                 self.actor_id = 'apify/instagram-hashtag-scraper'
                 search_query = keyword.replace('#', '').strip()
                 clean_keyword = search_query.replace(' ', '').strip()
@@ -605,8 +603,7 @@ class ApifyScraperService(BaseScraperService):
                     clean_keyword = search_query.replace(' ', '')
                 if use_keyword_mode:
                     hashtags_list = self._get_related_hashtags(clean_keyword)[:2]
-                    # Không floor 15 - dùng đúng limit_capped để tiết kiệm token Apify
-                    limit_per_tag = min(30, max(3, (limit_capped * 2) // len(hashtags_list)))
+                    limit_per_tag = min(POOL_SIZE, max(15, POOL_SIZE // len(hashtags_list)))
                     actor_input = {
                         "hashtags": hashtags_list,
                         "resultsType": results_type,
@@ -614,17 +611,17 @@ class ApifyScraperService(BaseScraperService):
                         "searchLimit": limit_per_tag,
                         "searchType": "hashtag",
                     }
-                    self.logger.info(f"Using Instagram Hybrid (keyword) for '{search_query}' - hashtags={hashtags_list}, limit={limit_per_tag}/tag, will filter by caption")
+                    self.logger.info(f"Using Instagram Hybrid (keyword) for '{search_query}' - hashtags={hashtags_list}, pool_limit={limit_per_tag}/tag, will filter by caption")
                 else:
                     hashtags_list = [clean_keyword]
                     actor_input = {
                         "hashtags": hashtags_list,
                         "resultsType": results_type,
-                        "resultsLimit": limit_capped,
-                        "searchLimit": limit_capped,
+                        "resultsLimit": POOL_SIZE,
+                        "searchLimit": POOL_SIZE,
                         "searchType": "hashtag",
                     }
-                    self.logger.info(f"Using Instagram Hashtag Scraper for #{clean_keyword} - limit={limit_capped}")
+                    self.logger.info(f"Using Instagram Hashtag Scraper for #{clean_keyword} - pool_size={POOL_SIZE} (will random.sample {max_results})") 
             else:
                 # Default input builder
                 actor_input = self._build_actor_input(keyword, max_results)
@@ -697,8 +694,10 @@ class ApifyScraperService(BaseScraperService):
                 results = results[:max_results]
                 self.logger.info(f"Truncated to {max_results} Facebook posts")
 
-            # Instagram: dedupe (có thể trùng khi dùng nhiều hashtag) và shuffle
+            # Instagram: dedupe (có thể trùng khi dùng nhiều hashtag)
+            # Sau đó random.sample từ pool để mỗi lần search ra kết quả khác nhau
             if self.platform == Platform.INSTAGRAM and results:
+                import time as _time
                 seen_ids = set()
                 deduped = []
                 for r in results:
@@ -709,8 +708,10 @@ class ApifyScraperService(BaseScraperService):
                             deduped.append(r)
                 if deduped:
                     results = deduped
-                    random.shuffle(results)
-                    self.logger.info(f"Deduped to {len(results)} unique posts, shuffled for variety")
+                    # Dùng seed theo thời gian để mỗi lần chọn sample khác nhau
+                    rng = random.Random(int(_time.time() * 1000))
+                    rng.shuffle(results)
+                    self.logger.info(f"Deduped to {len(results)} unique posts, shuffled (time-seeded) for variety")
             
             # KEYWORD mode (hybrid): filter theo caption chứa keyword
             if self.platform == Platform.INSTAGRAM and results and use_keyword_mode:
@@ -723,10 +724,11 @@ class ApifyScraperService(BaseScraperService):
                     self.logger.info("Caption filter quá chặt, giữ thêm bài không khớp caption để đủ kết quả")
                     results = self._sort_by_caption_relevance(results_before_caption, search_query)
             
-            # Chỉ trả tối đa max_results (30) để tránh tốn token Apify
+            # Instagram: random.sample từ pool (không lấy từ đầu) để đa dạng hóa kết quả
+            # Pool đã được shuffle (time-seeded) bên trên nên slice từ đầu = random sample thực sự
             if self.platform == Platform.INSTAGRAM and len(results) > max_results:
                 results = results[:max_results]
-                self.logger.info(f"Truncated to {max_results} videos (Apify limit)")
+                self.logger.info(f"Sampled {max_results} from pool of {len(results)} (randomized each search)")
             self.logger.info(f"Found {len(results)} videos for keyword: {keyword}")
             return results
             
