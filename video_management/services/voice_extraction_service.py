@@ -1,7 +1,11 @@
 import os
 import logging
 import yt_dlp
-from moviepy.editor import VideoFileClip
+# Lazy import moviepy to avoid startup errors if not installed
+try:
+    from moviepy.editor import VideoFileClip
+except ImportError:
+    VideoFileClip = None
 from django.conf import settings
 
 logger = logging.getLogger(__name__)

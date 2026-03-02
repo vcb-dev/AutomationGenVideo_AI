@@ -52,6 +52,7 @@ from .views.facebook_analysis_views import (
     detect_facebook_type,
 )
 from .views.douyin_search_views import search_douyin_videos
+from .views.douyin_profile_views import fetch_douyin_channel_profile
 from .views.xiaohongshu_search_views import search_xiaohongshu_notes
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
@@ -76,6 +77,8 @@ from .views.virtual_mix_views import (
     stream_audio,
     virtual_mix_render,
 )
+from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
+from .views.translation_views import translate_to_chinese
 
 app_name = 'video_management'
 
@@ -97,10 +100,14 @@ urlpatterns = [
     # Search Suggestions (NEW)
     path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
     path('search/track/', track_search, name='track-search'),
+<<<<<<< HEAD
+    path('search/translate/', translate_to_chinese, name='search-translate'),
+=======
 
     # Media fetch (bypass CORS; avoid "image-proxy" name which triggers ad blockers)
     path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),  # legacy
     path('media/', ImageProxyView.as_view(), name='media'),
+>>>>>>> 53bbb5d10e426f16ad118c617a402136d6f22162
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     
@@ -154,6 +161,9 @@ urlpatterns = [
     # Douyin Search
     path('douyin/search/', search_douyin_videos, name='douyin-search'),
     
+    # Douyin Channel Profile (full: followers, avatar, engagement) — called on Update only
+    path('douyin/profile/', fetch_douyin_channel_profile, name='douyin-channel-profile'),
+    
     # Xiaohongshu Search
     path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
     
@@ -171,6 +181,10 @@ urlpatterns = [
     path('products/catalogs/<int:catalog_id>/delete/', delete_product_catalog, name='product-catalog-delete'),
     path('products/<int:product_id>/', get_product_detail, name='product-detail'),
     path('products/find-video/', find_product_video_path, name='find-product-video'),
+    
+    # Checklist công việc -> Lark Bitable
+    path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
+    path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
     
     # Collections (router URLs)
     path('', include(router.urls)),

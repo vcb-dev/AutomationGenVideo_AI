@@ -75,18 +75,20 @@ class DouyinScraperService:
             if search_type == 'hashtag' and not clean_term.startswith('#'):
                 clean_term = f'#{clean_term}'
             
-            # Build actor input
-            # Updated to match current actor schema requirements
+            # Build actor input - STRICTLY OPTIMIZED to 1 event per video
             actor_input = {
                 "searchTermsOrHashtags": [clean_term],
                 "sortBy": sort_by,
                 "publishTime": publish_time,
-                "maxItemsPerUrl": max_posts,  # Required by new schema
-                "maxPosts": max_posts,        # Keep for backward compatibility
-                "shouldDownloadCovers": True,
-                "shouldDownloadVideos": False, # We only need metadata mostly
+                "maxItemsPerUrl": max_posts,
+                "maxPosts": max_posts,
+                # --- Disable all paid Add-ons (Events) ---
+                "shouldDownloadCovers": False,      # Disable Cover Download Event ($0.50/1000)
+                "shouldDownloadVideos": False,      # Disable Video Download Event ($1.00/1000)
                 "shouldDownloadMusic": False,
-                "shouldDownloadAuthors": True
+                "scrapeAdditionalUserInfo": False, # Disable User Info Event ($0.50/1000)
+                "scrapePlayCount": False,           # Disable Play Count Event ($0.50/1000)
+                "scrapeUserPostCount": False,
             }
             
             logger.info(f"Searching Douyin - Type: {search_type}, Term: {clean_term}, Max: {max_posts}")
@@ -130,76 +132,102 @@ class DouyinScraperService:
     def _normalize_video_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize Douyin video data to common format.
-        
-        Note: Douyin may not return view/like counts due to privacy settings.
-        These fields will be None if not available.
-        
-        Args:
-            raw_data: Raw data from Apify actor
-            
-        Returns:
-            Normalized video data
+        Handles various schemas from different versions of the Apify actor.
         """
         # Video ID
         video_id = raw_data.get('id', '') or raw_data.get('aweme_id', '')
         
-        # Author info
-        author = raw_data.get('author', {}) or {}
-        author_username = author.get('unique_id', '') or author.get('uid', '')
-        author_name = author.get('nickname', '') or author_username
-        author_avatar = author.get('avatar_thumb', {}).get('url_list', [''])[0] if author.get('avatar_thumb') else ''
+        # Author info - Handles both 'author' (old) and 'authorMeta' (new)
+        author = raw_data.get('authorMeta') or raw_data.get('author') or {}
+        author_username = author.get('username') or author.get('unique_id') or author.get('uid', '')
+        author_name = author.get('name') or author.get('nickname') or author_username
         
-        # Stats - may be None if not available
+        # Avatar extraction
+        author_avatar = ''
+        if 'avatarThumb' in author:
+            author_avatar = author['avatarThumb']
+        elif 'avatar_thumb' in author:
+            avatar_thumb = author.get('avatar_thumb', {})
+            if isinstance(avatar_thumb, dict) and avatar_thumb.get('url_list'):
+                author_avatar = avatar_thumb['url_list'][0]
+        
+        # Stats - Handles camelCase (new) and snake_case (old)
         statistics = raw_data.get('statistics', {}) or {}
-        views_count = statistics.get('play_count')  # May be None
-        likes_count = statistics.get('digg_count')  # May be None
-        comments_count = statistics.get('comment_count', 0)
-        shares_count = statistics.get('share_count', 0)
+        views_count = statistics.get('playCount') or statistics.get('play_count')
+        likes_count = statistics.get('diggCount') or statistics.get('digg_count')
+        comments_count = statistics.get('commentCount') or statistics.get('comment_count', 0)
+        shares_count = statistics.get('shareCount') or statistics.get('share_count', 0)
+        collect_count = statistics.get('collectCount') or statistics.get('collect_count', 0)
         
-        # Video info
-        video = raw_data.get('video', {}) or {}
-        video_url = raw_data.get('share_url', '')
+        # Video info - Handles 'videoMeta' (new) and 'video' (old)
+        video_meta = raw_data.get('videoMeta') or raw_data.get('video') or {}
+        video_url = raw_data.get('url') or raw_data.get('share_url', '')
         
-        # Download URL - get highest quality
+        # Download URL
         download_url = ''
-        play_addr = video.get('play_addr', {})
-        if play_addr and play_addr.get('url_list'):
-            download_url = play_addr['url_list'][0]
+        # New schema has playUrl in videoMeta
+        if 'playUrl' in video_meta:
+            download_url = video_meta['playUrl']
+        # Old schema has play_addr in video
+        elif 'play_addr' in video_meta:
+            play_addr = video_meta.get('play_addr', {})
+            if isinstance(play_addr, dict) and play_addr.get('url_list'):
+                download_url = play_addr['url_list'][0]
         
-        # Thumbnail
+        # Thumbnail extraction
         thumbnail_url = ''
-        cover = video.get('cover', {})
-        if cover and cover.get('url_list'):
-            thumbnail_url = cover['url_list'][0]
-        
+        if 'cover' in video_meta:
+            thumbnail_url = video_meta['cover']
+        elif 'cover_url' in raw_data: # Alternative fallback
+            thumbnail_url = raw_data['cover_url']
+        elif 'thumb' in raw_data:
+            thumbnail_url = raw_data['thumb']
+            
         # Caption/Description
-        caption = raw_data.get('desc', '')
+        caption = raw_data.get('text') or raw_data.get('desc', '')
         
         # Hashtags
         hashtags = []
-        text_extra = raw_data.get('text_extra', []) or []
-        for tag in text_extra:
-            if tag.get('hashtag_name'):
-                hashtags.append(tag['hashtag_name'])
+        # New schema: list of objects in 'hashtags'
+        raw_hashtags = raw_data.get('hashtags', [])
+        if raw_hashtags and isinstance(raw_hashtags, list):
+            for tag in raw_hashtags:
+                if isinstance(tag, dict) and tag.get('name'):
+                    hashtags.append(tag['name'])
+                elif isinstance(tag, str):
+                    hashtags.append(tag)
+        
+        # Old schema: 'text_extra'
+        if not hashtags:
+            text_extra = raw_data.get('text_extra', []) or []
+            for tag in text_extra:
+                if isinstance(tag, dict) and tag.get('hashtag_name'):
+                    hashtags.append(tag['hashtag_name'])
         
         # Music info
-        music = raw_data.get('music', {}) or {}
-        music_title = music.get('title', '')
-        music_author = music.get('author', '')
-        music_url = ''
-        play_url = music.get('play_url', {})
-        if play_url and play_url.get('url_list'):
-            music_url = play_url['url_list'][0]
+        music = raw_data.get('musicMeta') or raw_data.get('music') or {}
+        music_title = music.get('name') or music.get('title', '')
+        music_author = music.get('author') or music.get('author', '')
+        music_url = music.get('playUrl') or ''
+        
+        if not music_url and 'play_url' in music:
+            play_url = music.get('play_url', {})
+            if isinstance(play_url, dict) and play_url.get('url_list'):
+                music_url = play_url['url_list'][0]
         
         # Duration
-        duration = video.get('duration', 0)
+        duration = video_meta.get('duration', 0)
         
         # Published time
-        create_time = raw_data.get('create_time')
+        create_time = raw_data.get('createTime') or raw_data.get('create_time')
         published_at = None
         if create_time:
             try:
-                published_at = datetime.fromtimestamp(int(create_time))
+                # Some versions might return string ISO format
+                if isinstance(create_time, str):
+                    published_at = datetime.fromisoformat(create_time.replace('Z', '+00:00'))
+                else:
+                    published_at = datetime.fromtimestamp(int(create_time))
             except:
                 pass
         
@@ -213,7 +241,8 @@ class DouyinScraperService:
             'likes_count': int(likes_count) if likes_count is not None else None,
             'comments_count': int(comments_count) if comments_count else 0,
             'shares_count': int(shares_count) if shares_count else 0,
-            'author_id': author.get('uid', ''),
+            'collect_count': int(collect_count) if collect_count else 0,
+            'author_id': author.get('id') or author.get('uid', ''),
             'author_username': author_username,
             'author_name': author_name,
             'author_avatar': author_avatar,

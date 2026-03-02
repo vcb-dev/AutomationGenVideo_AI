@@ -289,6 +289,15 @@ HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/ap
 HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
 
 # ==========================================
+# LARK BITABLE (Checklist công việc)
+# ==========================================
+LARK_APP_ID = env('LARK_APP_ID', default='')
+LARK_APP_SECRET = env('LARK_APP_SECRET', default='')
+LARK_BASE_ID = env('LARK_BASE_ID', default='')   # app_token trong URL Bitable
+LARK_TABLE_ID = env('LARK_TABLE_ID', default='')
+LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
+
+# ==========================================
 # OPENAI API CONFIGURATION
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
