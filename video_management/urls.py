@@ -99,14 +99,11 @@ urlpatterns = [
     # Search Suggestions (NEW)
     path('search/suggestions/', get_search_suggestions, name='search-suggestions'),
     path('search/track/', track_search, name='track-search'),
-<<<<<<< HEAD
     path('search/translate/', translate_to_chinese, name='search-translate'),
-=======
 
     # Media fetch (bypass CORS; avoid "image-proxy" name which triggers ad blockers)
     path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),  # legacy
     path('media/', ImageProxyView.as_view(), name='media'),
->>>>>>> 53bbb5d10e426f16ad118c617a402136d6f22162
     
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     
