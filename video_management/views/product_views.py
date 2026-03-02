@@ -261,14 +261,14 @@ def find_product_video_path(request):
         
         if not known_paths:
             base_paths = getattr(settings, 'VIDEO_BASE_PATHS', [r'\\VCB_MEDIA\MEDIA VCB folder'])
-            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', r'VIDEO Sản Phẩm')
+            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', r'Video Sản Phẩm')
             known_paths = [os.path.join(base, subfolder) for base in base_paths]
         
         # Fallback: infer từ video đã index trong DB
         existing_sample = IndexedVideo.objects.filter(folder_type="Sản phẩm").first()
         if existing_sample:
             path_str = existing_sample.file_path
-            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', 'VIDEO Sản Phẩm')
+            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', 'Video Sản Phẩm')
             if subfolder in path_str:
                 root_part = path_str.split(subfolder)[0] + subfolder
                 root_part = os.path.normpath(root_part)

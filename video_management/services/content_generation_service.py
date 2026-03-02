@@ -19,7 +19,7 @@ CONTENT_TEMPLATES = {
             'Tin tức nổi bật trong ngành'
         ],
         'tone': 'Hấp dẫn, gây tò mò, viral',
-        'duration': '45-60s',
+        'duration': '~1 phút',
         'focus': 'Hook mạnh, nội dung ngắn gọn, dễ chia sẻ'
     },
     'A2': {
@@ -32,7 +32,7 @@ CONTENT_TEMPLATES = {
             'Ý nghĩa sản phẩm, dạy nghề kim hoàn'
         ],
         'tone': 'Chuyên nghiệp, giáo dục, dễ hiểu',
-        'duration': '45-60s',
+        'duration': '~1 phút',
         'focus': 'Giá trị kiến thức, lồng sản phẩm tự nhiên'
     },
     'A3': {
@@ -46,7 +46,7 @@ CONTENT_TEMPLATES = {
             'Tâm sự ngành, đọc comment tư vấn'
         ],
         'tone': 'Chân thành, gần gũi, đáng tin',
-        'duration': '45-60s',
+        'duration': '~1 phút',
         'focus': 'Câu chuyện thật, cảm xúc, tương tác'
     },
     'A4': {
@@ -60,7 +60,7 @@ CONTENT_TEMPLATES = {
             'Ngân sách X mua được gì? (combo, quà tặng)'
         ],
         'tone': 'Tư vấn, nhiệt tình, thuyết phục',
-        'duration': '45-60s',
+        'duration': '~1 phút',
         'focus': 'Sản phẩm cụ thể, giá cả, CTA rõ ràng'
     },
     'A5': {
@@ -70,7 +70,7 @@ CONTENT_TEMPLATES = {
             'Nội dung liên quan ngành + kiến thức + uy tín + sản phẩm'
         ],
         'tone': 'Linh hoạt, cân bằng các yếu tố',
-        'duration': '45-60s',
+        'duration': '~1 phút',
         'focus': 'Storytelling hoàn chỉnh từ hook đến CTA'
     }
 }
@@ -274,7 +274,7 @@ Bạn là trợ lý viết content chuyên nghiệp. Viết lại nội dung the
 
 # YÊU CẦU KỸ THUẬT
 - Plain text, KHÔNG JSON, KHÔNG Markdown, KHÔNG icon
-- Độ dài: 180-280 từ (< 350 từ cho TTS)
+- Độ dài: 100-150 từ (tầm 1 phút nói). TUYỆT ĐỐI không quá 180 từ. Ngắn gọn, súc tích.
 - **ĐOẠN VĂN LIỀN:** Chỉ 1 khối văn (hoặc tối đa 2 đoạn). KHÔNG tách từng câu xuống dòng. Các câu nối nhau trong cùng đoạn.
 - Có product_context → BẮT BUỘC lồng ghép tên + ý nghĩa sản phẩm, và ý nghĩa phải GẮN với tên/thiết kế (không chung chung)
 
@@ -310,6 +310,19 @@ Chỉ trả về 01 kịch bản – viết thành ĐOẠN VĂN LIỀN, không t
                 script = data.get('script', script)
             except:
                 pass
+
+        # Giới hạn ~1 phút nói (~120-150 từ, tối đa 180 từ)
+        MAX_WORDS = 180
+        words = script.split()
+        if len(words) > MAX_WORDS:
+            words = words[:MAX_WORDS]
+            # Cắt tại câu hoàn chỉnh (tìm dấu chấm gần nhất)
+            truncated = ' '.join(words)
+            last_period = truncated.rfind('.')
+            if last_period > len(truncated) * 0.5:  # Chỉ cắt nếu có câu hợp lý
+                script = truncated[:last_period + 1].strip()
+            else:
+                script = truncated
 
         word_count = len(script.split())
         
