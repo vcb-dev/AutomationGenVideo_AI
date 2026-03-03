@@ -46,10 +46,10 @@ class Command(BaseCommand):
         # Slot 6: Sản phẩm HT
         # Slot 7: Outtrol
         folder_mapping = {
-            "Sản phẩm": "\\\\VCB_MEDIA\\MEDIA VCB folder\\VIDEO Sản Phẩm\\Logo tag Việt Nam\\Nhẫn",
-            "HuyK": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\Source daily HuyK",
-            "Chế tác": "\\\\VCB_MEDIA\\MEDIA VCB folder\\CHẾ TÁC SẢN PHẨM (xưởng)\\Việt Nam\\Nhẫn",  # NEW: Single folder for Slot 3 & 5
-            "Sản phẩm HT": "\\\\VCB_MEDIA\\MEDIA VCB folder\\VIDEO Sản Phẩm\\Logo tag Việt Nam\\Nhẫn",
+            "Sản phẩm": "\\\\VCB_MEDIA\\MEDIA VCB folder\\Generate Video\\Video Sản Phẩm",
+            "HuyK": "\\\\VCB_MEDIA\\MEDIA VCB folder\\Generate Video\\Source HUYK\\Source chế tác sản phẩm",
+            "Chế tác": "\\\\VCB_MEDIA\\MEDIA VCB folder\\Generate Video\\Chế tác sản phẩm",
+            "Sản phẩm HT": "\\\\VCB_MEDIA\\MEDIA VCB folder\\Generate Video\\Video Sản Phẩm",
             "Outtrol": "\\\\VCB_MEDIA\\MEDIA VCB folder\\SOURCE HUYK\\OUTRO HUYK",
         }
         

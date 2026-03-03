@@ -32,6 +32,7 @@ from .views import (
     smart_mix,
     smart_mix_status,
     index_folders,
+    clear_index,
     index_outro,
     cache_stats,
     get_voices,
@@ -104,7 +105,8 @@ urlpatterns = [
     # Media fetch (bypass CORS; avoid "image-proxy" name which triggers ad blockers)
     path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),  # legacy
     path('media/', ImageProxyView.as_view(), name='media'),
-    
+
+
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     
     # OLD Mix endpoints (DEPRECATED - slow 2-3 min)
@@ -121,6 +123,7 @@ urlpatterns = [
     path('videos/smart-mix/', smart_mix, name='smart-mix'),
     path('videos/smart-mix/status/<str:progress_id>/', smart_mix_status, name='smart-mix-status'),
     path('videos/index-folders/', index_folders, name='index-folders'),
+    path('videos/clear-index/', clear_index, name='clear-index'),
     path('videos/index-manufacturing-folder/', index_manufacturing_folder, name='index-manufacturing-folder'),
     path('videos/index-outro/', index_outro, name='index-outro'),
     path('videos/cache-stats/', cache_stats, name='cache-stats'),

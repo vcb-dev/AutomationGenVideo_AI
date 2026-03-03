@@ -197,14 +197,14 @@ class SmartPreprocessingService:
     def scan_and_index_specific_sku(self, sku: str, folder_path: str) -> Optional[int]:
         """
         Real-time scan for a specific SKU in the products folder.
-        If found, indexes it immediately and returns the video ID.
+        Finds and indexes ALL matching videos (not just the first one).
         
         Args:
             sku: Product SKU to search for
             folder_path: Physical path to 'Sản phẩm' folder
             
         Returns:
-            Video ID if found and indexed, else None
+            First Video ID if found and indexed, else None
         """
         from video_management.models import IndexedVideo
         
@@ -215,59 +215,61 @@ class SmartPreprocessingService:
         logger.info(f"🕵️ Real-time scanning for SKU '{sku}' in {folder_path}...")
         
         sku_clean = sku.strip().lower()
-        found_path = None
+        found_videos = []
         
-        # Recursive scan: SKU có thể nằm trong tên file HOẶC tên thư mục (folder)
-        # VD: VIDEO Sản Phẩm/N101276/video.mp4 hoặc VIDEO Sản Phẩm/L000963_clip.mp4
+        # Recursive scan: Find ALL videos where SKU appears in path or filename
         for root, dirs, files in os.walk(folder_path):
             for file in files:
                 ext = os.path.splitext(file)[1].lower()
                 if ext in ALLOWED_EXTENSIONS:
                     full_path = os.path.join(root, file)
                     path_lower = full_path.lower()
-                    # Match: SKU trong filename hoặc trong đường dẫn (tên folder)
+                    # Match: SKU in filename or in folder path
                     if sku_clean in path_lower:
-                        found_path = full_path
-                        break
-            if found_path:
-                break
+                        found_videos.append(full_path)
         
-        if found_path:
-            logger.info(f"✅ Found video for SKU '{sku}': {found_path}")
+        if not found_videos:
+            logger.warning(f"❌ No video found for SKU '{sku}' in {folder_path}")
+            return None
             
-            # Index immediately
+        logger.info(f"✅ Found {len(found_videos)} videos for SKU '{sku}'")
+        
+        first_id = None
+        indexed_count = 0
+        
+        for found_path in found_videos:
             try:
                 db_path = self._normalize_path_for_db(found_path)
                 
-                # Double check if already exists
-                existing = IndexedVideo.objects.filter(file_path=db_path, folder_type="Sản phẩm").first()
-                if existing:
-                    return existing.id
-                
-                # Index new
+                # Index new video - use get_or_create to avoid duplicate key errors
+                # (both _auto_index_by_sku and scan_and_index_specific_sku may run in parallel)
                 metadata = self._get_video_metadata(found_path)
                 if metadata:
-                    video_obj = IndexedVideo.objects.create(
+                    video_obj, created = IndexedVideo.objects.get_or_create(
                         file_path=db_path,
                         folder_type="Sản phẩm",
-                        duration=metadata['duration'],
-                        file_size=metadata['size'],
-                        has_audio=metadata.get('has_audio', False),
-                        width=metadata.get('width'),
-                        height=metadata.get('height'),
-                        modified_time=timezone.make_aware(
-                             datetime.fromtimestamp(metadata['mtime']),
-                             timezone.get_default_timezone()
-                        ),
-                        is_available=True
+                        defaults={
+                            'duration': metadata['duration'],
+                            'file_size': metadata['size'],
+                            'has_audio': metadata.get('has_audio', False),
+                            'width': metadata.get('width'),
+                            'height': metadata.get('height'),
+                            'modified_time': timezone.make_aware(
+                                datetime.fromtimestamp(metadata['mtime']),
+                                timezone.get_default_timezone()
+                            ),
+                            'is_available': True
+                        }
                     )
-                    return video_obj.id
+                    if created:
+                        indexed_count += 1
+                    if first_id is None:
+                        first_id = video_obj.id
             except Exception as e:
                 logger.error(f"Failed to index found video {found_path}: {e}")
-                return None
-                
-        logger.warning(f"❌ No video found for SKU '{sku}' in manual scan")
-        return None
+        
+        logger.info(f"📊 SKU '{sku}': indexed {indexed_count} new videos, first_id={first_id}")
+        return first_id
         
     def find_folder_by_name(self, root_path: str, target_name: str, exact_match: bool = False, max_depth: int = 3) -> Optional[str]:
         """
@@ -355,32 +357,40 @@ class SmartPreprocessingService:
         return videos
     
     def _prepare_path_for_windows(self, path: str) -> str:
-        """Video path normalization for Windows long paths (MAX_PATH > 260)."""
+        """Video path normalization for Windows long paths (MAX_PATH > 260).
+        Also normalizes forward-slash UNC paths (//server/share) to backslash (\\server\share).
+        """
         if os.name != 'nt':
             return path
+        
+        # Normalize forward slashes to backslashes first
+        # //VCB_MEDIA/MEDIA VCB folder/... → \\VCB_MEDIA\MEDIA VCB folder\...
+        p = path.replace('/', '\\')
+        
+        # Already normalized with long-path prefix
+        if p.startswith('\\\\?\\'):
+            return p
             
-        # Already normalized
-        if path.startswith('\\\\?\\'):
-            return path
+        # Network path: \\server\share\... → \\?\UNC\server\share\...
+        if p.startswith('\\\\'):
+            return '\\\\?\\UNC' + p[1:]
             
-        # Network path: \\server\share\... -> \\?\UNC\server\share\...
-        if path.startswith(r'\\'):
-            return r'\\?\UNC' + path[1:]
-            
-        # Local path: C:\... -> \\?\C:\...
-        return r'\\?\{}'.format(path)
+        # Local path: C:\... → \\?\C:\...
+        return '\\\\?\\{}'.format(p)
     
     def _normalize_path_for_db(self, path: str) -> str:
         """Normalize path for consistent DB storage: always \\server\share or C:\\path"""
         if os.name != 'nt':
             return os.path.normpath(path)
         p = path
+        # Normalize forward-slash UNC: //server/share → \\server\share
+        p = p.replace('/', '\\')
         # IMPORTANT: Check longer prefix first! \\?\UNC\ must be before \\?\
-        if p.startswith(r'\\?\UNC\\'):
-            # \\?\UNC\server\share\path -> \\server\share\path
+        if p.startswith('\\\\?\\UNC\\'):
+            # \\?\UNC\server\share\path → \\server\share\path
             p = '\\\\' + p[8:]
         elif p.startswith('\\\\?\\'):
-            p = p[4:]  # \\?\C:\path -> C:\path
+            p = p[4:]  # \\?\C:\path → C:\path
         return os.path.normpath(p)
     
     def _resolve_path_for_access(self, path: str) -> str:
@@ -481,7 +491,10 @@ class SmartPreprocessingService:
             'has_audio': True
         }
     
-    def get_or_generate_clip(self, video_id: int, use_gpu: bool = None, duration: float = None) -> Optional[str]:
+    def get_or_generate_clip(
+        self, video_id: int, use_gpu: bool = None, duration: float = None,
+        keep_original_audio: bool = False
+    ) -> Optional[str]:
         """
         Get cached clip or generate new one (Lazy Loading).
         
@@ -504,27 +517,28 @@ class SmartPreprocessingService:
             return None
         
         # Check cache
-        cached_clips = VideoClipCache.objects.filter(
-            source_video=video
-        ).order_by('-access_count', '-last_accessed_at')
-        
-        if cached_clips.exists():
-            clip = cached_clips.first()
-            if os.path.isfile(clip.clip_path):
-                # Cache hit!
-                clip.access_count += 1
-                clip.save(update_fields=['access_count', 'last_accessed_at'])
-                logger.info(f"✅ Cache HIT: {clip.clip_path}")
-                return clip.clip_path
-            else:
-                # Clip file missing, delete cache entry
+        # Outro (keep_original_audio=True): skip cache - pre-gen clips have re-encoded audio
+        if not keep_original_audio:
+            cached_clips = VideoClipCache.objects.filter(
+                source_video=video
+            ).order_by('-access_count', '-last_accessed_at')
+            if cached_clips.exists():
+                clip = cached_clips.first()
+                if os.path.isfile(clip.clip_path):
+                    clip.access_count += 1
+                    clip.save(update_fields=['access_count', 'last_accessed_at'])
+                    logger.info(f"✅ Cache HIT: {clip.clip_path}")
+                    return clip.clip_path
                 clip.delete()
         
         # Cache miss - generate clip
         logger.info(f"⚠️ Cache MISS: Generating clip from {video.file_path}")
-        return self._generate_clip(video, use_gpu, duration)
+        return self._generate_clip(video, use_gpu, duration, keep_original_audio=keep_original_audio)
     
-    def _generate_clip(self, video, use_gpu: bool = None, clip_duration: float = None) -> Optional[str]:
+    def _generate_clip(
+        self, video, use_gpu: bool = None, clip_duration: float = None,
+        keep_original_audio: bool = False
+    ) -> Optional[str]:
         """
         Generate a short clip from video with GPU acceleration if available.
         
@@ -580,7 +594,7 @@ class SmartPreprocessingService:
         if is_network_file:
             return self._generate_clip_two_pass(
                 video, resolved_path, start_time, clip_duration,
-                clip_path, use_gpu
+                clip_path, use_gpu, keep_original_audio=keep_original_audio
             )
         
         # ═══════════════════════════════════════════════════════════════════
@@ -588,12 +602,13 @@ class SmartPreprocessingService:
         # ═══════════════════════════════════════════════════════════════════
         return self._generate_clip_single_pass(
             video, resolved_path, start_time, clip_duration,
-            clip_path, use_gpu
+            clip_path, use_gpu, keep_original_audio=keep_original_audio
         )
 
     def _generate_clip_two_pass(
         self, video, resolved_path: str, start_time: float,
-        clip_duration: float, clip_path: str, use_gpu: bool
+        clip_duration: float, clip_path: str, use_gpu: bool,
+        keep_original_audio: bool = False
     ) -> Optional[str]:
         """
         TWO-PASS clip generation for NETWORK files.
@@ -642,7 +657,7 @@ class SmartPreprocessingService:
                 logger.info("🔄 Fallback to single-pass (direct encode from NAS)...")
                 return self._generate_clip_single_pass(
                     video, resolved_path, start_time, clip_duration,
-                    clip_path, use_gpu
+                    clip_path, use_gpu, keep_original_audio=keep_original_audio
                 )
             
             logger.info(f"✅ [PASS 1] Raw extracted in {pass1_time:.1f}s → {os.path.getsize(temp_raw)/1024/1024:.1f}MB")
@@ -678,13 +693,13 @@ class SmartPreprocessingService:
                     '-pix_fmt', 'yuv420p',
                 ])
             
-            cmd_encode.extend([
-                '-c:a', 'aac',
-                '-ar', '44100',
-                '-ac', '2',
-                '-y',
-                clip_path
-            ])
+            if keep_original_audio:
+                cmd_encode.extend(['-c:a', 'copy', '-y', clip_path])
+            else:
+                cmd_encode.extend([
+                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+                    '-y', clip_path
+                ])
             
             t2 = time.time()
             result2 = subprocess.run(
@@ -699,15 +714,16 @@ class SmartPreprocessingService:
             if result2.returncode != 0 and use_gpu:
                 logger.warning(f"⚠️ GPU encode failed, retrying with CPU...")
                 cmd_encode_cpu = [
-                    self.ffmpeg_path,
-                    '-i', temp_raw,
-                    '-t', str(clip_duration),
+                    self.ffmpeg_path, '-i', temp_raw, '-t', str(clip_duration),
                     '-vf', 'fps=30,scale=540:960',
                     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
                     '-pix_fmt', 'yuv420p',
-                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
-                    '-y', clip_path
                 ]
+                cmd_encode_cpu.extend(
+                    ['-c:a', 'copy'] if keep_original_audio
+                    else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+                )
+                cmd_encode_cpu.extend(['-y', clip_path])
                 t2 = time.time()
                 result2 = subprocess.run(
                     cmd_encode_cpu,
@@ -760,7 +776,7 @@ class SmartPreprocessingService:
             # Fallback: encode directly from NAS (slower but works)
             return self._generate_clip_single_pass(
                 video, resolved_path, start_time, clip_duration,
-                clip_path, use_gpu
+                clip_path, use_gpu, keep_original_audio=keep_original_audio
             )
         except Exception as e:
             logger.error(f"❌ Two-pass generation failed: {e} → fallback to single-pass")
@@ -775,7 +791,8 @@ class SmartPreprocessingService:
 
     def _generate_clip_single_pass(
         self, video, resolved_path: str, start_time: float,
-        clip_duration: float, clip_path: str, use_gpu: bool
+        clip_duration: float, clip_path: str, use_gpu: bool,
+        keep_original_audio: bool = False
     ) -> Optional[str]:
         """Single-pass clip generation for LOCAL files (or fallback)."""
         from video_management.models import VideoClipCache
@@ -811,13 +828,11 @@ class SmartPreprocessingService:
                 '-pix_fmt', 'yuv420p',
             ])
         
-        cmd.extend([
-            '-c:a', 'aac',
-            '-ar', '44100',
-            '-ac', '2',
-            '-y',
-            clip_path
-        ])
+        cmd.extend(
+            ['-c:a', 'copy'] if keep_original_audio
+            else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+        )
+        cmd.extend(['-y', clip_path])
         
         try:
             start = time.time()
@@ -843,9 +858,12 @@ class SmartPreprocessingService:
                     '-vf', 'fps=30,scale=540:960',
                     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
                     '-pix_fmt', 'yuv420p',
-                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
-                    '-y', clip_path
                 ]
+                cmd_cpu.extend(
+                    ['-c:a', 'copy'] if keep_original_audio
+                    else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+                )
+                cmd_cpu.extend(['-y', clip_path])
                 start = time.time()
                 result = subprocess.run(
                     cmd_cpu,

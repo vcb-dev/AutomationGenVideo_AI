@@ -242,6 +242,24 @@ class SearchView(APIView):
                 if isinstance(item.get('published_at'), (datetime,)):
                     item['published_at'] = item['published_at'].isoformat()
             
+            # Gắn DB id (integer primary key) vào mỗi result để FE dùng cho GenerateContentButton
+            # save_to_db=True đã lưu ở execute_search (page=1), nên có thể query DB theo video_id
+            try:
+                video_ids = [item.get('video_id') for item in results_data if item.get('video_id')]
+                if video_ids:
+                    db_map = {
+                        v.video_id: v.id
+                        for v in ScrapedVideo.objects.filter(video_id__in=video_ids).only('id', 'video_id')
+                    }
+                    for item in results_data:
+                        vid = item.get('video_id', '')
+                        if vid in db_map:
+                            item['id'] = db_map[vid]
+                        elif not item.get('id'):
+                            item['id'] = 0
+            except Exception as _e:
+                logger.warning(f"Could not enrich results with DB id: {_e}")
+
             response_data = {
                 'success': True,
                 'cached': result.get('cached', False),

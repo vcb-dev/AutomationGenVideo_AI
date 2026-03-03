@@ -26,6 +26,12 @@ class VideoManagementConfig(AppConfig):
             time.sleep(5)  # Wait for Django to fully initialize
 
             try:
+                # Check DB tables exist before querying (avoid error on fresh DB / pending migrations)
+                from django.db import connection
+                existing_tables = connection.introspection.table_names()
+                if 'video_management_indexedvideo' not in existing_tables:
+                    return  # Tables not yet created, skip silently
+
                 from video_management.models import IndexedVideo, VideoClipCache
 
                 indexed_count = IndexedVideo.objects.filter(is_available=True).count()
@@ -48,7 +54,7 @@ class VideoManagementConfig(AppConfig):
                     start_background_pregen(clip_duration=12.0)
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).error(f"Auto-resume pregen error: {e}")
+                logging.getLogger(__name__).debug(f"Auto-resume pregen skipped: {e}")
 
         # Start in daemon thread so it doesn't block server startup
         thread = threading.Thread(target=_auto_resume_pregen, daemon=True, name="auto_pregen")

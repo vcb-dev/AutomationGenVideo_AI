@@ -6,6 +6,7 @@ Real-time search without database persistence.
 """
 
 import logging
+import random
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -47,7 +48,7 @@ def search_douyin_videos(request):
         search_term = request.data.get('searchTerm', '').strip()
         search_type = request.data.get('searchType', 'keyword')
         max_posts = int(request.data.get('maxPosts', 6))
-        sort_by = request.data.get('sortBy', 'general')
+        sort_by = request.data.get('sortBy') or 'most_liked'
         publish_time = request.data.get('publishTime', 'all')
         
         # Validation
@@ -75,12 +76,9 @@ def search_douyin_videos(request):
                 'error': 'publishTime must be "all", "last_day", "last_week", or "last_half_year"'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Limit max_posts to reasonable value
-        if max_posts > 100:
-            max_posts = 100
-        elif max_posts < 1:
-            max_posts = 50
-        
+        # Bỏ qua max_posts từ request — luôn dùng 10 (giới hạn Apify)
+        max_posts = 10
+
         logger.info(
             f"Douyin search request - Term: {search_term}, "
             f"Type: {search_type}, Max: {max_posts}"
@@ -89,16 +87,30 @@ def search_douyin_videos(request):
         # Initialize scraper
         scraper = DouyinScraperService()
         
-        # Search videos
+        fetch_limit = 10
+        sort_by = sort_by or 'most_liked'
+
         videos = scraper.search_videos(
             search_term=search_term,
             search_type=search_type,
-            max_posts=max_posts,
+            max_posts=fetch_limit,
             sort_by=sort_by,
             publish_time=publish_time
         )
         
-        logger.info(f"Successfully retrieved {len(videos)} Douyin videos")
+        # Filter viral: 500+ likes hoặc 50+ comments
+        VIRAL_MIN_LIKES = 500
+        VIRAL_MIN_COMMENTS = 50
+        viral = [
+            v for v in videos
+            if (v.get('likes_count') is not None and v.get('likes_count', 0) >= VIRAL_MIN_LIKES)
+            or (v.get('comments_count') or 0) >= VIRAL_MIN_COMMENTS
+        ]
+        videos = viral if viral else videos
+        videos = videos[:10]
+        random.shuffle(videos)
+
+        logger.info(f"Successfully retrieved {len(videos)} Douyin videos (max 10, viral filter, shuffled)")
         
         return Response({
             'success': True,

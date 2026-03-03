@@ -174,6 +174,66 @@ def index_folders(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+@api_view(['POST'])
+def clear_index(request):
+    """
+    Xóa toàn bộ indexed videos và clip cache (reset để re-index từ đầu).
+    POST /api/videos/clear-index/
+    Body (optional): { "folder_types": ["Sản phẩm", "HuyK"] } để chỉ xóa một số folder_type.
+    """
+    try:
+        folder_types = request.data.get('folder_types', None)  # None = xóa tất cả
+        clear_clips = request.data.get('clear_clips', True)    # Xóa cả clip cache
+        
+        from django.db import transaction
+        
+        with transaction.atomic():
+            if folder_types:
+                # Chỉ xóa các folder_type chỉ định
+                deleted_videos = IndexedVideo.objects.filter(folder_type__in=folder_types).count()
+                IndexedVideo.objects.filter(folder_type__in=folder_types).delete()
+                
+                if clear_clips:
+                    # Xóa clip cache liên quan (không có FK nên phải xóa hết)
+                    deleted_clips = VideoClipCache.objects.count()
+                    VideoClipCache.objects.all().delete()
+                else:
+                    deleted_clips = 0
+                    
+                msg = f"Xóa {deleted_videos} videos (folder: {folder_types})"
+            else:
+                # Xóa TẤT CẢ
+                deleted_videos = IndexedVideo.objects.count()
+                IndexedVideo.objects.all().delete()
+                
+                if clear_clips:
+                    deleted_clips = VideoClipCache.objects.count()
+                    VideoClipCache.objects.all().delete()
+                else:
+                    deleted_clips = 0
+                    
+                msg = f"Xóa toàn bộ {deleted_videos} indexed videos"
+        
+        if clear_clips:
+            msg += f" + {deleted_clips} cached clips"
+        
+        logger.info(f"🗑️ Clear index: {msg}")
+        
+        return Response({
+            'success': True,
+            'message': msg,
+            'deleted_videos': deleted_videos,
+            'deleted_clips': deleted_clips if clear_clips else 0,
+        })
+    
+    except Exception as e:
+        logger.error(f"Clear index error: {e}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
 @api_view(['GET'])
 def pregen_status(request):
     """
@@ -193,6 +253,7 @@ def pregen_status(request):
     """
     from video_management.services.smart_preprocessing_service import get_pregen_progress
     return Response(get_pregen_progress())
+
 
 
 @api_view(['POST'])
@@ -351,17 +412,74 @@ def get_voices(request):
 # 3. Merge: ffmpeg concat for multi-chunk audio → ~2-3x faster than sequential
 # ============================================================================
 
+def _preprocess_script_for_tts(script: str) -> str:
+    """
+    Tiền xử lý script trước khi gửi TTS để voice tự nhiên hơn.
+    
+    Cải thiện:
+    1. Thêm dấu phẩy sau các từ nối dài → giúp TTS nghỉ hơi đúng chỗ
+    2. Ba chấm (...) → dấu chấm + khoảng nghỉ
+    3. Xử lý từ viết tắt/số để TTS đọc tốt hơn
+    4. Loại bỏ ký tự đặc biệt gây lỗi TTS
+    """
+    if not script:
+        return script
+    
+    text = script.strip()
+    
+    # 1. Ba chấm → dấu chấm (TTS đọc ba chấm hay bị nuốt)
+    text = re.sub(r'\.{3,}', '.', text)
+    
+    # 2. Thêm dấu phẩy sau các từ/cụm từ nối dài nếu CHƯA có dấu câu theo sau
+    # Giúp TTS biết chỗ nghỉ hơi
+    pause_words = [
+        'Thật lòng mà nói', 'Để anh chị hiểu', 'Nói thật',
+        'Thật ra', 'Thực ra', 'Nói chung', 'Tóm lại',
+        'Ý là', 'Có nghĩa là', 'Đặc biệt', 'Quan trọng là',
+        'Đầu tiên', 'Tiếp theo', 'Cuối cùng', 'Ngoài ra',
+        'Tuy nhiên', 'Nhưng mà', 'Thế nhưng', 'Vì vậy',
+        'Cho nên', 'Bởi vì', 'Do đó', 'Nhờ vậy',
+    ]
+    for pw in pause_words:
+        # Thêm dấu phẩy sau cụm từ nối nếu chưa có dấu câu theo sau
+        text = re.sub(
+            rf'({re.escape(pw)})(\s+)(?![,\.\!\?])',
+            rf'\1,\2',
+            text,
+            flags=re.IGNORECASE
+        )
+    
+    # 3. Số tiền/số lượng → thêm dấu phẩy phía sau nếu thiếu
+    # "100tr " → "100tr, " (giúp TTS ngắt)
+    text = re.sub(r'(\d+(?:tr|k|m|tỷ|triệu|nghìn|ngàn))\s+(?=[A-ZĐÀÁẠÂa-z])', r'\1, ', text)
+    
+    # 4. Chất liệu / thuật ngữ: thêm dấu phẩy sau cụm liệt kê
+    # "Bạc S925 lành tính" → OK (đã có context)
+    
+    # 5. Loại bỏ icon/emoji nếu còn sót
+    text = re.sub(r'[^\w\s\.,;:!?\-\'\"\(\)…–—/]', '', text)
+    
+    # 6. Nhiều dấu cách → 1 dấu cách
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # 7. Đảm bảo có dấu chấm cuối
+    if text and text[-1] not in '.!?':
+        text += '.'
+    
+    return text
+
+
 def _split_script_into_chunks(script: str, max_chars: int = 500) -> List[str]:
     """
-    Split script into chunks at sentence boundaries.
-    Each chunk stays under max_chars to speed up HeyGen API processing.
-    Short scripts (< max_chars) are returned as-is.
+    Split script into chunks at NATURAL sentence boundaries.
+    Ưu tiên cắt tại: dấu chấm > dấu chấm phẩy > dấu phẩy.
+    KHÔNG BAO GIỜ cắt giữa từ.
     """
     if len(script) <= max_chars:
         return [script]
 
-    # Split by Vietnamese/English sentence endings
-    sentences = re.split(r'(?<=[.!?。！？\n])\s*', script)
+    # Split by sentence endings (dấu chấm, chấm hỏi, chấm than)
+    sentences = re.split(r'(?<=[.!?。！？])\s+', script)
 
     chunks = []
     current_chunk = ""
@@ -369,8 +487,18 @@ def _split_script_into_chunks(script: str, max_chars: int = 500) -> List[str]:
     for sentence in sentences:
         if not sentence.strip():
             continue
-        # If adding this sentence would exceed max_chars, start a new chunk
-        if len(current_chunk) + len(sentence) > max_chars and current_chunk:
+        
+        # Nếu 1 câu đã quá dài → chia thêm tại dấu phẩy/chấm phẩy
+        if len(sentence) > max_chars:
+            # Chia câu dài tại dấu phẩy
+            sub_parts = re.split(r'(?<=[,;])\s+', sentence)
+            for part in sub_parts:
+                if len(current_chunk) + len(part) > max_chars and current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = part
+                else:
+                    current_chunk += (" " if current_chunk else "") + part
+        elif len(current_chunk) + len(sentence) > max_chars and current_chunk:
             chunks.append(current_chunk.strip())
             current_chunk = sentence
         else:
@@ -380,6 +508,8 @@ def _split_script_into_chunks(script: str, max_chars: int = 500) -> List[str]:
         chunks.append(current_chunk.strip())
 
     return chunks if chunks else [script]
+
+
 
 
 def _call_heygen_tts_chunk(chunk_text: str, voice_id: str, api_key: str, chunk_idx: int) -> Dict:
@@ -440,19 +570,44 @@ def _download_audio_file(url: str, output_path: str) -> bool:
     return False
 
 
+def _get_ffmpeg_exe() -> str:
+    """
+    Tìm đường dẫn ffmpeg:
+    1. Thử 'ffmpeg' trong PATH
+    2. Fallback sang imageio_ffmpeg (bundled với project)
+    """
+    import shutil
+    ffmpeg_in_path = shutil.which('ffmpeg')
+    if ffmpeg_in_path:
+        return ffmpeg_in_path
+    
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        pass
+    
+    raise FileNotFoundError(
+        "ffmpeg không tìm thấy! Hãy cài ffmpeg hoặc thêm vào PATH.\n"
+        "Download: https://ffmpeg.org/download.html"
+    )
+
+
 def _merge_audio_files(audio_paths: List[str], output_path: str) -> bool:
     """Merge multiple audio files using ffmpeg concat demuxer."""
     try:
-        # Create concat list file
+        ffmpeg_exe = _get_ffmpeg_exe()
+        logger.info(f"🔧 Using ffmpeg: {ffmpeg_exe}")
+
+        # Create concat list file (dùng forward slashes cho ffmpeg)
         list_path = output_path + '.concat.txt'
         with open(list_path, 'w', encoding='utf-8') as f:
             for path in audio_paths:
-                # ffmpeg requires forward slashes or escaped backslashes
                 safe_path = path.replace('\\', '/')
                 f.write(f"file '{safe_path}'\n")
 
         cmd = [
-            'ffmpeg', '-y',
+            ffmpeg_exe, '-y',
             '-f', 'concat',
             '-safe', '0',
             '-i', list_path,
@@ -476,6 +631,8 @@ def _merge_audio_files(audio_paths: List[str], output_path: str) -> bool:
     except Exception as e:
         logger.error(f"Merge audio error: {e}")
         return False
+
+
 
 
 @api_view(['POST'])
@@ -548,6 +705,9 @@ def generate_audio_from_script(request):
                 {'error': 'HeyGen API key not configured'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        # ── STEP 2.5: Preprocess script cho TTS tự nhiên ────────────────────
+        script = _preprocess_script_for_tts(script)
+        logger.info(f"📝 After TTS preprocessing: {len(script)} chars")
         
         # Split script into chunks for parallel processing
         chunks = _split_script_into_chunks(script, max_chars=500)
@@ -563,8 +723,17 @@ def generate_audio_from_script(request):
             result = _call_heygen_tts_chunk(chunks[0], voice.voice_id, heygen_api_key, 0)
             
             if 'error' in result:
+                err = result['error']
+                # Auto-remove invalid voice when HeyGen returns "Voice not found"
+                if 'Voice not found' in err:
+                    Voice.objects.filter(voice_id=voice.voice_id).delete()
+                    logger.warning(f"Removed invalid voice from DB: {voice.voice_id}")
+                    err = (
+                        "Voice not found on HeyGen. Invalid voice removed. "
+                        "Refresh page and select another voice (e.g. HuyK)."
+                    )
                 return Response(
-                    {'error': result['error']},
+                    {'error': err},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
@@ -605,9 +774,19 @@ def generate_audio_from_script(request):
             errors = [r for r in chunk_results if r and 'error' in r]
             if errors:
                 error_msg = "; ".join([e['error'] for e in errors[:3]])
+                # Auto-remove invalid voice when HeyGen returns "Voice not found"
+                if 'Voice not found' in error_msg:
+                    Voice.objects.filter(voice_id=voice.voice_id).delete()
+                    logger.warning(f"Removed invalid voice from DB: {voice.voice_id}")
+                    error_msg = (
+                        "Voice not found on HeyGen. Invalid voice removed. "
+                        "Refresh page and select another voice (e.g. HuyK)."
+                    )
+                else:
+                    error_msg = f'Audio generation partially failed: {error_msg}'
                 logger.error(f"❌ {len(errors)}/{num_chunks} chunks failed: {error_msg}")
                 return Response(
-                    {'error': f'Audio generation partially failed: {error_msg}'},
+                    {'error': error_msg},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
@@ -941,26 +1120,19 @@ def _run_smart_mix_task(
 
         # -------------------------------------------------------------
         # AUTO-INDEX BY SKU (First Priority)
+        # Xóa Sản phẩm/Chế tác cũ rồi index theo SKU → chỉ video của sản phẩm đang chọn
         # -------------------------------------------------------------   
         sku_found = False
         if product_sku:
-             # Try to find folder with SKU name
-             sku_found = _auto_index_by_sku(service, product_sku)
+             result = _auto_index_by_sku_global(service, product_sku, product_category)
+             sku_found = bool(result)
              
         # -------------------------------------------------------------
         # AUTO-INDEX CATEGORY FOLDER (Fallback if SKU not found)
+        # Chế tác không fallback folder tổng — chỉ index theo mã SKU.
         # -------------------------------------------------------------
         if not sku_found and product_category:
             _auto_index_category_folder(service, product_category)
-            
-            # ALSO AUTO-INDEX MANUFACTURING FOLDERS (Chế tác)
-            # This will scan "CHẾ TÁC SẢN PHẨM (xưởng)\Việt Nam\<Category>" and index videos
-            try:
-                logger.info(f"🔧 Auto-indexing manufacturing folders for category: '{product_category}'")
-                if product_category:
-                    _auto_index_manufacturing_folders(service, product_category, product_sku)
-            except Exception as e:
-                logger.error(f"❌ Error auto-indexing manufacturing folders: {e}", exc_info=True)
         
         # Calculate flexible slot duration for A4 (slot 1-6 share audio duration)
         slot_duration = audio_duration / 6 if use_a4_formula else None
@@ -1028,11 +1200,25 @@ def _run_smart_mix_task(
                 raise ValueError(f"Not enough videos indexed. Only {available_count} folder(s) have videos. Need at least 5!")
         
         # ── PHASE 1: Chọn videos cho tất cả outputs ──────────────────────────
+        # globally_used: track video đã dùng theo từng folder_type giữa các outputs
+        # → đảm bảo 5 outputs khác nhau (đặc biệt slot Sản phẩm)
         _update_progress(progress_id, 12, "Selecting videos for all outputs...")
         all_selections = []
+        globally_used = {}  # { folder_type: set(video_ids) }
+        
         for i in range(num_outputs):
             if use_a4_formula:
-                sel = _get_a4_formula_videos(service, slot_duration, product_category=product_category)
+                sel = _get_a4_formula_videos(
+                    service, slot_duration,
+                    product_category=product_category,
+                    product_sku=product_sku,
+                    globally_used=globally_used
+                )
+                # Cập nhật globally_used sau mỗi output
+                for j, slot in enumerate(A4_FORMULA):
+                    ft = slot['folder_type']
+                    if j < len(sel) and sel[j] is not None:
+                        globally_used.setdefault(ft, set()).add(sel[j])
                 logger.info(f"Output {i+1}: A4 V3 formula selected ({len(sel)} slots)")
             else:
                 vd = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
@@ -1196,6 +1382,23 @@ def _generate_one_mix(
     - Slot 7 (Outro): Use original duration + original audio
     """
     
+    # Validate forced product video (có thể đã bị xóa khi clear index hoặc không còn available)
+    if forced_product_video_id:
+        try:
+            exists = IndexedVideo.objects.filter(
+                id=forced_product_video_id,
+                is_available=True
+            ).exists()
+        except Exception:
+            exists = False
+
+        if not exists:
+            logger.warning(
+                f"⚠️ Forced product video ID {forced_product_video_id} not found or unavailable. "
+                f"Ignoring forced selection for this mix."
+            )
+            forced_product_video_id = None
+
     logger.info(f"Output {output_index}: Target duration = {audio_duration}s" + 
                 (f", Slot duration = {slot_duration:.2f}s" if slot_duration else ""))
     
@@ -1257,8 +1460,10 @@ def _generate_one_mix(
         
         # ===== USE ANTI-FREEZE HELPER =====
         if is_outro:
-            # Outro: Generate normally (keep original duration)
-            clip_path = service.get_or_generate_clip(video_id, use_gpu, duration=clip_duration)
+            # Outro: Giữ nguyên âm thanh gốc (không re-encode audio)
+            clip_path = service.get_or_generate_clip(
+                video_id, use_gpu, duration=clip_duration, keep_original_audio=True
+            )
         else:
             # Use auto-fill helper to prevent freeze
             fill_output = os.path.join(output_dir, f"filled_{output_index}_{i}.mp4")
@@ -1878,81 +2083,70 @@ def _get_media_duration(file_path: str) -> Optional[float]:
 def _get_a4_formula_videos(
     service, 
     slot_duration, 
-    product_category: Optional[str] = None
+    product_category: Optional[str] = None,
+    product_sku: Optional[str] = None,
+    globally_used: Optional[Dict[str, set]] = None
 ):
     """
     Get videos for A4 Formula V3 (flexible duration, 7 simple slots).
     
-    CRITICAL: ALL 7 SLOTS MUST HAVE VIDEOS!
-    All slots are simple fullscreen videos (NO SPLIT LAYOUTS)
+    DEDUP LOGIC:
+    1. Trong 1 video: HuyK slot2 ≠ HuyK slot4, Chế tác slot3 ≠ Chế tác slot5
+       (tracked with locally_used per folder_type)
+    2. Giữa các outputs: ưu tiên video CHƯA DÙNG ở outputs trước (globally_used)
+       Đặc biệt ưu tiên slot Sản phẩm khác nhau giữa 5 outputs
+    3. Fallback: nếu hết video mới → cho phép dùng lại (tránh crash)
     
     Args:
         service: SmartPreprocessingService instance
         slot_duration: Duration for flexible slots (1-6)
         product_category: Optional string to filter videos in "Sản phẩm" folders
+        globally_used: Dict { folder_type: set(video_ids) } đã dùng ở các outputs trước
     
     Returns:
-        List of video IDs (integers)
+        List of video IDs (integers) — 7 slots
     """
     from video_management.models import IndexedVideo
     import random
     from django.db.models import Q
     
+    if globally_used is None:
+        globally_used = {}
+    
     selected_videos = []
     missing_slots = []
+    
+    # Track video đã chọn TRONG output này theo folder_type
+    # → đảm bảo HuyK slot2 ≠ slot4, Chế tác slot3 ≠ slot5
+    locally_used = {}  # { folder_type: set(video_ids) }
     
     for i, slot in enumerate(A4_FORMULA, start=1):
         folder_type = slot.get('folder_type')
         is_flexible = slot.get('flexible', False)
         required_duration = slot_duration if is_flexible else slot.get('duration', 3)
         
-        # Helper function to get random video với optional category filtering
-        # KHÔNG filter theo duration - auto-fill sẽ concat nếu video ngắn hơn required_duration
-        def get_random_video_id(f_type, duration):
-            base_query = Q(folder_type=f_type, is_available=True)
-            
-            # Apply category filtering cho các folder liên quan đến sản phẩm
-            if product_category and f_type in ["Sản phẩm", "Sản phẩm HT", "Chế tác"]:
-                # Ưu tiên video có category trong path
-                filtered_videos = IndexedVideo.objects.filter(
-                    base_query & Q(file_path__icontains=product_category)
-                ).values_list('id', flat=True)
-                
-                if filtered_videos.exists():
-                    logger.info(f"  🔍 Filtered '{f_type}' by '{product_category}' -> {len(filtered_videos)} videos")
-                    return random.choice(list(filtered_videos))
-                else:
-                    logger.warning(f"  ⚠️ No '{product_category}' videos in '{f_type}', dùng tất cả videos")
-            
-            # Lấy tất cả video trong folder (không filter duration)
-            # Ưu tiên video đủ dài trước, nếu không có thì lấy bất kỳ
-            videos_ok = IndexedVideo.objects.filter(
-                base_query & Q(duration__gte=duration)
-            ).values_list('id', flat=True)
-            
-            if videos_ok.exists():
-                return random.choice(list(videos_ok))
-            
-            # Fallback: lấy video bất kỳ (dù ngắn hơn yêu cầu - auto-fill sẽ xử lý)
-            videos_any = IndexedVideo.objects.filter(base_query).values_list('id', flat=True)
-            if videos_any.exists():
-                logger.warning(
-                    f"  ⚠️ '{f_type}': Không có video >= {duration:.1f}s, "
-                    f"dùng video ngắn hơn (auto-fill sẽ ghép thêm)"
-                )
-                return random.choice(list(videos_any))
-            
-            return None
-
-        # A4 V3: All slots are simple videos
-        video_id = get_random_video_id(folder_type, required_duration)
+        # Tập hợp video cần TRÁNH:
+        # - locally_used: video đã chọn trong cùng output (tránh HuyK slot2 == slot4)
+        # - globally_used: video đã chọn ở outputs trước (tránh 5 outputs giống nhau)
+        local_exclude = locally_used.get(folder_type, set())
+        global_exclude = globally_used.get(folder_type, set())
+        all_exclude = local_exclude | global_exclude
+        
+        video_id = _pick_video_for_slot(
+            folder_type=folder_type,
+            required_duration=required_duration,
+            product_category=product_category,
+            product_sku=product_sku,
+            exclude_ids=all_exclude,
+            fallback_exclude_ids=local_exclude,  # Ít nhất tránh trùng TRONG output
+        )
         
         if video_id:
             selected_videos.append(video_id)
+            locally_used.setdefault(folder_type, set()).add(video_id)
             
-            # Mark Outro as special
             if slot.get('use_original_audio'):
-                logger.info(f"✅ A4 Slot {i}/7: {folder_type} (OUTRO, original audio) → Video {video_id}")
+                logger.info(f"✅ A4 Slot {i}/7: {folder_type} (OUTRO) → Video {video_id}")
             else:
                 logger.info(f"✅ A4 Slot {i}/7: {folder_type} ({required_duration:.2f}s) → Video {video_id}")
         else:
@@ -1970,10 +2164,100 @@ def _get_a4_formula_videos(
     return selected_videos
 
 
+def _pick_video_for_slot(
+    folder_type: str,
+    required_duration: float,
+    product_category: Optional[str] = None,
+    product_sku: Optional[str] = None,
+    exclude_ids: Optional[set] = None,
+    fallback_exclude_ids: Optional[set] = None,
+):
+    """
+    Chọn 1 video cho 1 slot, ưu tiên:
+    1. Video khớp category + chưa dùng (exclude_ids) + duration đủ dài
+    2. Video khớp category + chưa dùng (exclude_ids) + bất kỳ duration
+    3. Video bất kỳ + chưa dùng (exclude_ids) + duration đủ dài
+    4. Video bất kỳ + chưa dùng (fallback_exclude_ids) — chỉ tránh trùng trong output
+    5. Video bất kỳ — cho phép dùng lại (tránh crash)
+    
+    Returns: video_id (int) hoặc None
+    """
+    from video_management.models import IndexedVideo
+    import random
+    from django.db.models import Q
+    
+    if exclude_ids is None:
+        exclude_ids = set()
+    if fallback_exclude_ids is None:
+        fallback_exclude_ids = set()
+    
+    base_query = Q(folder_type=folder_type, is_available=True)
+    
+    def _pick_from_qs(qs):
+        """Random pick từ QuerySet, trả None nếu rỗng."""
+        ids = list(qs.values_list('id', flat=True))
+        return random.choice(ids) if ids else None
+    
+    # ── LEVEL 1: product_sku (ưu tiên) hoặc product_category cho Sản phẩm, Sản phẩm HT, Chế tác ──
+    path_filter = None
+    if product_sku and folder_type in ["Sản phẩm", "Sản phẩm HT", "Chế tác"]:
+        # Lọc theo SKU trong đường dẫn: chỉ dùng video của sản phẩm đã chọn
+        sku_safe = product_sku.strip().replace("\\", "/")
+        path_filter = Q(file_path__icontains=sku_safe)
+    elif product_category and folder_type in ["Sản phẩm", "Sản phẩm HT", "Chế tác"]:
+        path_filter = Q(file_path__icontains=product_category)
+
+    if path_filter:
+        qs = IndexedVideo.objects.filter(
+            base_query & path_filter & Q(duration__gte=required_duration)
+        ).exclude(id__in=exclude_ids)
+        vid = _pick_from_qs(qs)
+        if vid:
+            return vid
+
+        qs = IndexedVideo.objects.filter(
+            base_query & path_filter
+        ).exclude(id__in=exclude_ids)
+        vid = _pick_from_qs(qs)
+        if vid:
+            return vid
+    
+    # ── LEVEL 2: Không filter category + exclude_ids + đủ dài ──
+    qs = IndexedVideo.objects.filter(
+        base_query & Q(duration__gte=required_duration)
+    ).exclude(id__in=exclude_ids)
+    vid = _pick_from_qs(qs)
+    if vid:
+        return vid
+    
+    # ── LEVEL 3: exclude_ids + bất kỳ duration ──
+    qs = IndexedVideo.objects.filter(base_query).exclude(id__in=exclude_ids)
+    vid = _pick_from_qs(qs)
+    if vid:
+        return vid
+    
+    # ── LEVEL 4: Chỉ tránh trùng TRONG output (fallback_exclude_ids) ──
+    if fallback_exclude_ids != exclude_ids:
+        qs = IndexedVideo.objects.filter(base_query).exclude(id__in=fallback_exclude_ids)
+        vid = _pick_from_qs(qs)
+        if vid:
+            logger.warning(f"  ⚠️ '{folder_type}': Hết video mới giữa outputs, dùng lại (chỉ tránh trùng trong output)")
+            return vid
+    
+    # ── LEVEL 5: Cho phép dùng lại tất cả (ultimate fallback) ──
+    qs = IndexedVideo.objects.filter(base_query)
+    vid = _pick_from_qs(qs)
+    if vid:
+        logger.warning(f"  ⚠️ '{folder_type}': Chỉ có 1 video, phải dùng lại!")
+    return vid
+
+
+
+
 def _auto_index_category_folder(service, category_name: str):
     """
     Automatically find and index the folder corresponding to the category.
-    E.g. Category="Dây chuyền" -> Search "Video Sản Phẩm/Dây chuyền" -> Index ONLY that folder.
+    E.g. Category="Dây chuyền" -> Search in Generate Video\Video Sản Phẩm\Dây chuyền
     """
     try:
         if not category_name:
@@ -1981,26 +2265,22 @@ def _auto_index_category_folder(service, category_name: str):
 
         logger.info(f"🔍 Auto-indexing category: '{category_name}'")
         
-        # Candidate base paths to search
+        # Look inside Generate Video\Video Sản Phẩm
         base_paths = [
-            r"\\VCB_MEDIA\MEDIA VCB folder\VIDEO Sản Phẩm",
-            r"\\192.168.1.250\MEDIA VCB folder\VIDEO Sản Phẩm",
-            os.path.join(settings.MEDIA_ROOT, "VIDEO Sản Phẩm"),
+            r"\\VCB_MEDIA\MEDIA VCB folder\Generate Video\Video Sản Phẩm",
         ]
         
         target_path = None
         
-        # Use smart BFS search
         for base in base_paths:
             if not os.path.exists(base):
                 continue
                 
-            # Try to find folder matching category name
             target_path = service.find_folder_by_name(
                 root_path=base,
                 target_name=category_name.strip(),
-                exact_match=False,  # Allow substring match (e.g. "Dây chuyền" matches "Dây chuyền vàng")
-                max_depth=2  # Limit search depth
+                exact_match=False,
+                max_depth=2
             )
             
             if target_path:
@@ -2008,21 +2288,18 @@ def _auto_index_category_folder(service, category_name: str):
         
         if target_path and os.path.isdir(target_path):
             logger.info(f"✅ Found category folder: '{target_path}'")
-            logger.info(f"📂 Indexing ONLY videos from this folder (not parent)...")
-            
-            # Index ONLY this specific folder into "Sản phẩm" type
             service.index_videos_from_folders({"Sản phẩm": target_path})
-            
         else:
             logger.warning(f"⚠️ Could not find auto-folder for category '{category_name}'")
             
     except Exception as e:
         logger.error(f"Auto-index error: {e}")
 
+
 def _auto_index_by_sku(service, sku: str):
     """
-    Scan folders for a subfolder matching the SKU.
-    If found, index that specific folder into 'Sản phẩm'.
+    Scan VIDEO_BASE_PATHS/PRODUCT_VIDEO_SUBFOLDER for a subfolder matching the SKU.
+    If found, index ALL videos in that folder into 'Sản phẩm'.
     """
     try:
         if not sku: return False
@@ -2030,41 +2307,52 @@ def _auto_index_by_sku(service, sku: str):
         logger.info(f"🕵️ Searching for folder with SKU: '{sku}'")
         sku_clean = sku.strip().lower()
         
-        # Base paths to search
-        base_paths = [
-            r"\\VCB_MEDIA\MEDIA VCB folder\VIDEO Sản Phẩm",
-            r"\\192.168.1.250\MEDIA VCB folder\VIDEO Sản Phẩm",
-            os.path.join(settings.MEDIA_ROOT, "VIDEO Sản Phẩm"),
-        ]
+        # Use settings paths (from .env) instead of hardcoded paths
+        base_paths = getattr(settings, 'PRODUCT_VIDEO_PATHS', [])
+        if not base_paths:
+            # Build from VIDEO_BASE_PATHS + PRODUCT_VIDEO_SUBFOLDER
+            # .env: VIDEO_BASE_PATHS=//VCB_MEDIA/MEDIA VCB folder/Generate Video
+            #       PRODUCT_VIDEO_SUBFOLDER=Video Sản Phẩm
+            video_bases = getattr(settings, 'VIDEO_BASE_PATHS', [])
+            subfolder = getattr(settings, 'PRODUCT_VIDEO_SUBFOLDER', 'Video Sản Phẩm')
+            base_paths = [os.path.join(b, subfolder) for b in video_bases]
         
-        # Strategy:
-        # 1. If we can infer category (e.g. from DB or request), search IN that category folder first.
-        # But here we just have SKU. 
-        # So we do a breadth-first search on "VIDEO Sản Phẩm" to find the SKU folder.
+        logger.info(f"📂 Scanning {len(base_paths)} product paths for SKU '{sku}': {base_paths}")
         
-        target_path = service.find_folder_by_name(
-             root_path=base_paths[0], # Primary path
-             target_name=sku_clean,
-             exact_match=False, # SKU might be part of folder name e.g. "N12345_DayChuyen"
-             max_depth=4 # Need enough depth: Root -> Category -> SubCategory -> SKU
-        )
+        # Search ALL base paths (not just the first one)
+        for search_root in base_paths:
+            if not os.path.isdir(search_root):
+                logger.warning(f"⚠️ Path not accessible: {search_root}")
+                continue
+                
+            target_path = service.find_folder_by_name(
+                 root_path=search_root,
+                 target_name=sku_clean,
+                 exact_match=False,
+                 max_depth=4
+            )
+                
+            if target_path:
+                logger.info(f"✅ Found specific product folder for SKU '{sku}': {target_path}")
+                # Index ALL videos into BOTH Slot 1 (Sản phẩm) AND Slot 6 (Sản phẩm HT)
+                # Both slots show product-specific videos of the chosen SKU
+                results = service.index_videos_from_folders({
+                    "Sản phẩm": target_path,
+                    "Sản phẩm HT": target_path,
+                })
+                count_sp = results.get("Sản phẩm", 0)
+                count_ht = results.get("Sản phẩm HT", 0)
+                
+                logger.info(f"📊 SKU '{sku}': Slot 1 (Sản phẩm) +{count_sp} new | Slot 6 (Sản phẩm HT) +{count_ht} new")
+                return True
         
-        # Legacy scanning code removed in favor of service.find_folder_by_name
-        pass
-            
-        if target_path:
-            logger.info(f"✅ Found specific product folder for SKU '{sku}': {target_path}")
-            # Index this specific folder into "Sản phẩm"
-            service.index_videos_from_folders({"Sản phẩm": target_path})
-            return True
-        else:
-             logger.warning(f"⚠️ Could not find folder for SKU '{sku}' in base paths")
-        
+        logger.warning(f"⚠️ Could not find folder for SKU '{sku}' in any product path: {base_paths}")
         return False
         
     except Exception as e:
-        logger.error(f"Auto-index SKU error: {e}")
+        logger.error(f"Auto-index SKU error: {e}", exc_info=True)
         return False
+
 
 @api_view(['POST'])
 def index_manufacturing_folder(request):
@@ -2089,13 +2377,14 @@ def index_manufacturing_folder(request):
 
         service = get_preprocessing_service()
         if sku:
-            # Powerful global scan for both Product and Manufacturing
+            # Index Product + Chế tác theo đúng mã SKU
             _auto_index_by_sku_global(service, sku, category)
-        else:
-            # Fallback to category only scanner
-            _auto_index_manufacturing_folders(service, category)
-        
-        return Response({'success': True, 'message': f'Triggered indexing for Cat={category}, SKU={sku}'})
+            return Response({'success': True, 'message': f'Indexed for SKU={sku}, Cat={category}'})
+        # Không fallback folder tổng — Chế tác bắt buộc theo SKU
+        return Response({
+            'success': False,
+            'message': 'Chế tác cần mã SKU. Vui lòng truyền sku để index theo đúng sản phẩm.'
+        }, status=status.HTTP_400_BAD_REQUEST)
         
     except Exception as e:
         logger.error(f"Error indexing manufacturing folder: {e}", exc_info=True)
@@ -2104,34 +2393,40 @@ def index_manufacturing_folder(request):
 
 def _auto_index_outro(service):
     """
-    Find and index "Outtrol" (Outro) folder by scanning for any folder containing 'outro' (case-insensitive).
-    Scans from root folder downwards.
+    Find and index "Outtrol" (Outro) folder.
+    Primary location: \\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK\OUTRO HUYK
+    Fallback: scan for any folder containing 'outro' (case-insensitive).
     """
     try:
         logger.info("🔍 Auto-scanning for Outro folder...")
         
-        # Base root to search (start from top-level media folder)
+        # Primary: direct confirmed path
+        primary_path = r"\\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK\OUTRO HUYK"
+        if os.path.isdir(primary_path):
+            logger.info(f"✅ Found Outro folder (primary): {primary_path}")
+            service.index_videos_from_folders({"Outtrol": primary_path})
+            return
+
+        # Fallback: scan known roots for any 'outro' subfolder
         search_roots = [
+            r"\\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK",
+            r"\\VCB_MEDIA\MEDIA VCB folder\Generate Video",
             r"\\VCB_MEDIA\MEDIA VCB folder",
-            r"\\192.168.1.250\MEDIA VCB folder",
         ]
         
         target_path = None
         
-        # Scan for any folder containing "outro" (case-insensitive)
-        # The find_folder_by_name already does case-insensitive search
         for root in search_roots:
             if not os.path.exists(root):
                 continue
                 
             logger.info(f"📂 Scanning '{root}' for folders containing 'outro'...")
             
-            # Search for folder containing "outro" (substring match, case-insensitive)
             path = service.find_folder_by_name(
                 root_path=root,
-                target_name="outro",  # Will match: Outro, outro, Source Outro, OUTRO, etc.
-                exact_match=False,  # Allow substring match
-                max_depth=3  # Scan up to 3 levels deep
+                target_name="outro",
+                exact_match=False,
+                max_depth=3
             )
             
             if path:
@@ -2140,7 +2435,6 @@ def _auto_index_outro(service):
         
         if target_path:
             logger.info(f"✅ Found Outro folder: {target_path}")
-            logger.info(f"📂 Indexing videos from Outro folder...")
             service.index_videos_from_folders({"Outtrol": target_path})
         else:
             logger.error("❌ Could not find any folder with 'outro' in name!")
@@ -2148,3 +2442,5 @@ def _auto_index_outro(service):
              
     except Exception as e:
         logger.error(f"Auto-index Outro error: {e}")
+
+

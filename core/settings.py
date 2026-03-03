@@ -376,8 +376,9 @@ PRODUCT_VIDEO_SUBFOLDER = env('PRODUCT_VIDEO_SUBFOLDER', default=r'VIDEO Sản P
 # Ví dụ: PRODUCT_VIDEO_PATHS=//VCB_MEDIA/MEDIA VCB folder/VIDEO Sản Phẩm,Z:/VIDEO Sản Phẩm,D:/Videos/Sản phẩm
 PRODUCT_VIDEO_PATHS = env.list('PRODUCT_VIDEO_PATHS', default=[])
 
-# Manufacturing (Chế tác) folder location - append dưới VIDEO_BASE_PATHS
-MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'CHẾ TÁC SẢN PHẨM (xưởng)\Việt Nam')
+# Manufacturing (Chế tác) folder - append dưới VIDEO_BASE_PATHS
+# Ví dụ: Chế tác sản phẩm\Việt Nam → path: Generate Video\Chế tác sản phẩm\Việt Nam\<Nhẫn>\<NM101_...>
+MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'Chế tác sản phẩm\Việt Nam')
 
 
 # Reload triggered
