@@ -1307,6 +1307,44 @@ class ReportOutstanding(models.Model):
         db_table = 'report_outstanding'
         managed = False
 
+class ReportSettings(BaseModel):
+    """
+    Settings for reporting checklist, including allowed time ranges and randomization.
+    """
+    schedule = models.JSONField(
+        default=dict,
+        help_text="Khung giờ báo cáo theo ngày (monday, tuesday, ...)"
+    )
+    one_report_per_day = models.BooleanField(
+        default=True,
+        help_text="Chỉ cho phép submit 1 báo cáo/ngày"
+    )
+    timezone = models.CharField(
+        max_length=50,
+        default='Asia/Ho_Chi_Minh'
+    )
+    # Fields for random reporting
+    is_random = models.BooleanField(
+        default=False,
+        help_text="Bật chế độ báo cáo ngẫu nhiên"
+    )
+    random_minutes = models.IntegerField(
+        default=30,
+        help_text="Số phút báo cáo ngẫu nhiên trong khung giờ"
+    )
+    updated_by = models.CharField(
+        max_length=255,
+        blank=True
+    )
+
+    class Meta:
+        verbose_name = "Report Settings"
+        verbose_name_plural = "Report Settings"
+
+    def __str__(self):
+        return f"Report Settings (Updated by: {self.updated_by})"
+
+
 # Import search-related models
 from .models_search import SearchQuery, TrendingKeyword
 

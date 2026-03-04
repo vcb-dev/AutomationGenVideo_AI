@@ -77,7 +77,7 @@ from .views.virtual_mix_views import (
     stream_audio,
     virtual_mix_render,
 )
-from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView
+from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
 
 app_name = 'video_management'
@@ -183,6 +183,8 @@ urlpatterns = [
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
+    path('checklist/settings/', ChecklistSettingsView.as_view(), name='checklist-settings'),
+    path('checklist/status/', ChecklistReportingStatusView.as_view(), name='checklist-status'),
     
     # Collections (router URLs)
     path('', include(router.urls)),
