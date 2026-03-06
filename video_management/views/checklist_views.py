@@ -515,6 +515,7 @@ class ChecklistSettingsView(APIView):
             "updated_by": settings_obj.updated_by
         })
 
+
     def put(self, request):
         try:
             data = request.data
