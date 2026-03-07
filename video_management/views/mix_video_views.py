@@ -60,8 +60,8 @@ def _get_output_size(request) -> Tuple[int, int]:
     Lấy width, height cho output từ request (form width/height) hoặc settings.
     Trả về (width, height). height=0 nghĩa là scale theo width giữ tỉ lệ.
     """
-    width = getattr(settings, "MIX_VIDEO_OUTPUT_WIDTH", 720) or 720
-    height = getattr(settings, "MIX_VIDEO_OUTPUT_HEIGHT", 0) or 0
+    width = getattr(settings, "MIX_VIDEO_OUTPUT_WIDTH", 1080) or 1080
+    height = getattr(settings, "MIX_VIDEO_OUTPUT_HEIGHT", 1920) or 1920
     try:
         if request.POST.get("width"):
             width = int(request.POST.get("width"))
@@ -372,8 +372,8 @@ def _trim_single_to_file(
 
     args.extend([
         "-c:v", "libx264",
-        "-preset", "ultrafast",  # Hardcode for speed
-        "-crf", "28",  # Hardcode for speed
+        "-preset", "ultrafast",
+        "-crf", "23",
         "-c:a", "aac",
         "-ar", "44100",
         "-ac", "2",
@@ -434,8 +434,8 @@ def _stack_two_to_file(
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "2:a",
         "-c:v", "libx264",
-        "-preset", "ultrafast",  # Always use ultrafast for stacking (performance critical)
-        "-crf", "28",
+        "-preset", "ultrafast",
+        "-crf", "23",
         "-c:a", "aac", "-ar", "44100",
         "-video_track_timescale", "15360",
         output_path,
@@ -476,8 +476,8 @@ def _concat_files(part_files: List[str], output_path: str, step_name: Optional[s
             "-safe", "0",
             "-i", list_file,
             "-c:v", "libx264",
-            "-preset", "ultrafast",  # Always use ultrafast for concat (performance critical)
-            "-crf", "28",
+            "-preset", "ultrafast",
+            "-crf", "23",
             "-c:a", "aac",
             "-ar", "44100",
             "-ac", "2",
@@ -623,7 +623,7 @@ def _run_mix_task(temp_dir: str, progress_id: str, width: int, height: int, num_
         
         # Set FFmpeg preset based on fast_mode
         ffmpeg_preset = "ultrafast" if fast_mode else "veryfast"
-        ffmpeg_crf = "28" if fast_mode else "23"  # Higher CRF = lower quality, faster encoding
+        ffmpeg_crf = "23"  # CRF 23 = default quality (lower = better)
         
         # Store in progress dict for helper functions to access
         with _mix_progress_lock:

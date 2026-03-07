@@ -384,15 +384,34 @@ def get_voices(request):
     try:
         from video_management.models import Voice
         
-        # Only HeyGen voices (Minimax removed)
-        voices = Voice.objects.filter(provider='heygen').values(
+        # Hardcoded system voices
+        system_voices = [
+            {"id": -1, "voice_id": "c6fb81520dcd42e0a02be231046a8639", "name": "Nam Minh (Natural)", "language": "vi-VN", "gender": "male", "provider": "heygen", "is_cloned": False, "is_system": True},
+            {"id": -2, "voice_id": "4286c03d11f44af093e379fc7e2cafa6", "name": "Chau (Natural)", "language": "vi-VN", "gender": "female", "provider": "heygen", "is_cloned": False, "is_system": True},
+            {"id": -3, "voice_id": "9a247a37f3c04e6aa934171998b9659c", "name": "Hoai (Natural)", "language": "vi-VN", "gender": "female", "provider": "heygen", "is_cloned": False, "is_system": True}
+        ]
+
+        # OpenAI Voices
+        openai_voices = [
+            {"id": -4, "voice_id": "alloy", "name": "Alloy (OpenAI - Neutral)", "language": "mul", "gender": "neutral", "provider": "openai", "is_cloned": False, "is_system": True},
+            {"id": -5, "voice_id": "echo", "name": "Echo (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
+            {"id": -6, "voice_id": "fable", "name": "Fable (OpenAI - British)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
+            {"id": -7, "voice_id": "onyx", "name": "Onyx (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
+            {"id": -8, "voice_id": "nova", "name": "Nova (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False, "is_system": True},
+            {"id": -9, "voice_id": "shimmer", "name": "Shimmer (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False, "is_system": True},
+        ]
+
+        # Only HeyGen voices from DB
+        db_voices = list(Voice.objects.filter(provider='heygen').values(
             'id', 'name', 'voice_id', 'provider', 'language', 'gender', 'is_cloned', 'is_system'
-        ).order_by('-is_system', 'name')  # System voices first
+        ).order_by('-is_system', 'name'))  # System voices first
         
+        all_voices = system_voices + openai_voices + db_voices
+
         return Response({
             'success': True,
-            'voices': list(voices),
-            'count': len(voices)
+            'voices': all_voices,
+            'count': len(all_voices)
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
@@ -1606,6 +1625,9 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
                 f.write(f"file '{safe_path}'\n")
         
         ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
+        import shutil
+        if not os.path.exists(ffmpeg_path):
+            ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
         
         # ===== TRY 1: Fast concat with copy codec =====
         logger.info(f"🔗 Concat {len(clip_paths)} clips (TRY 1: copy codec)...")
@@ -1716,6 +1738,9 @@ def _replace_audio(video_path: str, audio_path: str, output_path: str, audio_dur
     """
     try:
         ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
+        import shutil
+        if not os.path.exists(ffmpeg_path):
+            ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
         
         cmd = [
             ffmpeg_path,
@@ -1991,6 +2016,9 @@ def _create_split_layout_video(
         # 2. Stack vertically
         # 3. Add multiple gradient layers với alpha khác nhau → Tạo soft fade
         ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
+        import shutil
+        if not os.path.exists(ffmpeg_path):
+            ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
         
         cmd = [
             ffmpeg_path,

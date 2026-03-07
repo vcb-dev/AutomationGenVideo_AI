@@ -15,6 +15,7 @@ import mimetypes
 import threading
 import time as _time
 from typing import Optional, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.http import StreamingHttpResponse, FileResponse
 from django.conf import settings
@@ -142,15 +143,27 @@ def virtual_mix(request):
                 used_ids.add(vid)
                 all_selections.append((output_idx, slot_idx, vid, config))
         
-        # ── Generate missing clips (only what's needed!) ───────────
+        # ── Generate missing clips in PARALLEL (only what's needed!) ────
         if need_gen:
-            logger.info(f"📹 Need to generate {len(need_gen)} clips (others from cache)")
+            logger.info(f"📹 Need to generate {len(need_gen)} clips in parallel...")
             
-            for vid_id in need_gen:
+            def _gen_single_clip(vid_id):
                 try:
-                    logger.info(f"  🔧 Generating clip for video {vid_id}...")
-                    clip_path = service.get_or_generate_clip(vid_id, use_gpu=None)
-                    if clip_path:
+                    logger.info(f"  🔧 Parallel generating clip for video {vid_id}...")
+                    # use_gpu=None means it will auto-detect from ENV (USE_GPU=true)
+                    path = service.get_or_generate_clip(vid_id, use_gpu=None)
+                    return vid_id, path
+                except Exception as e:
+                    logger.error(f"  ❌ Parallel gen error for {vid_id}: {e}")
+                    return vid_id, None
+
+            # Limit parallel workers to avoid overloading CPU/GPU (especially on SMB/NAS)
+            max_workers = min(6, len(need_gen))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="virtual_preview") as executor:
+                futures = [executor.submit(_gen_single_clip, vid_id) for vid_id in need_gen]
+                for future in as_completed(futures):
+                    vid_id, path = future.result()
+                    if path:
                         # Refresh cache map
                         cached = VideoClipCache.objects.filter(source_video_id=vid_id).first()
                         if cached:
@@ -158,11 +171,7 @@ def virtual_mix(request):
                                 'cache_id': cached.id,
                                 'duration': cached.duration or 12.0,
                             }
-                            logger.info(f"  ✅ Clip ready for video {vid_id}")
-                    else:
-                        logger.warning(f"  ❌ Failed to generate clip for video {vid_id}")
-                except Exception as e:
-                    logger.error(f"  ❌ Clip gen error for {vid_id}: {e}")
+                            logger.info(f"  ✅ Parallel clip READY for video {vid_id}")
         
         # ── Build manifests ────────────────────────────────────────
         manifests = []

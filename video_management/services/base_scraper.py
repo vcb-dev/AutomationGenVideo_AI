@@ -7,6 +7,7 @@ including retry logic, error handling, and result normalization.
 
 import logging
 import time
+import random
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
@@ -78,7 +79,8 @@ class BaseScraperService(ABC):
         min_views: int = 0,
         min_comments: int = 0,
         max_results: int = 20,
-        search_mode: str = "hashtag"
+        search_mode: str = "hashtag",
+        session_id: str = None
     ) -> List[Dict[str, Any]]:
         """
         Search for videos on the platform.
@@ -359,41 +361,51 @@ class BaseScraperService(ABC):
         page: int = 1,
         search_mode: str = "hashtag",
         use_cache: bool = True,
-        save_to_db: bool = True
+        save_to_db: bool = True,
+        session_id: str = None
     ) -> Dict[str, Any]:
         """
         Execute a complete search operation with caching and error handling.
-        
-        Args:
-            keyword: Search keyword
-            min_likes: Minimum likes filter
-            min_views: Minimum views filter
-            min_comments: Minimum comments filter (OR with likes/views for Instagram)
-            max_results: Results per page (typically 30)
-            page: Page number (1-based). Page 2 = fetch 60, return items 31-60.
-            use_cache: Whether to use cached results
-            save_to_db: Whether to save results to database
-            
-        Returns:
-            Dictionary with search results and metadata
         """
+        self.logger.info(f"execute_search: platform={self.platform}, keyword={keyword}, session_id={session_id}")
         start_time = time.time()
         page_size = max_results
         
         try:
             # Check cache first (only for page 1)
+            # Variety logic: Nếu có cache, hãy sample ngẫu nhiên từ pool cache để mỗi lần search ra kết quả khác nhau
             if use_cache and page == 1:
                 cached = self.check_cache(keyword, min_likes, min_views, max_results, search_mode)
-                if cached:
-                    return {
-                        'success': True,
-                        'cached': True,
-                        'results': cached.raw_results,
-                        'count': cached.results_count,
-                        'execution_time': 0,
-                        'search_id': cached.id,
-                        'page': 1
-                    }
+                if cached and cached.raw_results:
+                    pool = cached.raw_results
+                    rng = random.Random(int(time.time() * 1000))
+                    
+                    # Nếu cache có pool lớn hơn yêu cầu, hãy sample
+                    if len(pool) > max_results:
+                        sampled = rng.sample(pool, min(max_results, len(pool)))
+                        self.logger.info(f"Cache Variety Hit: sampled {max_results} from {len(pool)} cached results")
+                        return {
+                            'success': True,
+                            'cached': True,
+                            'results': sampled,
+                            'count': len(sampled),
+                            'execution_time': 0,
+                            'search_id': cached.id,
+                            'page': 1
+                        }
+                    # Nếu cache chỉ có vừa đủ hoặc ít hơn, trả về toàn bộ (shuffle cho vui)
+                    else:
+                        shuffled = list(pool)
+                        rng.shuffle(shuffled)
+                        return {
+                            'success': True,
+                            'cached': True,
+                            'results': shuffled,
+                            'count': len(shuffled),
+                            'execution_time': 0,
+                            'search_id': cached.id,
+                            'page': 1
+                        }
             
             # Create search history entry (page 1 only for DB tracking)
             search_history = self.create_search_history(
@@ -405,19 +417,21 @@ class BaseScraperService(ABC):
             )
             
             try:
-                # For page > 1: fetch more to cover the offset (Apify has no native pagination)
-                fetch_limit = page_size * page
-                self.logger.info(f"Searching {self.platform} for: {keyword} (page={page}, fetch={fetch_limit})")
+                # Variety: Fetch pool vừa đủ (max 35) để tiết kiệm token và có 5 video buffer cho Random Sample
+                fetch_limit = min(max_results + 5, 35)
+                
+                self.logger.info(f"Searching {self.platform} for: {keyword} (page={page}, pool_limit={fetch_limit})")
                 raw_results = self.search_videos(
                     keyword=keyword,
                     min_likes=min_likes,
                     min_views=min_views,
                     min_comments=min_comments,
                     max_results=fetch_limit,
-                    search_mode=search_mode
+                    search_mode=search_mode,
+                    session_id=session_id
                 )
                 
-                # Normalize results (skip non-dict items and invalid normalizations)
+                # Normalize results
                 normalized_results = []
                 for video in raw_results:
                     if not isinstance(video, dict):
@@ -426,7 +440,7 @@ class BaseScraperService(ABC):
                     if norm and norm.get('video_id'):
                         normalized_results.append(norm)
                 
-                # Filter mode: OR for Instagram & Facebook (views OR likes OR comments)
+                # Filter results
                 filter_mode = "or" if self.platform in (Platform.INSTAGRAM, Platform.FACEBOOK) else "and"
                 filtered_results = self.filter_results(
                     normalized_results,
@@ -437,28 +451,40 @@ class BaseScraperService(ABC):
                     filter_mode=filter_mode
                 )
                 
-                # Fallback: nếu filter trả 0 nhưng có kết quả raw -> hiển thị tất cả, tránh UI trống
+                # Fallback: nếu filter trả 0 nhưng có kết quả raw -> hiển thị tất cả
                 filter_fallback = False
                 if len(filtered_results) == 0 and len(normalized_results) > 0 and (min_likes > 0 or min_views > 0 or min_comments > 0):
                     filtered_results = normalized_results
                     filter_fallback = True
-                    self.logger.info(
-                        f"Filter returned 0 results; showing all {len(normalized_results)} (filter_fallback=True)"
-                    )
                 
-                # Paginate: return only items for this page
-                start_idx = (page - 1) * page_size
-                end_idx = start_idx + page_size
-                page_results = filtered_results[start_idx:end_idx]
+                # --- Variety logic: Sample 30 from the expanded pool (filtered_results) ---
+                rng = random.Random(int(time.time() * 1000))
+                
+                # Pool toàn bộ bài hợp lệ
+                full_pool = list(filtered_results)
+                
+                # Paginate logic:
+                if page == 1:
+                    # Nếu pool lớn hơn yêu cầu, chọn ngẫu nhiên max_results bài
+                    if len(full_pool) > max_results:
+                        page_results = rng.sample(full_pool, max_results)
+                    else:
+                        page_results = full_pool
+                        rng.shuffle(page_results)
+                else:
+                    # Cho các trang sau (2, 3...), lấy theo offset truyền thống
+                    start_idx = (page - 1) * page_size
+                    end_idx = start_idx + page_size
+                    page_results = full_pool[start_idx:end_idx]
                 
                 execution_time = time.time() - start_time
                 
-                # Save to database (only page 1, to avoid duplicates)
+                # Save to database (Save PHẦN LỚN NHẤT CỦA POOL vào cache để lần sau random tiếp được)
+                # Lưu tối đa 60 bài vào cache cho 1 keyword
                 if save_to_db and page == 1:
-                    self.save_videos(page_results, search_history)
-                
-                if page == 1:
-                    search_history.mark_completed(page_results, execution_time)
+                    cache_pool = full_pool[:60] if len(full_pool) > 60 else full_pool
+                    self.save_videos(cache_pool, search_history)
+                    search_history.mark_completed(cache_pool, execution_time)
                 
                 return {
                     'success': True,
@@ -468,7 +494,7 @@ class BaseScraperService(ABC):
                     'execution_time': execution_time,
                     'search_id': search_history.id,
                     'page': page,
-                    'has_more': len(filtered_results) > end_idx,
+                    'has_more': len(full_pool) > (page * page_size),
                     'filter_fallback': filter_fallback
                 }
                 

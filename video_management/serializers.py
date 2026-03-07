@@ -74,7 +74,11 @@ class SearchRequestSerializer(serializers.Serializer):
         default='hashtag',
         help_text="For Instagram: 'hashtag' (search by #tag) or 'keyword' (search by keyword in caption/explore)"
     )
-
+    session_id = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="Session ID to seed randomized picking on TikTok"
+    )
 
 class UserVideosRequestSerializer(serializers.Serializer):
     """Serializer for user videos request."""

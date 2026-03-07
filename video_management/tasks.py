@@ -34,7 +34,8 @@ def search_videos_task(
     page: int = 1,
     use_cache: bool = True,
     search_type: str = 'posts',
-    search_mode: str = 'hashtag'
+    search_mode: str = 'hashtag',
+    session_id: str = None
 ) -> Dict[str, Any]:
     """
     Asynchronous video search task.
@@ -67,7 +68,8 @@ def search_videos_task(
             page=page,
             search_mode=search_mode,
             use_cache=use_cache,
-            save_to_db=True
+            save_to_db=True,
+            session_id=session_id
         )
         
         logger.info(

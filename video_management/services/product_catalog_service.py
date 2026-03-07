@@ -3,6 +3,7 @@ Service for parsing Excel product catalogs.
 """
 import pandas as pd
 import os
+import math
 from typing import List, Dict, Any
 from django.core.files.uploadedfile import UploadedFile
 from django.db import transaction
@@ -140,7 +141,7 @@ class ProductCatalogService:
                     'description': cls._get_value(row, column_map.get('description'), default=""),
                     'highlights': cls._get_value(row, column_map.get('highlights'), default=""),
                     'sku': sku.strip(),
-                    'raw_data': row.to_dict()  # Store all original data
+                    'raw_data': cls._sanitize_dict(row.to_dict())  # Store all original data
                 }
                 
                 products.append(Product(**product_data))
@@ -199,6 +200,19 @@ class ProductCatalogService:
         
         # Convert to string and strip
         return str(value).strip()
+
+    @classmethod
+    def _sanitize_dict(cls, d: dict) -> dict:
+        """Replace NaN/Inf float values with None for JSON compatibility."""
+        result = {}
+        for k, v in d.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                result[str(k)] = None
+            elif v is None:
+                result[str(k)] = None
+            else:
+                result[str(k)] = v
+        return result
     
     @classmethod
     def _parse_price(cls, value: Any) -> float:

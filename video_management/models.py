@@ -608,20 +608,61 @@ class FacebookPageCache(BaseModel):
         if fetch_callback:
             page_info = fetch_callback(username)
             
-            # Store in cache
-            cache = cls.objects.create(
-                username=username,
-                page_name=page_info.get('name', username),
-                avatar_url=page_info.get('avatar_url', ''),
-                followers_count=page_info.get('followers', 0),
-                likes_count=page_info.get('likes', 0),
-                page_description=page_info.get('description', ''),
-                page_category=page_info.get('category', ''),
-                verified=page_info.get('verified', False),
-                raw_data=page_info,
-                expires_at=timezone.now() + timedelta(hours=24)
-            )
+            # Extract followers/likes with multiple key fallbacks
+            # Apify facebook-pages-scraper uses 'followers'/'likes' OR 'followersCount'/'likesCount'
+            def _extract_int(d, *keys):
+                for k in keys:
+                    v = d.get(k)
+                    if v is not None:
+                        try:
+                            return int(str(v).replace(',', '').replace('.', '').strip())
+                        except (ValueError, AttributeError):
+                            continue
+                return 0
             
+            followers_val = _extract_int(page_info, 'followers', 'followersCount', 'follower_count', 'fans')
+            likes_val = _extract_int(page_info, 'likes', 'likesCount', 'like_count', 'page_likes')
+            avatar_val = (page_info.get('profilePic') or page_info.get('image') or 
+                          page_info.get('avatar_url') or page_info.get('picture') or '')
+            page_name_val = (page_info.get('name') or page_info.get('title') or 
+                             page_info.get('display_name') or username)
+            
+            # Store in cache
+            try:
+                cache = cls.objects.create(
+                    username=username,
+                    page_name=page_name_val,
+                    avatar_url=avatar_val,
+                    followers_count=followers_val,
+                    likes_count=likes_val,
+                    page_description=page_info.get('description', ''),
+                    page_category=page_info.get('category', ''),
+                    verified=page_info.get('verified', False),
+                    raw_data=page_info,
+                    expires_at=timezone.now() + timedelta(hours=24)
+                )
+            except Exception:
+                # If create fails (e.g., duplicate), update existing
+                cls.objects.update_or_create(
+                    username=username,
+                    defaults={
+                        'page_name': page_name_val,
+                        'avatar_url': avatar_val,
+                        'followers_count': followers_val,
+                        'likes_count': likes_val,
+                        'page_description': page_info.get('description', ''),
+                        'page_category': page_info.get('category', ''),
+                        'verified': page_info.get('verified', False),
+                        'raw_data': page_info,
+                        'expires_at': timezone.now() + timedelta(hours=24)
+                    }
+                )
+            
+            # Normalize page_info keys for consistency downstream
+            page_info['followers'] = followers_val
+            page_info['likes'] = likes_val
+            page_info['avatar_url'] = avatar_val
+            page_info['name'] = page_name_val
             page_info['source'] = 'fresh_fetch'
             return page_info
         

@@ -7,6 +7,7 @@ Facebook, and Douyin.
 
 import logging
 import random
+import time
 import unicodedata
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -147,21 +148,28 @@ class ApifyScraperService(BaseScraperService):
     def _build_tiktok_input(
         self,
         keyword: str,
-        max_results: int = 20
+        max_results: int = 20,
+        search_mode: str = "hashtag"
     ) -> Dict[str, Any]:
         """
         Build input for TikTok Apify actor.
-        Supports: clockworks (searchQueries/hashtags/resultsPerPage),
-        apidojo/tiktok-scraper, apidojo/tiktok-scraper-api (keywords/maxItems).
+        
+        Khi search_mode='keyword', fetch pool lớn hơn (x3) để sau khi lọc
+        caption/hashtag còn đủ kết quả chất lượng.
         """
-        limit = min(max_results, self.max_results_limit)
+        # Fetch pool vừa đủ (max 35) để tiết kiệm token và có 5 video buffer cho Random Sample
+        pool_size = min(max_results + 5, 35)
+
+        clean = keyword.strip().replace("#", "")
+
         if "clockworks/free-tiktok-scraper" in (self.actor_id or ""):
-            clean = keyword.strip().replace("#", "")
-            if keyword.strip().startswith("#"):
-                return {"hashtags": [clean], "resultsPerPage": limit}
-            return {"searchQueries": [keyword], "resultsPerPage": limit}
+            if keyword.strip().startswith("#") or search_mode == "hashtag":
+                return {"hashtags": [clean], "resultsPerPage": pool_size}
+            # Keyword mode: dùng searchQueries để TikTok search theo từ khóa
+            return {"searchQueries": [keyword.strip()], "resultsPerPage": pool_size}
         # apidojo (tiktok-scraper, tiktok-scraper-api)
-        return {"keywords": [keyword], "maxItems": limit}
+        return {"keywords": [keyword.strip()], "maxItems": pool_size}
+
     
     def _build_instagram_input(
         self,
@@ -285,7 +293,8 @@ class ApifyScraperService(BaseScraperService):
         keyword: str,
         max_results: int = 20,
         username: Optional[str] = None,
-        until_date: Optional[str] = None
+        until_date: Optional[str] = None,
+        search_mode: str = "hashtag"
     ) -> Dict[str, Any]:
         """
         Build actor input based on platform.
@@ -308,7 +317,7 @@ class ApifyScraperService(BaseScraperService):
                 profile_url = f"https://www.tiktok.com/@{clean_user}"
                 return {"startUrls": [profile_url], "maxItems": limit}
 
-            return self._build_tiktok_input(keyword, max_results)
+            return self._build_tiktok_input(keyword, max_results, search_mode)
         
         elif self.platform == Platform.INSTAGRAM:
             if username:
@@ -341,7 +350,7 @@ class ApifyScraperService(BaseScraperService):
         
         elif self.platform == Platform.DOUYIN:
             # Similar to TikTok
-            return self._build_tiktok_input(keyword, max_results)
+            return self._build_tiktok_input(keyword, max_results, search_mode)
         
         elif self.platform == Platform.XIAOHONGSHU:
             # Xiaohongshu input using kuaima/xiaohongshu-search format
@@ -355,23 +364,51 @@ class ApifyScraperService(BaseScraperService):
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
     
-    def _get_related_hashtags(self, base: str) -> List[str]:
-        """Tạo danh sách hashtag liên quan để mở rộng pool kết quả, tránh lặp 18 bài mỗi lần."""
+    def _sanitize_hashtag(self, tag: str) -> str:
+        """
+        Sanitize a hashtag to comply with Apify actor regex:
+        ^[^!?.,:;\-+=*&%$#@/\~^|<>()[\]{}'"\`\s]+$
+        → Remove #, spaces, and any other forbidden special characters.
+        """
+        import re
+        # Remove leading # and whitespace
+        tag = (tag or '').strip().lstrip('#')
+        # Remove all characters that are NOT alphanumeric, underscore, or unicode letters/digits
+        tag = re.sub(r'[!?.,:;\-+=*&%$#@/\~^|<>()\[\]{}\'"\`\s]', '', tag)
+        return tag.strip()
+
+    def _get_related_terms(self, base: str) -> List[str]:
+        """Tạo danh sách từ khóa/hashtag liên quan để mở rộng pool kết quả, tránh lặp bài mỗi lần."""
         base = (base or '').strip().lower()
         if not base:
             return []
-        seen = {base}
-        result = [base]
-        suffixes = ('dep', 'vang', 'bac', 'vietnam', 'ngoc', 'kimcuong', 'hot', 'trend')
-        for s in suffixes:
-            tag = base + s
-            if tag not in seen and len(result) < 5:
-                seen.add(tag)
-                result.append(tag)
+        
+        # Loại bỏ dấu # nếu có để xử lý text thuần
+        clean_base = self._sanitize_hashtag(base)
+        if not clean_base:
+            return []
+        
+        seen = {clean_base}
+        result = [clean_base]
+        
+        # Các hậu tố đa dạng để mở rộng pool (hashtag style - KHÔNG có space)
+        suffixes = ['dep', 'vang', 'bac', 'hot', 'trend', '2025', 'style', 'viral']
+        
+        pool_suffixes = list(suffixes)
+        random.shuffle(pool_suffixes)
+        
+        for s in pool_suffixes:
+            # Luôn viết liền (hashtag không có dấu cách)
+            term_no_space = clean_base + s
+            
+            if term_no_space not in seen and len(result) < 4:
+                seen.add(term_no_space)
+                result.append(term_no_space)
+                
         return result
 
     def _is_facebook_group_post(self, data: Dict[str, Any]) -> bool:
-        """Detect nếu post từ hội nhóm (group) – cần loại khi muốn chỉ shop/page."""
+        """Detect nếu post từ hội nhóm (group) cần loại khi muốn chỉ shop/page."""
         if not data or not isinstance(data, dict):
             return False
         url = data.get('url') or data.get('postUrl') or ''
@@ -381,7 +418,7 @@ class ApifyScraperService(BaseScraperService):
         return '/groups/' in url or '/group/' in url
 
     def _is_facebook_reel_or_video(self, data: Dict[str, Any]) -> bool:
-        """Detect if raw Facebook item là reel/video – cần loại khi search_type=posts."""
+        """Detect if raw Facebook item là reel/video cần loại khi search_type=posts."""
         if not data or not isinstance(data, dict):
             return False
         atts = data.get('attachments') or []
@@ -438,6 +475,149 @@ class ApifyScraperService(BaseScraperService):
             return 0 if kw in str(cap).lower() else 1
 
         return sorted(results, key=score)
+
+    def _compute_trend_score(self, item: dict, platform: str = 'tiktok') -> float:
+        """
+        Tính điểm xu hướng = engagement × recency_multiplier.
+        Video viral + gần đây → điểm cao → ưu tiên hiển thị liên tục.
+
+        Recency bonus:
+          <= 7 ngày  : 2.0×  (xu hướng hiện nay)    
+          <= 30 ngày : 1.5×  (mới trong tháng)
+          <= 90 ngày : 1.2×  (vẫn còn mới)
+          > 90 ngày  : 0.8×  (cũ, giảm nhẹ)
+        """
+        import datetime
+
+        # --- Engagement ---
+        if platform == 'instagram':
+            likes = item.get('likesCount') or item.get('likes') or 0
+            views = item.get('videoViewCount') or item.get('videoPlayCount') or item.get('views') or 0
+            comments = item.get('commentsCount') or item.get('comments') or 0
+        else:  # tiktok / default
+            likes = item.get('diggCount') or item.get('likes') or item.get('heart') or 0
+            views = item.get('playCount') or item.get('views') or item.get('play_count') or 0
+            comments = item.get('commentCount') or item.get('comments') or item.get('comment_count') or 0
+        try:
+            likes = int(likes) if likes else 0
+            views = int(views) if views else 0
+            comments = int(comments) if comments else 0
+        except (TypeError, ValueError):
+            likes = views = comments = 0
+
+        engagement = likes + (views * 0.05) + (comments * 3)
+
+        # --- Recency ---
+        recency_mult = 1.0
+        date_candidates = [
+            item.get('createTimestamp'), item.get('createTime'),
+            item.get('timestamp'), item.get('takenAtTimestamp'),
+            item.get('publishedAt'), item.get('published_at'),
+            item.get('date'),
+        ]
+        for raw in date_candidates:
+            if not raw:
+                continue
+            try:
+                if isinstance(raw, (int, float)) and raw > 1_000_000:
+                    published = datetime.datetime.fromtimestamp(float(raw))
+                elif isinstance(raw, str):
+                    published = datetime.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                    if published.tzinfo:
+                        published = published.replace(tzinfo=None)
+                else:
+                    continue
+                days_ago = (datetime.datetime.now() - published).days
+                if days_ago <= 7:
+                    recency_mult = 2.0
+                elif days_ago <= 30:
+                    recency_mult = 1.5
+                elif days_ago <= 90:
+                    recency_mult = 1.2
+                else:
+                    recency_mult = 0.8
+                break  # dùng giá trị đầu tiên hợp lệ
+            except Exception:
+                continue
+
+        return engagement * recency_mult
+
+    def _tiktok_is_relevant(self, data: Dict[str, Any], keyword: str) -> bool:
+        """
+        Kiểm tra video TikTok có liên quan đến keyword không.
+        Tìm trong: description (text), title, hashtags.
+        Hỗ trợ tiếng Việt (có/không dấu) và chuẩn hóa unicode.
+        """
+        if not data or not isinstance(data, dict):
+            return False
+        kw = (keyword or '').strip()
+        if not kw:
+            return True  # Không có keyword -> giữ hết
+
+        import unicodedata as _ud
+
+        def _norm(s: str) -> str:
+            s = s.lower().strip()
+            return ''.join(c for c in _ud.normalize('NFD', s) if _ud.category(c) != 'Mn')
+
+        kw_lower = kw.lower()
+        kw_norm = _norm(kw)
+        kw_no_space = kw_lower.replace(' ', '')
+        kw_norm_no_space = kw_norm.replace(' ', '')
+
+        def _text_matches(text: str) -> bool:
+            if not text:
+                return False
+            t = str(text)
+            t_lower = t.lower()
+            t_norm = _norm(t)
+            if kw_lower in t_lower:
+                return True
+            if kw_norm and kw_norm in t_norm:
+                return True
+            if kw_no_space and kw_no_space in t_lower.replace(' ', ''):
+                return True
+            if kw_norm_no_space and kw_norm_no_space in t_norm.replace(' ', ''):
+                return True
+            return False
+
+        # Kiểm tra description / text (trường chính của TikTok)
+        desc = data.get('text', '') or data.get('description', '') or data.get('title', '') or ''
+        if _text_matches(desc):
+            return True
+
+        # Kiểm tra hashtags (list of str hoặc list of dict)
+        hashtags = data.get('hashtags', []) or []
+        for tag in hashtags:
+            tag_name = tag.get('name', '') if isinstance(tag, dict) else str(tag)
+            if _text_matches(tag_name):
+                return True
+
+        return False
+
+    def _tiktok_sort_by_relevance(self, results: List[Dict], keyword: str) -> List[Dict]:
+        """
+        Sắp xếp TikTok results: video liên quan đến keyword lên trước.
+        """
+        kw = (keyword or '').strip().lower()
+        if not kw:
+            return results
+
+        def _relevance_score(r):
+            if not isinstance(r, dict):
+                return 99
+            desc = (r.get('text', '') or r.get('description', '') or r.get('title', '') or '').lower()
+            hashtags = r.get('hashtags', []) or []
+            tag_text = ' '.join(
+                t.get('name', '') if isinstance(t, dict) else str(t)
+                for t in hashtags
+            ).lower()
+            full_text = f"{desc} {tag_text}"
+            if kw in full_text:
+                return -full_text.count(kw)  # Càng nhiều lần xuất hiện -> điểm càng thấp (sort ascending)
+            return 99  # Không khớp -> xuống cuối
+
+        return sorted(results, key=_relevance_score)
 
     def run_actor(
         self,
@@ -503,7 +683,8 @@ class ApifyScraperService(BaseScraperService):
         min_views: int = 0,
         min_comments: int = 0,
         max_results: int = 20,
-        search_mode: str = "hashtag"
+        search_mode: str = "hashtag",
+        session_id: str = None
     ) -> List[Dict[str, Any]]:
         """
         Search for videos using Apify.
@@ -598,42 +779,39 @@ class ApifyScraperService(BaseScraperService):
                 search_mode_val = (search_mode or "hashtag").strip().lower()
                 use_keyword_mode = search_mode_val == "keyword"
 
-                # Để tạo kết quả khác nhau mỗi lần search cùng hashtag:
-                # Luôn fetch pool LỚN (tối thiểu 30) từ Apify, sau đó random.sample để lấy ngỪu nhiên
-                POOL_SIZE = max(30, min(max_results * 3, self.max_results_limit))
+                # Pool size: Giới hạn 30-35 để tiết kiệm token (Variety vẫn hoạt động với buffer nhỏ)
+                POOL_SIZE = min(max_results + 5, 35)
                 results_type = "reels" if self.search_type == "reels" else "posts"
-
+                
                 self.actor_id = 'apify/instagram-hashtag-scraper'
                 search_query = keyword.replace('#', '').strip()
                 clean_keyword = search_query.replace(' ', '').strip()
                 normalized = unicodedata.normalize('NFD', clean_keyword)
                 clean_keyword = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+                
                 if not clean_keyword:
                     clean_keyword = search_query.replace(' ', '')
-                if use_keyword_mode:
-                    hashtags_list = self._get_related_hashtags(clean_keyword)[:2]
-                    limit_per_tag = min(POOL_SIZE, max(15, POOL_SIZE // len(hashtags_list)))
-                    actor_input = {
-                        "hashtags": hashtags_list,
-                        "resultsType": results_type,
-                        "resultsLimit": limit_per_tag,
-                        "searchLimit": limit_per_tag,
-                        "searchType": "hashtag",
-                    }
-                    self.logger.info(f"Using Instagram Hybrid (keyword) for '{search_query}' - hashtags={hashtags_list}, pool_limit={limit_per_tag}/tag, will filter by caption")
-                else:
-                    hashtags_list = [clean_keyword]
-                    actor_input = {
-                        "hashtags": hashtags_list,
-                        "resultsType": results_type,
-                        "resultsLimit": POOL_SIZE,
-                        "searchLimit": POOL_SIZE,
-                        "searchType": "hashtag",
-                    }
-                    self.logger.info(f"Using Instagram Hashtag Scraper for #{clean_keyword} - pool_size={POOL_SIZE} (will random.sample {max_results})") 
+                
+                # Luôn dùng related terms để mở rộng pool (Variety logic)
+                related_terms = self._get_related_terms(clean_keyword)[:3]
+                # Sanitize lần cuối trước khi gửi actor (đảm bảo không có ký tự lạ)
+                related_terms = [self._sanitize_hashtag(t) for t in related_terms]
+                related_terms = [t for t in related_terms if t]  # Loại bỏ empty strings
+                if not related_terms:
+                    related_terms = [clean_keyword]
+                limit_per_tag = max(POOL_SIZE // len(related_terms), 10)
+                
+                actor_input = {
+                    "hashtags": related_terms,
+                    "resultsType": results_type,
+                    "resultsLimit": limit_per_tag,
+                    "searchLimit": limit_per_tag,
+                    "searchType": "hashtag",
+                }
+                self.logger.info(f"Using Instagram Variety-Hybrid for '{search_query}' - terms={related_terms}, limit={limit_per_tag}/tag")
             else:
-                # Default input builder
-                actor_input = self._build_actor_input(keyword, max_results)
+                # Default input builder - truyền search_mode để TikTok phân biệt hashtag/keyword
+                actor_input = self._build_actor_input(keyword, max_results, search_mode=search_mode)
 
             if results is None:
                 results = self.run_actor(actor_input)
@@ -674,7 +852,6 @@ class ApifyScraperService(BaseScraperService):
                             deduped.append(r)
                 if deduped:
                     results = deduped
-                    import time
                     rng = random.Random(int(time.time() * 1000))
                     rng.shuffle(results)
                     self.logger.info(f"Deduped to {len(results)} unique Facebook posts, shuffled (variety per search)")
@@ -706,7 +883,6 @@ class ApifyScraperService(BaseScraperService):
             # Instagram: dedupe (có thể trùng khi dùng nhiều hashtag)
             # Sau đó random.sample từ pool để mỗi lần search ra kết quả khác nhau
             if self.platform == Platform.INSTAGRAM and results:
-                import time as _time
                 seen_ids = set()
                 deduped = []
                 for r in results:
@@ -718,7 +894,7 @@ class ApifyScraperService(BaseScraperService):
                 if deduped:
                     results = deduped
                     # Dùng seed theo thời gian để mỗi lần chọn sample khác nhau
-                    rng = random.Random(int(_time.time() * 1000))
+                    rng = random.Random(int(time.time() * 1000))
                     rng.shuffle(results)
                     self.logger.info(f"Deduped to {len(results)} unique posts, shuffled (time-seeded) for variety")
             
@@ -728,16 +904,146 @@ class ApifyScraperService(BaseScraperService):
                 before_count = len(results)
                 results_before_caption = list(results)
                 results = [r for r in results if isinstance(r, dict) and self._caption_contains_keyword(r, search_query)]
-                self.logger.info(f"Caption filter: {before_count} -> {len(results)} posts (keyword='{search_query}')")
+                self.logger.info(f"Instagram caption filter: {before_count} -> {len(results)} posts (keyword='{search_query}')")
                 if len(results) < before_count * 0.3 and before_count >= 10:
-                    self.logger.info("Caption filter quá chặt, giữ thêm bài không khớp caption để đủ kết quả")
+                    self.logger.info("Instagram caption filter quá chặt, giữ thêm bài không khớp caption để đủ kết quả")
                     results = self._sort_by_caption_relevance(results_before_caption, search_query)
-            
+
+            # Instagram: Engagement Quality Filter
+            # Loại bỏ post có tương tác quá thấp (spam/rác) nếu có yêu cầu filter
+            if self.platform == Platform.INSTAGRAM and (min_likes > 0 or min_views > 0 or min_comments > 0) and results:
+                before_eng = len(results)
+                filtered_ig = []
+                for r in results:
+                    if not isinstance(r, dict):
+                        continue
+                    # Instagram dùng các field khác nhau tùy actor
+                    likes = (r.get('likesCount') or r.get('likes') or 0)
+                    views = (r.get('videoViewCount') or r.get('videoPlayCount') or r.get('views') or 0)
+                    comments = (r.get('commentsCount') or r.get('comments') or 0)
+                    try:
+                        likes = int(likes) if likes else 0
+                        views = int(views) if views else 0
+                        comments = int(comments) if comments else 0
+                    except (TypeError, ValueError):
+                        likes = views = comments = 0
+                    # OR logic: đạt BẤT KỲ 1 threshold → giữ lại
+                    # Instagram ảnh thường không có views → dùng AND sẽ loại gần hết
+                    # Chỉ loại bài KHÔNG đạt bất kỳ threshold nào (真正的 spam)
+                    passes = (
+                        (min_likes > 0 and likes >= min_likes) or
+                        (min_views > 0 and views >= min_views) or
+                        (min_comments > 0 and comments >= min_comments)
+                    )
+                    if passes:
+                        filtered_ig.append(r)
+                if filtered_ig:  # Chỉ áp dụng nếu còn kết quả
+                    results = filtered_ig
+                    self.logger.info(f"Instagram engagement filter: {before_eng} -> {len(results)} (min_likes={min_likes}, min_views={min_views})")
+                else:
+                    self.logger.info(f"Instagram engagement filter: bỏ qua (không còn kết quả nào thỏa mãn)")
+
             # Instagram: random.sample từ pool (không lấy từ đầu) để đa dạng hóa kết quả
             # Pool đã được shuffle (time-seeded) bên trên nên slice từ đầu = random sample thực sự
             if self.platform == Platform.INSTAGRAM and len(results) > max_results:
                 results = results[:max_results]
-                self.logger.info(f"Sampled {max_results} from pool of {len(results)} (randomized each search)")
+                self.logger.info(f"Instagram: sampled {max_results} from pool (randomized each search)")
+
+            # TikTok: Lọc theo độ liên quan (keyword mode) và chất lượng engagement.
+            if self.platform == Platform.TIKTOK and results:
+                search_mode_val = (search_mode or "hashtag").strip().lower()
+                clean_kw = keyword.replace('#', '').strip()
+                
+                # --- BƯỚC 1: Keyword Relevance Filter ---
+                # Khi search_mode='keyword': lọc video có description/hashtag chứa keyword
+                # Khi search_mode='hashtag': TikTok đã đảm bảo hashtag match, không cần lọc thêm
+                if search_mode_val == "keyword" and clean_kw:
+                    before_kw = len(results)
+                    results_before_kw = list(results)
+                    relevant = [r for r in results if isinstance(r, dict) and self._tiktok_is_relevant(r, clean_kw)]
+                    self.logger.info(f"TikTok keyword filter: {before_kw} -> {len(relevant)} (keyword='{clean_kw}')")
+                    # Nếu filter quá chặt (<30%), giữ nguyên nhưng sort relevant lên trước
+                    if len(relevant) < before_kw * 0.3 and before_kw >= 5:
+                        self.logger.info("TikTok keyword filter quá chặt, sort by relevance thay vì bỏ")
+                        results = self._tiktok_sort_by_relevance(results_before_kw, clean_kw)
+                    else:
+                        results = relevant
+                
+                # --- BƯỚC 2: Engagement Quality Filter ---
+                # Loại bỏ video có tương tác quá thấp (spam/rác) nếu có yêu cầu filter
+                if (min_likes > 0 or min_views > 0 or min_comments > 0) and results:
+                    before_eng = len(results)
+                    def _get_stat(r, keys, default=0):
+                        for k in keys:
+                            v = r.get(k) or (r.get('stats', {}) or r.get('statistics', {})).get(k, 0)
+                            if v:
+                                try: return int(v)
+                                except: pass
+                        return default
+                    
+                    filtered_by_eng = []
+                    for r in results:
+                        if not isinstance(r, dict):
+                            continue
+                        likes = _get_stat(r, ['likes', 'diggCount', 'heart'])
+                        views = _get_stat(r, ['views', 'playCount', 'play_count'])
+                        comments = _get_stat(r, ['comments', 'commentCount', 'comment_count'])
+                        if likes >= min_likes and views >= min_views and comments >= min_comments:
+                            filtered_by_eng.append(r)
+                    
+                    if filtered_by_eng:  # Chỉ áp dụng nếu còn kết quả
+                        results = filtered_by_eng
+                        self.logger.info(f"TikTok engagement filter: {before_eng} -> {len(results)} (min_likes={min_likes}, min_views={min_views})")
+                    else:
+                        self.logger.info(f"TikTok engagement filter: bỏ qua (không còn kết quả nào thỏa mãn)")
+                
+                # --- BƯỚC 3: Variety Expansion + Sort Trend + Random Sample ---
+                # Nếu pool nhỏ, hãy thử fetch thêm profile/hashtag liên quan (đã build ở input)
+                # Hoặc đơn giản là fetch dư ra 1.5x để sample.
+                
+                results = sorted(
+                    results,
+                    key=lambda r: self._compute_trend_score(r, 'tiktok'),
+                    reverse=True  # cao nhất lên đầu
+                )
+                self.logger.info(f"TikTok: sorted by trend_score (viral + recency)")
+
+                seed_val = int(time.time() * 1000) % (2**31)
+                rng = random.Random(seed_val)
+
+                # Variety: Sample từ pool lớn (nếu có)
+                if len(results) >= max_results:
+                    # Lấy pool rộng xíu (1.5x) để chọn 30 cái ngẫu nhiên
+                    # Nếu len(results) == max_results, sample sẽ trả về đúng ngần đó nhưng order khác
+                    # Để variety thực sự, pool_to_sample nên > max_results
+                    pool_to_sample = results[:max(int(max_results * 1.5), len(results))]
+                    results = rng.sample(pool_to_sample, min(max_results, len(pool_to_sample)))
+                    self.logger.info(f"TikTok Variety: sampled {max_results} from {len(pool_to_sample)} (seed={seed_val})")
+                else:
+                    rng.shuffle(results)
+                    self.logger.info(f"TikTok: shuffled {len(results)} (pool too small for variety)")
+
+            # Instagram: Sort trend + random.sample từ pool lớn
+            # Pool = 4× max_results (60 bài), sort viral+recent trước, sample ngẫu nhiên
+            if self.platform == Platform.INSTAGRAM and results:
+                # Sort trend trước: viral + gần đây → lên đầu pool
+                results = sorted(
+                    results,
+                    key=lambda r: self._compute_trend_score(r, 'instagram'),
+                    reverse=True
+                )
+                self.logger.info(f"Instagram: sorted by trend_score (viral + recency), pool={len(results)}")
+
+                seed_val = int(time.time() * 1000) % (2**31)
+                rng_ig = random.Random(seed_val)
+                if len(results) > max_results:
+                    # Sample trong top-half để đa dạng nhưng vẫn ưu tiên xu hướng
+                    top_pool = results[:max(max_results * 2, len(results) // 2)]
+                    results = rng_ig.sample(top_pool, min(max_results, len(top_pool)))
+                    self.logger.info(f"Instagram: sampled {max_results} from top-{len(top_pool)} trend pool")
+                else:
+                    rng_ig.shuffle(results)
+                    self.logger.info(f"Instagram: shuffled {len(results)} (pool too small)")
             self.logger.info(f"Found {len(results)} videos for keyword: {keyword}")
             return results
             
@@ -1556,7 +1862,7 @@ class ApifyScraperService(BaseScraperService):
 def create_scraper(platform: str, search_type: str = 'posts') -> ApifyScraperService:
     """
     Create a scraper instance for the specified platform.
-    
+    +
     Args:
         platform: Platform name (tiktok, instagram, facebook, douyin)
         search_type: specific search type (e.g. 'reels', 'posts')

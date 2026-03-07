@@ -406,6 +406,22 @@ def list_voices(request):
             "gender": "female",
             "provider": "heygen",
             "is_cloned": False
+        },
+        {
+            "voice_id": "3f7bd9c515cb40cead3a233461c713ca",
+            "name": "HuyK (TikTok)",
+            "language": "vi-VN",
+            "gender": "male",
+            "provider": "heygen",
+            "is_cloned": True
+        },
+        {
+            "voice_id": "QJxxo4VGVj80QFWwztX8",
+            "name": "huyk2.MP3",
+            "language": "vi-VN",
+            "gender": "male",
+            "provider": "heygen",
+            "is_cloned": True
         }
     ]
 
