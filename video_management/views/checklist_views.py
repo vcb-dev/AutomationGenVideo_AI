@@ -14,6 +14,8 @@ from rest_framework.response import Response
 import uuid
 from rest_framework.permissions import AllowAny
 from ..models import LarkReport, AppUser, LarkEmployee, ReportOutstanding, LarkPermission, ReportSettings
+from ..utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
+from ..tasks import push_report_to_lark_task
 
 logger = logging.getLogger(__name__)
 
@@ -27,48 +29,7 @@ LARK_BITABLE_SEARCH_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/
 
 
 
-def get_lark_tenant_access_token():
-    """Lấy tenant_access_token từ Lark (cache đơn giản trong process, expire 2h)."""
-    app_id = getattr(settings, "LARK_APP_ID", "") or ""
-    app_secret = getattr(settings, "LARK_APP_SECRET", "") or ""
-    if not app_id or not app_secret:
-        raise ValueError("LARK_APP_ID và LARK_APP_SECRET phải được cấu hình trong .env")
-    resp = requests.post(
-        LARK_TOKEN_URL,
-        json={"app_id": app_id, "app_secret": app_secret},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("code") != 0:
-        raise ValueError(data.get("msg", "Lark token error"))
-    return data["tenant_access_token"]
-
-
-def create_bitable_record(tenant_access_token: str, fields: dict) -> dict:
-    app_token = getattr(settings, "LARK_BASE_ID", "") or ""
-    table_id = getattr(settings, "LARK_TABLE_ID", "") or ""
-    if not app_token or not table_id:
-        raise ValueError("LARK_BASE_ID và LARK_TABLE_ID phải được cấu hình")
-    url = LARK_BITABLE_RECORDS_URL.format(app_token=app_token, table_id=table_id)
-    headers = {
-        "Authorization": f"Bearer {tenant_access_token}",
-        "Content-Type": "application/json; charset=utf-8",
-    }
-    payload = {"fields": fields}
-    resp = requests.post(url, json=payload, headers=headers, timeout=15)
-    try:
-        body = resp.json()
-    except Exception:
-        body = {}
-    if not resp.ok:
-        err_msg = body.get("msg", body.get("error", resp.text or resp.reason))
-        logger.warning("Lark Bitable %s: %s", resp.status_code, body)
-        raise requests.HTTPError(
-            f"Lark Bitable {resp.status_code}: {err_msg}",
-            response=resp,
-        )
-    return body
+# Lark helpers moved to utils/lark_utils.py
 
 
 def search_user_by_email(tenant_access_token: str, email: str) -> dict:
@@ -78,6 +39,8 @@ def search_user_by_email(tenant_access_token: str, email: str) -> dict:
     """
     app_token = getattr(settings, "LARK_BASE_ID", "") or ""
     table_id = getattr(settings, "LARK_TABLE_ID", "") or ""
+    LARK_BITABLE_SEARCH_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/search"
+
     if not app_token or not table_id:
         logger.warning("Không có LARK_BASE_ID hoặc LARK_TABLE_ID để search")
         return {}
@@ -273,6 +236,7 @@ class ChecklistCheckView(APIView):
             result["lark_msg"] = "Thiếu LARK_BASE_ID"
             return Response(result, status=status.HTTP_200_OK)
 
+        LARK_BITABLE_APP_URL = "https://open.larksuite.com/open-apis/bitable/v1/apps/{app_token}"
         url = LARK_BITABLE_APP_URL.format(app_token=base_id)
         resp = requests.get(
             url,
@@ -363,12 +327,12 @@ class ChecklistSubmitView(APIView):
             except Exception as e:
                 logger.warning("Lỗi lookup LarkEmployee: %s", e)
 
-            # Tạo ID ngẫu nhiên cho bản ghi (thay vì lấy từ Lark)
-            record_id = f"local_{uuid.uuid4().hex[:12]}"
-            
+            # Tạo ID ngẫu nhiên cho bản ghi Local
+            main_record_id = f"local_{uuid.uuid4().hex[:12]}"
+
             # --- LƯU VÀO DATABASE (Postgres) ---
             report = LarkReport.objects.create(
-                id=record_id,
+                id=main_record_id,
                 name=user_name,
                 email=user_email,
                 team=user_team,
@@ -378,8 +342,8 @@ class ChecklistSubmitView(APIView):
                 date=current_datetime,
             )
             
-            # --- LƯU VÀO ReportOutstanding ---
-            # 1. Tìm team từ LarkPermission nếu chưa có team (đồng bộ với yêu cầu: team dựa vào email check trong larkPermission)
+            # --- LƯU VÀO ReportOutstanding (LOCAL) ---
+            # 1. Tìm team từ LarkPermission nếu chưa có team
             if not user_team:
                 try:
                     perm = LarkPermission.objects.filter(email__iexact=user_email).first()
@@ -388,15 +352,12 @@ class ChecklistSubmitView(APIView):
                 except Exception as e:
                     logger.warning("Lỗi lookup LarkPermission cho ReportOutstanding: %s", e)
 
-            # 2. Map các câu hỏi sang ReportOutstanding (nếu có nội dung trả lời)
+            # 2. Map các câu hỏi sang ReportOutstanding
             outstanding_mappings = [
-                # Câu hỏi từ DetailSection (Nhân viên)
                 ("4. Bạn có đóng góp ý tưởng hay đề xuất gì không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
                 ("3. Bạn có gặp khó khăn nào cần hỗ trợ không?", "KHÓ KHĂN CẦN HỖ TRỢ"),
                 ("5. Bạn có sản phẩm (A4 - A5) nào win mới không? (>5k view - >10 cmt hỏi giá?)", "VIDEO SẢN PHẨM WIN"),
                 ("2. Hôm qua có đổi mới sáng tạo gì được áp dụng vào công việc của bạn không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
-                
-                # Câu hỏi từ LeaderEvaluationSection (Quản lý)
                 ("2. Team bạn hôm qua có thành viên nào có video Win nhất?", "VIDEO WIN"),
                 ("3. Team bạn hôm qua có gì đổi mới được áp dụng không?", "Ý KIẾN ĐÓNG GÓP CẢI TIẾN MỚI"),
                 ("5. Team bạn hôm qua có sản phẩm nào win mới không? Đã thông tin lên Group New Product chưa?", "VIDEO SẢN PHẨM WIN"),
@@ -404,7 +365,6 @@ class ChecklistSubmitView(APIView):
 
             for q_key, content_label in outstanding_mappings:
                 answer = checklist_data.get(q_key)
-                # Chỉ lưu nếu có câu trả lời và không phải là "Không ạ"
                 if answer and isinstance(answer, str) and answer.strip() and answer.strip().lower() not in ["không", "không có", "k", "no", "none", ".", "không ạ"]:
                     try:
                         ReportOutstanding.objects.create(
@@ -415,17 +375,23 @@ class ChecklistSubmitView(APIView):
                             content=content_label,
                             idea_content=answer.strip(),
                             email=user_email,
-                            status=None # để sau chưa cần có dữ liệu
+                            status=None 
                         )
                     except Exception as e:
-                        logger.error("Lỗi lưu ReportOutstanding cho câu hỏi '%s': %s", q_key, e)
+                        logger.error("Lỗi lưu ReportOutstanding local cho câu hỏi '%s': %s", q_key, e)
 
-            logger.info("Đã lưu báo cáo LOCAL %s và ReportOutstanding cho %s", record_id, user_email)
+            # --- TRIGGER BACKGROUND SYNC TO LARK ---
+            try:
+                # Gửi task vào Celery để xử lý việc đẩy dữ liệu lên Lark ở background
+                push_report_to_lark_task.delay(main_record_id)
+                logger.info("Triggered background sync to Lark for %s", user_email)
+            except Exception as e:
+                logger.error("Could not trigger background task for Lark sync: %s", e)
 
             return Response({
                 "success": True,
-                "message": "Báo cáo thành công",
-                "record_id": record_id,
+                "message": "Báo cáo thành công (Đang đồng bộ lên Lark Suite...)",
+                "record_id": main_record_id,
             }, status=status.HTTP_201_CREATED)
 
         except Exception as e:
