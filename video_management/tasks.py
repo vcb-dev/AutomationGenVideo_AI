@@ -243,9 +243,11 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
             # but we could store lark_record_id in a separate field if it existed.
         
         # 2. Push Outstanding items
+        # Use DD/MM/YYYY since we save it that way in the view
+        report_date_str = report.date.strftime("%d/%m/%Y") if report.date else ""
         outstanding_items = ReportOutstanding.objects.filter(
             email=report.email,
-            date=report.date,
+            date=report_date_str,
             name=report.name
         )
         
@@ -254,25 +256,25 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
         for item in outstanding_items:
             try:
                 # Map fields precisely to tbluurIuf2qDCdFr schema
+                # Based on actual API check: HoTen, Email, Role, Team, Ngày tháng, Phân loại, Nội dung
                 lark_out_fields = {
-                    "Họ tên": item.name,
-                    "Ngày": lark_timestamp,
-                    "Team": item.team if item.team else "",
+                    "HoTen": item.name,
                     "Email": item.email,
-                    "Nội dung": item.content,  # User's actual text
-                    "Đề xuất": item.category,  # Category label like "KHÓ KHĂN..."
+                    "Role": report.role if report.role else "",
+                    "Team": item.team if item.team else "",
+                    "Ngày tháng": report_date_str, # Field is type Text (1) - using user's format
+                    "Phân loại": item.category, # e.g. "KHÓ KHĂN CẦN HỖ TRỢ"
+                    "Nội dung": item.content,    # The actual answer text
                 }
-
                 
                 if report.employee:
                     lark_out_fields["Nhân viên"] = report.employee
                 
-                logger.info(f"Pushing outstanding item format: {item.content}")
+                logger.info(f"Pushing outstanding item category: {item.category} for {report.name}")
                 create_bitable_record(lark_token, lark_out_fields, table_id=outstanding_table_id)
             except Exception as e:
-                logger.error(f"Error creating outstanding record for report {report_id}: {e}")
-
                 logger.error(f"Error pushing outstanding item {item.id} to Lark: {e}")
+
 
         return {"success": True, "lark_id": lark_record_id}
 

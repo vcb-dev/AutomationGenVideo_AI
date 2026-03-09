@@ -370,16 +370,16 @@ class ChecklistSubmitView(APIView):
                 if answer and isinstance(answer, str) and answer.strip() and answer.strip().lower() not in ["không", "không có", "k", "no", "none", ".", "không ạ"]:
                     try:
                         ReportOutstanding.objects.create(
+                            id=f"out_{uuid.uuid4().hex[:12]}",
                             name=user_name,
-                            date=current_datetime.isoformat(),
+                            date=current_datetime.strftime("%d/%m/%Y"),
                             team=user_team,
-
                             category=content_label,
                             content=answer.strip(),
-
                             email=user_email,
                             status=None 
                         )
+
                     except Exception as e:
                         logger.error("Lỗi lưu ReportOutstanding local cho câu hỏi '%s': %s", q_key, e)
 
