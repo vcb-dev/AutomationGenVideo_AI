@@ -212,21 +212,28 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
         lark_token = get_lark_tenant_access_token()
         
         # 1. Push main report
-        lark_timestamp = int(report.date.timestamp() * 1000)
+        sync_date = report.date or report.created_at or timezone.now()
+        lark_timestamp = int(sync_date.timestamp() * 1000)
         lark_report_fields = {
             "HoTen": report.name,
-            "Họ tên": report.name,
             "Email": report.email,
             "Date": lark_timestamp,
-            "Role": report.role if report.role else "",
-            "Team": report.team if report.team else "",
             "Answers": json.dumps(report.answers, ensure_ascii=False) if isinstance(report.answers, dict) else (report.answers or ""),
         }
         
+        if report.role:
+            lark_report_fields["Role"] = report.role
+        if report.team:
+            lark_report_fields["Team"] = report.team
         if report.employee:
             lark_report_fields["Nhân viên"] = report.employee
 
-        lark_resp = create_bitable_record(lark_token, lark_report_fields)
+        try:
+            lark_resp = create_bitable_record(lark_token, lark_report_fields)
+        except Exception as e:
+            logger.error(f"Error creating bitable record for report {report_id}: {e}")
+            return {"status": "error", "message": f"Push to main report failed: {e}"}
+
         lark_record_id = None
         
         if lark_resp.get("code") == 0:
@@ -246,26 +253,25 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
         
         for item in outstanding_items:
             try:
+                # Map fields precisely to tbluurIuf2qDCdFr schema
                 lark_out_fields = {
-                    "HoTen": item.name,
                     "Họ tên": item.name,
-                    "HoTen": item.name,
-                    "Ngày tháng": lark_timestamp,
-                    "Ngày tháng": lark_timestamp,
+                    "Ngày": lark_timestamp,
                     "Team": item.team if item.team else "",
-                    "Chức danh": report.role if report.role else "",
-                    "Role": report.role if report.role else "",
                     "Email": item.email,
-                    "Phân loại": item.content,
-                    "Phân loại": item.content,
-                    "Nội dung": item.idea_content,
-                    "Nội dung": item.idea_content,
+                    "Nội dung": item.content,  # User's actual text
+                    "Đề xuất": item.category,  # Category label like "KHÓ KHĂN..."
                 }
+
+                
                 if report.employee:
                     lark_out_fields["Nhân viên"] = report.employee
                 
+                logger.info(f"Pushing outstanding item format: {item.content}")
                 create_bitable_record(lark_token, lark_out_fields, table_id=outstanding_table_id)
             except Exception as e:
+                logger.error(f"Error creating outstanding record for report {report_id}: {e}")
+
                 logger.error(f"Error pushing outstanding item {item.id} to Lark: {e}")
 
         return {"success": True, "lark_id": lark_record_id}

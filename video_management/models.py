@@ -1267,8 +1267,9 @@ class AppUser(models.Model):
     id = models.CharField(max_length=255, primary_key=True)
     email = models.CharField(max_length=255, unique=True)
     full_name = models.CharField(max_length=255)
-    role = models.CharField(max_length=50)
+    roles = models.TextField(db_column='roles', null=True, blank=True)
     manager_id = models.CharField(max_length=255, null=True, blank=True)
+
 
     class Meta:
         db_table = 'users'
@@ -1294,11 +1295,13 @@ class LarkPermission(models.Model):
 class ReportOutstanding(models.Model):
     id = models.CharField(max_length=255, primary_key=True)
     name = models.CharField(max_length=255)
-    date = models.DateTimeField(default=timezone.now)
+    date = models.CharField(max_length=100, null=True, blank=True)
     team = models.CharField(max_length=255, null=True, blank=True)
-    content = models.TextField(null=True, blank=True)
-    idea_content = models.TextField(null=True, blank=True)
+
+    category = models.TextField(db_column='category', null=True, blank=True)
+    content = models.TextField(db_column='content', null=True, blank=True)
     status = models.CharField(max_length=255, null=True, blank=True)
+
     email = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -2,7 +2,6 @@
 import os
 import django
 import sys
-import json
 
 # Setup Django
 sys.path.append(os.getcwd())
@@ -11,15 +10,17 @@ django.setup()
 
 from video_management.models import LarkReport
 
-def check_answer_keys():
-    ids = ['local_cb7942823159']
+def check_field_values():
+    ids = ['local_cb7942823159', 'local_d6925663691a']
     for rid in ids:
         try:
             report = LarkReport.objects.get(id=rid)
             print(f"Report: {rid}")
-            print(json.dumps(list(report.answers.keys()), ensure_ascii=False, indent=2))
+            print(f"  Name: {report.name}")
+            print(f"  Date: {report.date}")
+            print(f"  Created At: {report.created_at}")
         except LarkReport.DoesNotExist:
             print(f"Report {rid} not found.")
 
 if __name__ == "__main__":
-    check_answer_keys()
+    check_field_values()

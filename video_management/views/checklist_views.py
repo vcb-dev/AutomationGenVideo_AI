@@ -311,10 +311,12 @@ class ChecklistSubmitView(APIView):
             user_role = None
             try:
                 user_record = AppUser.objects.filter(email=user_email).first()
-                if user_record:
-                    user_role = user_record.role
+                if user_record and user_record.roles:
+                    # Parse first role if it's a string representation of postgres array
+                    user_role = str(user_record.roles).replace("{", "").replace("}", "").split(",")[0]
             except Exception as e:
                 logger.warning("Lỗi lookup AppUser: %s", e)
+
 
             # 2. Lookup thông tin từ table LarkEmployee (nếu có để lấy Team)
             user_team = None
@@ -368,12 +370,13 @@ class ChecklistSubmitView(APIView):
                 if answer and isinstance(answer, str) and answer.strip() and answer.strip().lower() not in ["không", "không có", "k", "no", "none", ".", "không ạ"]:
                     try:
                         ReportOutstanding.objects.create(
-                            id=f"out_{uuid.uuid4().hex[:12]}",
                             name=user_name,
-                            date=current_datetime,
+                            date=current_datetime.isoformat(),
                             team=user_team,
-                            content=content_label,
-                            idea_content=answer.strip(),
+
+                            category=content_label,
+                            content=answer.strip(),
+
                             email=user_email,
                             status=None 
                         )
