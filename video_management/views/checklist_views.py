@@ -390,7 +390,7 @@ class ChecklistSubmitView(APIView):
 
             return Response({
                 "success": True,
-                "message": "Báo cáo thành công (Đang đồng bộ lên Lark Suite...)",
+                "message": "Báo cáo thành công",
                 "record_id": main_record_id,
             }, status=status.HTTP_201_CREATED)
 
