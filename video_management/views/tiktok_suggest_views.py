@@ -178,17 +178,22 @@ def tiktok_search_suggest(request):
 
 
 def _trigger_gemini_background(query: str, platform: str, count: int):
-    """Spawn background thread to generate Gemini pool (non-blocking)."""
+    """Spawn background thread to generate Gemini pool (non-blocking).
+    ⚠️ Giới hạn: chỉ generate khi pool hoàn toàn chưa có, không tự refresh
+    để tránh burn API quota của các tính năng quan trọng hơn (content generation).
+    """
     query_lower = query.lower()
     cache_key = f"{platform}:{query_lower}"
-    
+
     with _gemini_lock:
         if cache_key in _generating:
             return
+        # Nếu pool đã có → không refresh, giữ quota cho content generation
         if cache_key in _gemini_pool:
-            entry = _gemini_pool[cache_key]
-            if time.time() - entry['ts'] < 3000:
-                return
+            return
+        # Chỉ generate nếu query đủ dài (>= 4 chars) để tránh waste
+        if len(query_lower) < 4:
+            return
         _generating.add(cache_key)
 
     def _generate():
@@ -206,6 +211,7 @@ def _trigger_gemini_background(query: str, platform: str, count: int):
 
     thread = threading.Thread(target=_generate, daemon=True)
     thread.start()
+
 
 
 

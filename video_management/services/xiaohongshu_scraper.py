@@ -5,6 +5,8 @@ This service handles keyword search on Xiaohongshu platform.
 """
 
 import logging
+import random
+import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from django.conf import settings
@@ -55,14 +57,17 @@ class XiaohongshuScraperService:
             clean_term = search_term.strip()
             
             # Build actor input based on kuaima/xiaohongshu-search schema
+            # Giới hạn fetch_limit max 35 để tiết kiệm Apify credits
+            fetch_limit = min(max_posts + 5, 35)
+            
             actor_input = {
                 "keywords": [clean_term],
                 "sortType": sort_type,
-                "maxItems": max_posts,
+                "maxItems": fetch_limit,
                 "proxyConfig": { "useApifyProxy": True }
             }
             
-            logger.info(f"Searching Xiaohongshu - Term: {clean_term}, Sort: {sort_type}, Max: {max_posts}")
+            logger.info(f"Searching Xiaohongshu - Term: {clean_term}, Sort: {sort_type}, Fetch: {fetch_limit}")
             
             # Run the actor
             run = self.client.actor(self.actor_id).call(
@@ -93,6 +98,13 @@ class XiaohongshuScraperService:
             # Normalize data
             normalized_items = [self._normalize_note_data(item) for item in items]
             
+            # --- Variety Expansion logic for XHS ---
+            rng = random.Random(int(time.time() * 1000))
+            if len(normalized_items) > max_posts:
+                normalized_items = rng.sample(normalized_items, max_posts)
+            else:
+                rng.shuffle(normalized_items)
+
             return normalized_items
             
         except Exception as e:

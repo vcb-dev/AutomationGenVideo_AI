@@ -125,6 +125,13 @@ urlpatterns += [
     path('api/content/<int:content_id>/', content_generation_views.get_content_detail, name='content-detail'),
 ]
 
+# Video Transcription (Speech-to-Text via OpenAI Whisper)
+from video_management.views import transcribe_views
+
+urlpatterns += [
+    path('api/content/transcribe/', transcribe_views.transcribe_video, name='content-transcribe'),
+]
+
 # Serve media files in development
 from django.conf import settings
 from django.conf.urls.static import static
@@ -132,3 +139,4 @@ from django.conf.urls.static import static
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+

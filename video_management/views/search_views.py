@@ -162,6 +162,7 @@ class SearchView(APIView):
         use_cache = data.get('use_cache', True)
         async_mode = data.get('async_mode', False)
         search_type = data.get('search_type', 'posts')
+        session_id = data.get('session_id', None)
         
         # Force fresh scraping for Instagram to get latest posts
         if platform_str.lower() == 'instagram':
@@ -171,7 +172,7 @@ class SearchView(APIView):
         logger.info(
             f"Search request: platform={platform_str}, type={search_type}, mode={search_mode}, keyword={keyword}, "
             f"min_likes={min_likes}, min_views={min_views}, min_comments={min_comments}, "
-            f"page={page}, max_results={max_results}, async={async_mode}, use_cache={use_cache}"
+            f"page={page}, max_results={max_results}, async={async_mode}, use_cache={use_cache}, session_id={session_id}"
         )
         
         try:
@@ -187,7 +188,8 @@ class SearchView(APIView):
                     page=page,
                     use_cache=use_cache,
                     search_type=search_type,
-                    search_mode=search_mode
+                    search_mode=search_mode,
+                    session_id=session_id
                 )
                 
                 return Response({
@@ -209,7 +211,8 @@ class SearchView(APIView):
                 page=page,
                 search_mode=search_mode,
                 use_cache=use_cache,
-                save_to_db=True
+                save_to_db=True,
+                session_id=session_id
             )
 
             
@@ -812,111 +815,110 @@ class UserVideosView(APIView):
                 use_graph_api = False
                 page_info = {}
                 
-                # Fetch posts first (this is what user needs most)
-                # GRACEFUL FALLBACK: If Apify fails, return DB cache
-                try:
-                    logger.info(f"📝 Fetching posts for @{username}... (limit: {smart_limit})")
-                    raw_results = scraper.get_user_videos(username, max_results=smart_limit, until_date=start_date)
-                    logger.info(f"✅ Fetched {len(raw_results)} posts")
-                except Exception as fetch_error:
-                    error_msg = str(fetch_error)
-                    logger.error(f"❌ External fetch failed: {error_msg}")
-                    
-                    # Check if it's Apify limit error
-                    if "Monthly usage hard limit exceeded" in error_msg or "limit exceeded" in error_msg.lower():
-                        logger.warning(f"⚠️ Apify limit exceeded. Falling back to DB cache...")
-                        
-                        # Return DB cache if available
-                        if db_videos:
-                            logger.info(f"💾 Returning {len(db_videos)} cached videos (Apify limit fallback)")
-                            normalized = []
-                            for vid in db_videos:
-                                norm_item = {
-                                    'video_id': vid.video_id,
-                                    'title': vid.title,
-                                    'description': vid.description,
-                                    'video_url': vid.video_url,
-                                    'thumbnail_url': vid.thumbnail_url,
-                                    'likes_count': vid.likes_count,
-                                    'comments_count': vid.comments_count,
-                                    'shares_count': vid.shares_count,
-                                    'views_count': vid.views_count,
-                                    'published_at': vid.published_at,
-                                    'timestamp': int(vid.published_at.timestamp()) if vid.published_at else 0,
-                                    'author_name': vid.author_name,
-                                    'author_username': vid.author_username,
-                                    'platform': platform_str.lower(),
-                                    'raw_data': vid.raw_data
-                                }
-                                normalized.append(norm_item)
-                            
-                            first_vid = db_videos[0]
-                            avatar_url = first_vid.thumbnail_url
-                            if first_vid.raw_data:
-                                raw = first_vid.raw_data
-                                if 'owner' in raw and isinstance(raw['owner'], dict):
-                                    avatar_url = raw['owner'].get('profile_picture_url') or avatar_url
-                                elif 'from' in raw and isinstance(raw['from'], dict):
-                                    avatar_url = raw['from'].get('picture', {}).get('data', {}).get('url') or avatar_url
-                            
-                            profile_data = {
-                                'username': username,
-                                'display_name': first_vid.author_name or username,
-                                'avatar_url': avatar_url,
-                                'followers': 0,
-                                'likes': 0
-                            }
-                            
-                            # Calculate cache age from latest DB entry
-                            age_hours = 0
-                            if normalized:
-                                # created_at is not in normalized dict, use first_vid from DB
-                                if first_vid.created_at:
-                                     age_hours = (timezone.now() - first_vid.created_at).total_seconds() / 3600
-                            
-                            return Response({
-                                'results': normalized,
-                                'profile': profile_data,
-                                'total': len(normalized),
-                                'source': 'database_cache_fallback',
-                                'warning': 'Apify monthly limit exceeded. Showing cached data. Please try again next month or upgrade your Apify plan.',
-                                'cache_age_hours': round(age_hours, 1)
-                            })
-                        else:
-                            # No cache available
-                            raise ScraperException(f"Apify limit exceeded and no cached data available. Please try again next month.")
-                    else:
-                        # Other error, re-raise
-                        raise
+                # ✨ CONCURRENT FETCH: Posts + Page Info at the same time
+                # Instead of sequential (posts → page info = 40s+40s = 80s),
+                # run them in parallel so total = max(40s, 40s) = 40s.
+                # Cache is checked first (instant) before calling Apify.
                 
-                # ✨ SMART PAGE INFO CACHING (24h TTL)
-                # Check cache first to avoid unnecessary Apify calls
-                # This reduces quota usage by ~50% since page info rarely changes
-                def fetch_page_info_from_apify(username_to_fetch):
-                    """Callback to fetch fresh page info from Apify when cache expired."""
+                is_quick_scan = smart_limit <= 5
+                import concurrent.futures
+                
+                def _fetch_posts_concurrent():
+                    logger.info(f"📝 [Concurrent] Fetching posts for @{username}... (limit: {smart_limit})")
+                    return scraper.get_user_videos(username, max_results=smart_limit, until_date=start_date)
+                
+                def _fetch_page_info_concurrent():
+                    """Try DB cache first (instant), then Apify if cache miss."""
                     try:
-                        logger.info(f"📊 Cache MISS - Fetching fresh page metadata from Apify...")
-                        fresh_info = scraper.get_page_info(username_to_fetch)
-                        logger.info(f"✅ Fresh Page Info: {fresh_info.get('followers', 0):,} followers")
-                        return fresh_info
+                        cached = FacebookPageCache.objects.get(username=username)
+                        if not cached.is_expired():
+                            logger.info(f"💾 [Concurrent] Page info from CACHE: {cached.followers_count:,} followers")
+                            return {
+                                'username': cached.username,
+                                'name': cached.page_name,
+                                'display_name': cached.page_name,
+                                'avatar_url': cached.avatar_url,
+                                'followers': int(cached.followers_count),
+                                'likes': int(cached.likes_count),
+                                'source': 'cache'
+                            }
+                    except FacebookPageCache.DoesNotExist:
+                        pass
+                    
+                    # Cache miss → fetch from Apify
+                    logger.info(f"📊 [Concurrent] Cache MISS → fetching page info from Apify (page scraper)...")
+                    try:
+                        fresh_info = scraper.get_page_info(username)
+                        logger.info(f"✅ [Concurrent] Page info from Apify: keys={list(fresh_info.keys()) if fresh_info else []}")
+                        # Store in cache via get_or_fetch normalizer
+                        if fresh_info:
+                            FacebookPageCache.get_or_fetch(username=username, fetch_callback=lambda _: fresh_info)
+                        return fresh_info or {}
                     except Exception as e:
-                        logger.warning(f"⚠️ Apify page fetch failed: {str(e)[:100]}")
-                        return {
-                            'name': username_to_fetch,
-                            'followers': 0,
-                            'likes': 0
-                        }
+                        logger.warning(f"⚠️ [Concurrent] Page info Apify failed: {str(e)[:100]}")
+                        return {}
                 
-                # Use cache-first strategy
-                page_info = FacebookPageCache.get_or_fetch(
-                    username=username,
-                    fetch_callback=fetch_page_info_from_apify
-                )
-                
-                if page_info.get('source') == 'cache':
-                    logger.info(f"💾 Page Info from CACHE (age: {page_info.get('cached_at', 'unknown')})")
-                else:
-                    logger.info(f"🆕 Page Info FRESHLY fetched (now cached for 24h)")
+                # Start both tasks concurrently
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    posts_future = executor.submit(_fetch_posts_concurrent)
+                    page_future = executor.submit(_fetch_page_info_concurrent)
+                    
+                    # Collect posts result (primary - required)
+                    try:
+                        raw_results = posts_future.result(timeout=120)
+                        logger.info(f"✅ Fetched {len(raw_results)} posts")
+                    except Exception as fetch_error:
+                        page_future.cancel()
+                        error_msg = str(fetch_error)
+                        logger.error(f"❌ External fetch failed: {error_msg}")
+                        
+                        # Check if it's Apify limit error → fallback to DB cache
+                        if "Monthly usage hard limit exceeded" in error_msg or "limit exceeded" in error_msg.lower():
+                            logger.warning(f"⚠️ Apify limit exceeded. Falling back to DB cache...")
+                            if db_videos:
+                                logger.info(f"💾 Returning {len(db_videos)} cached videos (Apify limit fallback)")
+                                normalized = []
+                                for vid in db_videos:
+                                    normalized.append({
+                                        'video_id': vid.video_id, 'title': vid.title,
+                                        'description': vid.description, 'video_url': vid.video_url,
+                                        'thumbnail_url': vid.thumbnail_url, 'likes_count': vid.likes_count,
+                                        'comments_count': vid.comments_count, 'shares_count': vid.shares_count,
+                                        'views_count': vid.views_count, 'published_at': vid.published_at,
+                                        'timestamp': int(vid.published_at.timestamp()) if vid.published_at else 0,
+                                        'author_name': vid.author_name, 'author_username': vid.author_username,
+                                        'platform': platform_str.lower(), 'raw_data': vid.raw_data
+                                    })
+                                first_vid = db_videos[0]
+                                age_hours = round((timezone.now() - first_vid.created_at).total_seconds() / 3600, 1) if first_vid.created_at else 0
+                                return Response({
+                                    'results': normalized,
+                                    'profile': {'username': username, 'display_name': first_vid.author_name or username,
+                                                'avatar_url': first_vid.thumbnail_url, 'followers': 0, 'likes': 0},
+                                    'total': len(normalized),
+                                    'source': 'database_cache_fallback',
+                                    'warning': 'Apify monthly limit exceeded. Showing cached data.',
+                                    'cache_age_hours': age_hours
+                                })
+                            else:
+                                raise ScraperException("Apify limit exceeded and no cached data available.")
+                        else:
+                            raise  # Other errors: re-raise
+                    
+                    # Collect page info result (best-effort, don't block on it too long)
+                    page_timeout = 55 if is_quick_scan else 90
+                    try:
+                        page_info = page_future.result(timeout=page_timeout) or {}
+                        dbg_followers = page_info.get('followers') or page_info.get('followersCount') or 0
+                        logger.info(f"✅ Page info ready: followers={dbg_followers}, source={page_info.get('source', 'apify_fresh')}")
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"⏰ Page info timed out after {page_timeout}s, proceeding without it")
+                        page_info = {}
+                    except Exception as pe:
+                        logger.warning(f"⚠️ Page info error: {pe}")
+                        page_info = {}
+
+
                 
                 
                 # Normalize data
@@ -1077,39 +1079,47 @@ class UserVideosView(APIView):
                             end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
                             
                             filtered_normalized = []
+                            no_date_posts = []  # posts without date → keep as fallback
                             for post in normalized:
                                 pub_at = post.get('published_at') or post.get('timestamp')
                                 if not pub_at:
+                                    no_date_posts.append(post)
                                     continue
                                 
-                                # Parse the timestamp
+                                # Parse the timestamp - support multiple formats
                                 try:
-                                    if isinstance(pub_at, str):
-                                        # Remove timezone info for comparison (make naive)
-                                        # Handle formats like "2026-01-31 14:35:47+00:00" or "2026-01-31T14:35:47Z"
-                                        clean_date = pub_at.split('+')[0].split('Z')[0].replace('T', ' ')
-                                        
-                                        # Try parsing with time
+                                    if isinstance(pub_at, (int, float)):
+                                        # Unix epoch timestamp
+                                        pub_dt = datetime.utcfromtimestamp(pub_at)
+                                    elif isinstance(pub_at, str):
+                                        # Remove timezone info for naive comparison
+                                        clean_date = pub_at.split('+')[0].split('Z')[0].replace('T', ' ').strip()
                                         try:
-                                            pub_dt = datetime.strptime(clean_date.strip(), '%Y-%m-%d %H:%M:%S')
+                                            pub_dt = datetime.strptime(clean_date, '%Y-%m-%d %H:%M:%S')
                                         except:
-                                            # Try just date
-                                            pub_dt = datetime.strptime(clean_date.strip()[:10], '%Y-%m-%d')
+                                            pub_dt = datetime.strptime(clean_date[:10], '%Y-%m-%d')
                                     elif hasattr(pub_at, 'replace'):
-                                        # If it's a datetime object with timezone, make it naive
                                         pub_dt = pub_at.replace(tzinfo=None)
                                     else:
+                                        no_date_posts.append(post)
                                         continue
                                     
-                                    # Check if within date range
                                     if start_dt <= pub_dt <= end_dt:
                                         filtered_normalized.append(post)
                                 except Exception as parse_err:
                                     logger.warning(f"Could not parse date {pub_at}: {parse_err}")
+                                    no_date_posts.append(post)
                                     continue
                             
                             logger.info(f"📅 Instagram date filter: {len(filtered_normalized)}/{len(normalized)} posts between {start_date} and {end_date}")
-                            normalized = filtered_normalized
+                            
+                            # Fallback: if filter returns 0 posts, return all fetched posts
+                            # (account may not have posted in selected period)
+                            if filtered_normalized:
+                                normalized = filtered_normalized
+                            else:
+                                logger.info(f"⚠️ No posts in date range → returning all {len(normalized)} posts (account may not post daily)")
+                                # Keep all posts but add warning to response later
                         except Exception as e:
                             logger.warning(f"Instagram date filtering failed: {e}")
                     
@@ -1139,7 +1149,28 @@ class UserVideosView(APIView):
 
             # Extract profile data
             profile_data = None
-            if raw_results:
+            # For Facebook: if page_info has data (from cache), create profile even if no posts
+            if not raw_results and platform_str.upper() == 'FACEBOOK' and page_info:
+                logger.info(f"📊 No posts but have page_info - creating basic profile from cache")
+                profile_data = {
+                    'username': username,
+                    'display_name': page_info.get('name') or page_info.get('display_name') or username,
+                    'avatar_url': page_info.get('avatar_url') or page_info.get('image') or page_info.get('profilePic') or '',
+                    'follower_count': page_info.get('followers') or 0,
+                    'total_likes': page_info.get('likes') or 0,
+                    'total_videos': 0,
+                    'total_views': 0,
+                    'engagement_rate': 0.0,
+                    'platform': platform_str,
+                    'metadata': {
+                        'video_count': 0,
+                        'post_count': 0,
+                        'fetched_likes_sum': 0,
+                        'fetched_comments_sum': 0,
+                        'page_info_source': 'cache_only'
+                    }
+                }
+            elif raw_results:
                 first_item = raw_results[0]
                 
                 # --- FACEBOOK SPECIFIC EXTRACTION ---
@@ -1535,6 +1566,7 @@ class UserVideosView(APIView):
                     ordered_videos = normalized
                 else:
                     # Other platforms: Save to DB
+                    saved_ok = False
                     try:
                         saved_videos = scraper.save_videos(normalized)
                         
@@ -1545,18 +1577,38 @@ class UserVideosView(APIView):
                             vid = norm.get('video_id')
                             if vid in video_id_to_video:
                                 ordered_videos.append(video_id_to_video[vid])
+                        
+                        saved_ok = len(ordered_videos) > 0
                     
                     except Exception as e:
                         logger.error(f"Error saving videos: {e}")
-                        # If save fails, just return normalized data for now
-                        ordered_videos = normalized
+                        saved_ok = False
+                    
+                    # Fallback: if save failed or returned 0 videos, use normalized dicts directly
+                    if not saved_ok:
+                        logger.warning(f"⚠️ DB save failed or returned 0. Using normalized dicts as fallback.")
+                        ordered_videos = normalized  # dicts, not model objects
 
             # Serialize videos
-            # For Instagram (dict data), serialize directly without VideoSerializer
+            # For Instagram and Facebook fallback (dict data), serialize directly
             if platform_str.upper() == 'INSTAGRAM':
                 results_data = ordered_videos  # Already normalized dicts
+            elif isinstance(ordered_videos[0] if ordered_videos else None, dict):
+                # ordered_videos contains dicts (fallback mode)
+                # Convert datetime fields to ISO string for JSON serialization
+                results_data = []
+                for item in ordered_videos:
+                    serialized = dict(item)
+                    pub_at = serialized.get('published_at')
+                    if pub_at and hasattr(pub_at, 'isoformat'):
+                        serialized['published_at'] = pub_at.isoformat()
+                    # Ensure numeric fields are ints
+                    for field in ('likes_count', 'views_count', 'comments_count', 'shares_count'):
+                        if serialized.get(field) is None:
+                            serialized[field] = 0
+                    results_data.append(serialized)
             else:
-                # For other platforms (model objects), use VideoSerializer
+                # Model objects - use VideoSerializer
                 videos_serializer = VideoSerializer(ordered_videos, many=True)
                 results_data = videos_serializer.data
             

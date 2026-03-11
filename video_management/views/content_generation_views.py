@@ -38,7 +38,8 @@ def generate_content(request):
         brand_name = request.data.get('brand_name', 'Viễn Chí Bảo')
         industry = request.data.get('industry', 'kim hoàn (trang sức vàng bạc)')
         additional_context = request.data.get('additional_context')
-        custom_prompt = request.data.get('custom_prompt')  # Advanced regeneration prompt (auto-filled on FE)
+        output_language = request.data.get('output_language', 'vi')  # default tiếng Việt
+        custom_prompt = request.data.get('custom_prompt')
         if custom_prompt:
             additional_context = (additional_context or '') + ('\n\n' + custom_prompt if additional_context else custom_prompt)
         
@@ -147,7 +148,8 @@ def generate_content(request):
             brand_name=brand_name,
             industry=industry,
             additional_context=combined_context,
-            product_info=product_info
+            product_info=product_info,
+            output_language=output_language,
         )
         
         # Save to database (only if we have a source video)

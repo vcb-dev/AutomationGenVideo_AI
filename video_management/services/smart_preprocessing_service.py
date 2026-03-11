@@ -45,6 +45,10 @@ class SmartPreprocessingService:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
         self.ffprobe_path = os.getenv('FFPROBE_PATH', 'ffprobe')
+        if not os.path.exists(self.ffmpeg_path):
+            self.ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
+        if not os.path.exists(self.ffprobe_path):
+            self.ffprobe_path = shutil.which('ffprobe') or 'ffprobe'
         self._gpu_available = None
     
     def has_gpu(self) -> bool:
@@ -493,7 +497,7 @@ class SmartPreprocessingService:
     
     def get_or_generate_clip(
         self, video_id: int, use_gpu: bool = None, duration: float = None,
-        keep_original_audio: bool = False
+        keep_original_audio: bool = False, priority: str = 'normal'
     ) -> Optional[str]:
         """
         Get cached clip or generate new one (Lazy Loading).
@@ -532,12 +536,12 @@ class SmartPreprocessingService:
                 clip.delete()
         
         # Cache miss - generate clip
-        logger.info(f"⚠️ Cache MISS: Generating clip from {video.file_path}")
-        return self._generate_clip(video, use_gpu, duration, keep_original_audio=keep_original_audio)
+        logger.info(f"⚠️ Cache MISS: Generating clip from {video.file_path} (priority: {priority})")
+        return self._generate_clip(video, use_gpu, duration, keep_original_audio=keep_original_audio, priority=priority)
     
     def _generate_clip(
         self, video, use_gpu: bool = None, clip_duration: float = None,
-        keep_original_audio: bool = False
+        keep_original_audio: bool = False, priority: str = 'normal'
     ) -> Optional[str]:
         """
         Generate a short clip from video with GPU acceleration if available.
@@ -594,7 +598,8 @@ class SmartPreprocessingService:
         if is_network_file:
             return self._generate_clip_two_pass(
                 video, resolved_path, start_time, clip_duration,
-                clip_path, use_gpu, keep_original_audio=keep_original_audio
+                clip_path, use_gpu, keep_original_audio=keep_original_audio,
+                priority=priority
             )
         
         # ═══════════════════════════════════════════════════════════════════
@@ -602,13 +607,14 @@ class SmartPreprocessingService:
         # ═══════════════════════════════════════════════════════════════════
         return self._generate_clip_single_pass(
             video, resolved_path, start_time, clip_duration,
-            clip_path, use_gpu, keep_original_audio=keep_original_audio
+            clip_path, use_gpu, keep_original_audio=keep_original_audio,
+            priority=priority
         )
 
     def _generate_clip_two_pass(
         self, video, resolved_path: str, start_time: float,
         clip_duration: float, clip_path: str, use_gpu: bool,
-        keep_original_audio: bool = False
+        keep_original_audio: bool = False, priority: str = 'normal'
     ) -> Optional[str]:
         """
         TWO-PASS clip generation for NETWORK files.
@@ -642,13 +648,11 @@ class SmartPreprocessingService:
                 temp_raw
             ]
             
-            t1 = time.time()
-            result1 = subprocess.run(
-                cmd_extract,
-                capture_output=True, text=True,
-                encoding='utf-8', errors='ignore',
-                timeout=180  # 180s: 8 workers share NAS bandwidth → each copy takes longer
-            )
+            kwargs = {'capture_output': True, 'text': True, 'encoding': 'utf-8', 'errors': 'ignore', 'timeout': 180}
+            if priority == 'low' and os.name == 'nt':
+                kwargs['creationflags'] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                
+            result1 = subprocess.run(cmd_extract, **kwargs)
             pass1_time = time.time() - t1
             
             if result1.returncode != 0 or not os.path.isfile(temp_raw):
@@ -671,7 +675,7 @@ class SmartPreprocessingService:
                 self.ffmpeg_path,
                 '-i', temp_raw,          # ⚡ Reading from LOCAL disk!
                 '-t', str(clip_duration), # Trim to exact duration
-                '-vf', 'fps=30,scale=540:960',
+                '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
                 '-c:v', encoder,
             ]
             
@@ -689,7 +693,7 @@ class SmartPreprocessingService:
             else:
                 cmd_encode.extend([
                     '-preset', 'ultrafast',
-                    '-crf', '28',
+                    '-crf', '23',
                     '-pix_fmt', 'yuv420p',
                 ])
             
@@ -702,12 +706,11 @@ class SmartPreprocessingService:
                 ])
             
             t2 = time.time()
-            result2 = subprocess.run(
-                cmd_encode,
-                capture_output=True, text=True,
-                encoding='utf-8', errors='ignore',
-                timeout=90  # Local encoding should be fast
-            )
+            kwargs_encode = {'capture_output': True, 'text': True, 'encoding': 'utf-8', 'errors': 'ignore', 'timeout': 90}
+            if priority == 'low' and os.name == 'nt':
+                kwargs_encode['creationflags'] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                
+            result2 = subprocess.run(cmd_encode, **kwargs_encode)
             pass2_time = time.time() - t2
             
             # GPU fallback to CPU
@@ -715,8 +718,8 @@ class SmartPreprocessingService:
                 logger.warning(f"⚠️ GPU encode failed, retrying with CPU...")
                 cmd_encode_cpu = [
                     self.ffmpeg_path, '-i', temp_raw, '-t', str(clip_duration),
-                    '-vf', 'fps=30,scale=540:960',
-                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                    '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
                     '-pix_fmt', 'yuv420p',
                 ]
                 cmd_encode_cpu.extend(
@@ -725,12 +728,7 @@ class SmartPreprocessingService:
                 )
                 cmd_encode_cpu.extend(['-y', clip_path])
                 t2 = time.time()
-                result2 = subprocess.run(
-                    cmd_encode_cpu,
-                    capture_output=True, text=True,
-                    encoding='utf-8', errors='ignore',
-                    timeout=90
-                )
+                result2 = subprocess.run(cmd_encode_cpu, **kwargs_encode)
                 pass2_time = time.time() - t2
                 use_gpu = False
             
@@ -792,7 +790,7 @@ class SmartPreprocessingService:
     def _generate_clip_single_pass(
         self, video, resolved_path: str, start_time: float,
         clip_duration: float, clip_path: str, use_gpu: bool,
-        keep_original_audio: bool = False
+        keep_original_audio: bool = False, priority: str = 'normal'
     ) -> Optional[str]:
         """Single-pass clip generation for LOCAL files (or fallback)."""
         from video_management.models import VideoClipCache
@@ -806,7 +804,7 @@ class SmartPreprocessingService:
             '-ss', str(start_time),
             '-i', resolved_path,
             '-t', str(clip_duration),
-            '-vf', 'fps=30,scale=540:960',
+            '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
             '-c:v', encoder,
         ]
         
@@ -824,7 +822,7 @@ class SmartPreprocessingService:
         else:
             cmd.extend([
                 '-preset', 'ultrafast',
-                '-crf', '28',
+                '-crf', '23',
                 '-pix_fmt', 'yuv420p',
             ])
         
@@ -837,12 +835,11 @@ class SmartPreprocessingService:
         try:
             start = time.time()
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True,
-                encoding='utf-8', errors='ignore',
-                timeout=clip_timeout
-            )
+            kwargs = {'capture_output': True, 'text': True, 'encoding': 'utf-8', 'errors': 'ignore', 'timeout': clip_timeout}
+            if priority == 'low' and os.name == 'nt':
+                kwargs['creationflags'] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                
+            result = subprocess.run(cmd, **kwargs)
             
             generation_time = time.time() - start
             
@@ -855,8 +852,8 @@ class SmartPreprocessingService:
                     '-ss', str(start_time),
                     '-i', resolved_path,
                     '-t', str(clip_duration),
-                    '-vf', 'fps=30,scale=540:960',
-                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                    '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
                     '-pix_fmt', 'yuv420p',
                 ]
                 cmd_cpu.extend(
@@ -865,12 +862,7 @@ class SmartPreprocessingService:
                 )
                 cmd_cpu.extend(['-y', clip_path])
                 start = time.time()
-                result = subprocess.run(
-                    cmd_cpu,
-                    capture_output=True, text=True,
-                    encoding='utf-8', errors='ignore',
-                    timeout=clip_timeout
-                )
+                result = subprocess.run(cmd_cpu, **kwargs)
                 generation_time = time.time() - start
                 use_gpu = False
             
@@ -1045,7 +1037,7 @@ def start_background_pregen(clip_duration: float = 12.0):
     """
     Start background pre-generation of clips for ALL indexed videos.
     
-    This runs in a daemon thread and generates 1 clip per indexed video.
+    This runs in a daemon thread and generates 1 clip per indexed video.    
     Clips are generated at `clip_duration` seconds (default 12s) which
     covers most A4 formula slot durations (audio/6 ≈ 7-15s).
     
@@ -1126,10 +1118,12 @@ def start_background_pregen(clip_duration: float = 12.0):
                     return
                 
                 try:
-                    # Generate clip (two-pass for network, single-pass for local)
+                    # SLOW DOWN background pre-gen to avoid system lag
+                    # Generate clip with 'low' priority and a tiny delay
                     clip_path = service.get_or_generate_clip(
-                        video.id, use_gpu=None, duration=clip_duration
+                        video.id, use_gpu=None, duration=clip_duration, priority='low'
                     )
+                    time.sleep(1.0) # Breath after heavy encoding task
                     
                     with gen_lock:
                         if clip_path:
@@ -1164,8 +1158,8 @@ def start_background_pregen(clip_duration: float = 12.0):
                         fail_count += 1
                     logger.error(f"Pre-gen failed for video {video.id}: {e}")
             
-            # 8 parallel workers for clip generation
-            max_workers = min(8, total_to_gen)
+            # Background pre-generation: 2 workers only to preserve UI responsiveness
+            max_workers = min(2, total_to_gen)
             with ThreadPoolExecutor(
                 max_workers=max_workers,
                 thread_name_prefix="pregen"
