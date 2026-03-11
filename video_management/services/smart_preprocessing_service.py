@@ -1061,128 +1061,164 @@ def start_background_pregen(clip_duration: float = 12.0):
         service = get_preprocessing_service()
         _pregen_cancel.clear()
         
+        MAX_PASSES = 3  # Tối đa 3 pass để đảm bảo indexed == cached
+        
         try:
-            # Find all indexed videos WITHOUT cached clips
-            all_videos = IndexedVideo.objects.filter(is_available=True)
-            videos_with_cache = set(
-                VideoClipCache.objects.values_list('source_video_id', flat=True)
-            )
+            started_at = time.time()
             
-            videos_to_generate = [
-                v for v in all_videos if v.id not in videos_with_cache
-            ]
-            
-            already_cached = len(videos_with_cache)
-            total_to_gen = len(videos_to_generate)
-            total_all = all_videos.count()
+            # Khởi tạo progress
+            total_all = IndexedVideo.objects.filter(is_available=True).count()
+            already_cached_init = VideoClipCache.objects.values('source_video_id').distinct().count()
             
             with _pregen_lock:
                 _pregen_progress.update({
                     "status": "running",
                     "total": total_all,
-                    "done": already_cached,
-                    "cached": already_cached,
+                    "done": already_cached_init,
+                    "cached": already_cached_init,
                     "generated": 0,
                     "failed": 0,
-                    "percent": int(already_cached / total_all * 100) if total_all > 0 else 0,
-                    "message": f"Pre-generating {total_to_gen} clips ({already_cached} already cached)...",
-                    "started_at": time.time(),
+                    "percent": int(already_cached_init / total_all * 100) if total_all > 0 else 0,
+                    "message": f"Chuan bi cache {total_all - already_cached_init} clips...",
+                    "started_at": started_at,
                     "completed_at": None,
                 })
             
-            if total_to_gen == 0:
-                logger.info(f"✅ All {already_cached} videos already have cached clips!")
+            total_generated = 0
+            
+            for pass_num in range(1, MAX_PASSES + 1):
+                if _pregen_cancel.is_set():
+                    break
+                
+                # Re-query moi pass: bat ca video moi index + retry failed
+                all_videos = list(IndexedVideo.objects.filter(is_available=True))
+                videos_with_cache = set(
+                    VideoClipCache.objects.values_list('source_video_id', flat=True)
+                )
+                
+                videos_to_generate = [v for v in all_videos if v.id not in videos_with_cache]
+                total_all = len(all_videos)
+                already_cached = len(videos_with_cache)
+                total_to_gen = len(videos_to_generate)
+                
+                if total_to_gen == 0:
+                    logger.info(f"All {already_cached}/{total_all} videos da co cache!")
+                    break
+                
+                logger.info(
+                    f"[Pass {pass_num}/{MAX_PASSES}] Can cache {total_to_gen} videos "
+                    f"({already_cached} da co, {total_to_gen} con thieu)"
+                )
+                
                 with _pregen_lock:
                     _pregen_progress.update({
-                        "status": "completed",
-                        "percent": 100,
-                        "message": f"All {already_cached} clips already cached!",
-                        "completed_at": time.time(),
+                        "total": total_all,
+                        "done": already_cached,
+                        "cached": already_cached,
+                        "message": f"[Pass {pass_num}/{MAX_PASSES}] Dang cache {total_to_gen} videos...",
+                        "percent": int(already_cached / total_all * 100) if total_all > 0 else 0,
                     })
-                return
-            
-            logger.info(
-                f"🚀 Background pre-generation starting: "
-                f"{total_to_gen} to generate, {already_cached} already cached, "
-                f"clip_duration={clip_duration}s"
-            )
-            
-            gen_count = 0
-            fail_count = 0
-            gen_lock = threading.Lock()
-            
-            def _gen_one(video):
-                nonlocal gen_count, fail_count
                 
-                if _pregen_cancel.is_set():
-                    return
+                pass_gen = 0
+                pass_fail = 0
+                gen_lock = threading.Lock()
                 
-                try:
-                    # SLOW DOWN background pre-gen to avoid system lag
-                    # Generate clip with 'low' priority and a tiny delay
-                    clip_path = service.get_or_generate_clip(
-                        video.id, use_gpu=None, duration=clip_duration, priority='low'
-                    )
-                    time.sleep(1.0) # Breath after heavy encoding task
+                def _gen_one(video, _already_cached=already_cached, _total_all=total_all, _total_to_gen=total_to_gen, _pass_num=pass_num):
+                    nonlocal pass_gen, pass_fail, total_generated
                     
-                    with gen_lock:
-                        if clip_path:
-                            gen_count += 1
-                        else:
-                            fail_count += 1
-                        
-                        done = already_cached + gen_count + fail_count
-                        pct = int(done / total_all * 100) if total_all > 0 else 0
-                        
-                        with _pregen_lock:
-                            _pregen_progress.update({
-                                "done": done,
-                                "generated": gen_count,
-                                "failed": fail_count,
-                                "percent": pct,
-                                "message": (
-                                    f"Pre-generating... {gen_count}/{total_to_gen} done"
-                                    f" ({fail_count} failed)" if fail_count > 0
-                                    else f"Pre-generating... {gen_count}/{total_to_gen} done"
-                                ),
-                            })
-                        
-                        if gen_count % 5 == 0:
-                            logger.info(
-                                f"📊 Pre-gen progress: {gen_count}/{total_to_gen} "
-                                f"({pct}%)"
-                            )
-                
-                except Exception as e:
-                    with gen_lock:
-                        fail_count += 1
-                    logger.error(f"Pre-gen failed for video {video.id}: {e}")
-            
-            # Background pre-generation: 2 workers only to preserve UI responsiveness
-            max_workers = min(2, total_to_gen)
-            with ThreadPoolExecutor(
-                max_workers=max_workers,
-                thread_name_prefix="pregen"
-            ) as executor:
-                futures = [
-                    executor.submit(_gen_one, v) for v in videos_to_generate
-                ]
-                for f in as_completed(futures):
                     if _pregen_cancel.is_set():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        break
+                        return
+                    
+                    try:
+                        clip_path = service.get_or_generate_clip(
+                            video.id, use_gpu=None, duration=clip_duration, priority='low'
+                        )
+                        time.sleep(0.5)  # 0.5s (giam tu 1.0s)
+                        
+                        with gen_lock:
+                            if clip_path:
+                                pass_gen += 1
+                                total_generated += 1
+                            else:
+                                pass_fail += 1
+                            
+                            done_real = _already_cached + pass_gen
+                            pct = int(done_real / _total_all * 100) if _total_all > 0 else 0
+                            
+                            with _pregen_lock:
+                                _pregen_progress.update({
+                                    "done": done_real,
+                                    "generated": total_generated,
+                                    "failed": pass_fail,
+                                    "percent": min(pct, 99),
+                                    "message": (
+                                        f"[Pass {_pass_num}] Cache {pass_gen}/{_total_to_gen}"
+                                        + (f" ({pass_fail} loi)" if pass_fail > 0 else "")
+                                    ),
+                                })
+                            
+                            if pass_gen % 10 == 0 and pass_gen > 0:
+                                logger.info(
+                                    f"[Pass {_pass_num}] {pass_gen}/{_total_to_gen} "
+                                    f"({pct}%) - {pass_fail} loi"
+                                )
+                    
+                    except Exception as e:
+                        with gen_lock:
+                            pass_fail += 1
+                        logger.error(f"Pre-gen failed for video {video.id}: {e}")
+                
+                # 3 workers de can bang toc do va tai he thong
+                max_workers = min(3, total_to_gen)
+                with ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix=f"pregen_p{pass_num}"
+                ) as executor:
+                    futures = [
+                        executor.submit(_gen_one, v) for v in videos_to_generate
+                    ]
+                    for f in as_completed(futures):
+                        if _pregen_cancel.is_set():
+                            executor.shutdown(wait=False, cancel_futures=True)
+                            break
+                
+                logger.info(f"[Pass {pass_num}] Xong: {pass_gen} cache, {pass_fail} loi")
+                
+                # Neu pass nay khong co loi nao → done som
+                if pass_fail == 0 and not _pregen_cancel.is_set():
+                    break
+                
+                # Con loi → retry pass tiep theo
+                if pass_num < MAX_PASSES and pass_fail > 0:
+                    logger.info(f"{pass_fail} videos loi → Retry pass {pass_num + 1}/{MAX_PASSES}...")
+                    time.sleep(2.0)
             
-            elapsed = time.time() - _pregen_progress.get("started_at", time.time())
+            # ── Final verification: indexed == cached ────────────────────────
+            elapsed = time.time() - started_at
             
             if _pregen_cancel.is_set():
-                msg = f"Cancelled. Generated {gen_count}/{total_to_gen} clips in {elapsed:.0f}s"
+                msg = f"Da dung. Da cache {total_generated} clips trong {elapsed:.0f}s"
                 final_status = "idle"
+                final_pct = _pregen_progress.get("percent", 0)
             else:
-                msg = (
-                    f"✅ Pre-generation complete! "
-                    f"{gen_count} generated, {already_cached} cached, "
-                    f"{fail_count} failed. Total: {elapsed:.0f}s"
-                )
+                final_indexed = IndexedVideo.objects.filter(is_available=True).count()
+                final_cached_count = VideoClipCache.objects.values('source_video_id').distinct().count()
+                missing = final_indexed - final_cached_count
+                
+                if missing <= 0:
+                    msg = (
+                        f"Hoan tat! {final_cached_count}/{final_indexed} videos da cache "
+                        f"(100%) - {elapsed:.0f}s"
+                    )
+                    final_pct = 100
+                else:
+                    msg = (
+                        f"Cache gan xong: {final_cached_count}/{final_indexed} "
+                        f"({missing} video khong the cache) - {elapsed:.0f}s"
+                    )
+                    final_pct = int(final_cached_count / final_indexed * 100) if final_indexed > 0 else 100
+                    logger.warning(f"{missing} videos khong the cache sau {MAX_PASSES} passes")
+                
                 final_status = "completed"
             
             logger.info(msg)
@@ -1190,27 +1226,30 @@ def start_background_pregen(clip_duration: float = 12.0):
             with _pregen_lock:
                 _pregen_progress.update({
                     "status": final_status,
-                    "percent": 100 if not _pregen_cancel.is_set() else _pregen_progress["percent"],
+                    "percent": final_pct,
                     "message": msg,
                     "completed_at": time.time(),
                 })
         
         except Exception as e:
-            logger.error(f"❌ Pre-generation error: {e}", exc_info=True)
+            logger.error(f"Pre-generation error: {e}", exc_info=True)
             with _pregen_lock:
                 _pregen_progress.update({
                     "status": "error",
                     "message": f"Error: {str(e)}",
                 })
     
-    # Start as daemon thread (dies when main process exits)
+    # Start as daemon thread
     thread = threading.Thread(
         target=_run_pregen,
         name="clip_pregen_bg",
         daemon=True
     )
     thread.start()
-    logger.info("🚀 Background pre-generation thread started")
+    logger.info("Background pre-generation thread started")
+
+
+
 
 
 # Singleton instance
