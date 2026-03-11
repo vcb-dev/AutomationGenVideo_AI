@@ -51,70 +51,126 @@ _mix_semaphore = threading.Semaphore(_MIX_MAX_CONCURRENT)
 # Backward-compat: vẫn giữ lock cho các hàm nội bộ dùng 
 _mix_progress_lock = threading.Lock()
 
-# Folder types for A4 Formula V3 (7 SIMPLE SLOTS - NO SPLIT)
-# Simplified structure: No split layouts, just 7 sequential slots
+# Folder types available in A4 Formula V4 (DYNAMIC SLOTS)
 FOLDER_TYPES = [
-    "Sản phẩm",         # Slot 1: Intro sản phẩm
-    "HuyK",             # Slot 2: KOC (HuyK)
-    "Chế tác",          # Slot 3: Chế tác
-    # "HuyK" reused      # Slot 4: KOC (HuyK) - same folder type
-    # "Chế tác" reused   # Slot 5: Chế tác - same folder type
-    "Sản phẩm HT",      # Slot 6: Sản phẩm hoàn thiện
-    "Outtrol",          # Slot 7: Outro (original audio)
+    "Sản phẩm",
+    "HuyK",
+    "Chế tác",
+    "Sản phẩm HT",
+    "Outtrol",
 ]
 
 # ============================================================================
-# CÔNG THỨC A4 V3 - SIMPLE 7 SLOTS (NO SPLIT LAYOUTS)
+# CÔNG THỨC A4 V4 - DYNAMIC SLOTS (3-4s per scene)
 # ============================================================================
-# Updated: 2026-02-12 - Simplified structure per user request
-# 
-# Cấu trúc timeline mới (KHÔNG CÓ SPLIT):
-# 
-#   ┌─────────┬─────┬─────────┬─────┬─────────┬─────────┬─────────┐
-#   │ Sản phẩm│ KOC │ Chế tác │ KOC │ Chế tác │Sản phẩm │ Outro   │
-#   │  (Intro)│(HuyK)│         │(HuyK)│         │   HT    │(Audio ✓)│
-#   └─────────┴─────┴─────────┴─────┴─────────┴─────────┴─────────┘
-#    ◄─────────────── FLEXIBLE (audio_duration / 6) ──────────────►│ORIGINAL│
+# Updated: 2026-03-10 - Dynamic slots, flexible pattern
 #
-# FLEXIBLE DURATION (Slot 1-6):
-# - duration = audio_duration / 6
-# - Ví dụ: audio 48s → mỗi slot 8s
+# Cấu trúc timeline (LINH HOẠT theo audio_duration):
 #
-# OUTRO (Slot 7):
-# - duration = video_outro.original_duration (giữ nguyên)
-# - audio = video_outro.original_audio (KHÔNG replace)
+#   ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬─────────┐
+#   │ Sản phẩm │ Chế tác  │  HuyK    │ Chế tác  │  HuyK    │SP HT(*)  │ Outro   │
+#   │  3-4s    │  3-4s    │  3-4s    │  3-4s    │  3-4s    │  3-4s    │(orig ✓) │
+#   └──────────┴──────────┴──────────┴──────────┴──────────┴──────────┴─────────┘
+#   ◄──────────────────── audio_duration (khớp chính xác) ──────────────────────►
 #
-# OUTPUT VIDEO:
-# - Total = (audio_duration) + (outro_duration)
-# - Ví dụ: 48s content + 5s outro = 53s total
+# RULES:
+# - Slot đầu tiên: "Sản phẩm" (3-4s)
+# - Slot cuối nội dung: "Sản phẩm HT" (3-4s, căn cuối audio)
+# - Slots giữa: xen kẽ "Chế tác" → "HuyK" → "Chế tác" → "HuyK" → ...
+# - Số slot = ceil(audio_duration / scene_duration), tối thiểu 3
+# - scene_duration = audio_duration / num_slots (3s <= scene_duration <= 4s)
+# - Outro: giữ nguyên video + audio gốc (KHÔNG replace audio)
 #
-# Chi tiết từng slot:
-# 1. Sản phẩm (flexible)       - Intro sản phẩm
-# 2. KOC/HuyK (flexible)       - Video người tạo/KOC
-# 3. Chế tác (flexible)        - Video chế tác
-# 4. KOC/HuyK (flexible)       - Video người tạo/KOC (lặp lại)
-# 5. Chế tác (flexible)        - Video chế tác (lặp lại)
-# 6. Sản phẩm HT (flexible)    - Sản phẩm hoàn thiện
-# 7. Outro (original)          - Outro HuyK/Brand (giữ nguyên audio+duration)
-#
-# ⚠️ LƯU Ý QUAN TRỌNG:
-# - KHÔNG CÒN SPLIT LAYOUTS (đã loại bỏ)
-# - Tất cả 7 slots đều là video đơn giản, fullscreen
-# - Slot 2 và 4 dùng cùng folder "HuyK" (chọn video khác nhau)
-# - Slot 3 và 5 dùng cùng folder "Chế tác" (chọn video khác nhau)
-# - Mỗi lần generate 5 videos sẽ chọn ngẫu nhiên videos khác nhau
-# - Slot 1-6 dùng audio nội dung, Slot 7 giữ nguyên audio gốc
+# Ví dụ:
+# - audio 30s → 30/3.5 ≈ 8-9 slots, mỗi slot ~3.33s
+# - audio 48s → 48/3.5 ≈ 13-14 slots, mỗi slot ~3.43s
+# - audio 60s → 60/3.5 ≈ 17 slots, mỗi slot ~3.53s
 # ============================================================================
 
+# Cấu hình slot duration target
+SCENE_DURATION_MIN = 3.0   # seconds
+SCENE_DURATION_MAX = 4.0   # seconds
+SCENE_DURATION_TARGET = 3.5  # seconds (điểm giữa)
+
+# A4_FORMULA giờ chỉ dùng cho validation (không còn là list cố định)
+# Logic thực tế trong _build_dynamic_formula(audio_duration)
 A4_FORMULA = [
-    {"folder_type": "Sản phẩm", "flexible": True},      # Slot 1: Intro sản phẩm
-    {"folder_type": "HuyK", "flexible": True},          # Slot 2: KOC (HuyK)
-    {"folder_type": "Chế tác", "flexible": True},       # Slot 3: Chế tác
-    {"folder_type": "HuyK", "flexible": True},          # Slot 4: KOC (HuyK) - reuse
-    {"folder_type": "Chế tác", "flexible": True},       # Slot 5: Chế tác - reuse
-    {"folder_type": "Sản phẩm HT", "flexible": True},   # Slot 6: Sản phẩm hoàn thiện
-    {"folder_type": "Outtrol", "flexible": False, "use_original_audio": True},  # Slot 7: Outro (keep audio)
+    {"folder_type": "Sản phẩm", "flexible": True},
+    {"folder_type": "Chế tác", "flexible": True},
+    {"folder_type": "HuyK", "flexible": True},
+    {"folder_type": "Sản phẩm HT", "flexible": True},
+    {"folder_type": "Outtrol", "flexible": False, "use_original_audio": True},
 ]
+
+
+def _build_dynamic_formula(audio_duration: float) -> List[Dict]:
+    """
+    Xây dựng danh sách slots động dựa trên audio_duration.
+    
+    Pattern: Sản phẩm → [Chế tác → HuyK → ...] → Sản phẩm HT → (Outro handled separately)
+    
+    Args:
+        audio_duration: Thời lượng audio tính bằng giây
+    
+    Returns:
+        List of slot dicts: [{"folder_type": ..., "duration": ...}, ...]
+        Không bao gồm Outro (Outro xử lý riêng)
+    """
+    # Tính số slot tối ưu để mỗi slot nằm trong khoảng 3-4s
+    num_slots = max(3, round(audio_duration / SCENE_DURATION_TARGET))
+    
+    # Điều chỉnh để scene_duration nằm trong [3.0, 4.0]
+    scene_duration = audio_duration / num_slots
+    
+    # Nếu scene quá ngắn, tăng scene duration (giảm num_slots)
+    while scene_duration < SCENE_DURATION_MIN and num_slots > 3:
+        num_slots -= 1
+        scene_duration = audio_duration / num_slots
+    
+    # Nếu scene quá dài, giảm scene duration (tăng num_slots)
+    while scene_duration > SCENE_DURATION_MAX and num_slots < 50:
+        num_slots += 1
+        scene_duration = audio_duration / num_slots
+    
+    logger.info(
+        f"🎬 Dynamic formula: audio={audio_duration:.2f}s → "
+        f"{num_slots} slots × {scene_duration:.3f}s/slot"
+    )
+    
+    # Xây dựng pattern slots
+    # Slot đầu: Sản phẩm
+    # Slots giữa: xen kẽ Chế tác → HuyK → Chế tác → ...
+    # Slot cuối: Sản phẩm HT
+    slots = []
+    
+    # Slot 1: Sản phẩm
+    slots.append({"folder_type": "Sản phẩm", "duration": scene_duration, "flexible": True})
+    
+    # Slots giữa (num_slots - 2 slots)
+    middle_count = num_slots - 2
+    middle_pattern = ["HuyK", "Chế tác"]  # Bắt đầu bằng HuyK → HuyK xuất hiện >= Chế tác
+    
+    for i in range(middle_count):
+        folder_type = middle_pattern[i % 2]
+        slots.append({"folder_type": folder_type, "duration": scene_duration, "flexible": True})
+    
+    # Slot cuối: Sản phẩm HT
+    # Duration = audio_duration - sum(all previous slots) để khớp chính xác
+    sum_prev = scene_duration * (num_slots - 1)
+    last_duration = audio_duration - sum_prev
+    # Ensure last slot is at least 1s
+    if last_duration < 1.0:
+        last_duration = scene_duration
+    slots.append({"folder_type": "Sản phẩm HT", "duration": last_duration, "flexible": True})
+    
+    # Log formula
+    logger.info(f"📋 Formula slots ({len(slots)} total):")
+    for i, s in enumerate(slots, 1):
+        logger.info(f"  Slot {i}: {s['folder_type']} → {s['duration']:.3f}s")
+    total = sum(s['duration'] for s in slots)
+    logger.info(f"  Total content: {total:.3f}s (audio: {audio_duration:.3f}s)")
+    
+    return slots
 
 
 @api_view(['POST'])
@@ -144,8 +200,47 @@ def index_folders(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # ── OVERRIDE PATHS với settings nếu chạy trên NAS (Linux) ──────────
+        # Frontend gửi Windows paths (\\VCB_MEDIA\...) - không dùng được trên NAS
+        # Nếu settings có đường dẫn NAS cụ thể → dùng thay thế
+        import platform
+        is_linux = platform.system() != 'Windows'
+        
+        if is_linux:
+            huyk_path = getattr(settings, 'HUYK_VIDEO_PATH', '')
+            outro_path = getattr(settings, 'OUTRO_FOLDER_PATH', '')
+            
+            if huyk_path and os.path.isdir(huyk_path):
+                if 'HuyK' in folders:
+                    logger.info(f"🔄 Override HuyK path (from settings): {huyk_path}")
+                    folders['HuyK'] = huyk_path
+            
+            if outro_path and os.path.isdir(outro_path):
+                for key in ('Outtrol', 'Outro'):
+                    if key in folders:
+                        logger.info(f"🔄 Override {key} path (from settings): {outro_path}")
+                        folders[key] = outro_path
+            
+            # Translate còn lại: //VCB_MEDIA/... → NAS base path
+            base_paths = getattr(settings, 'VIDEO_BASE_PATHS', [])
+            if base_paths:
+                nas_base = base_paths[0].replace('\\', '/')
+                for folder_type, path in list(folders.items()):
+                    norm = path.replace('\\', '/')
+                    if '//VCB_MEDIA/' in norm or '/VCB_MEDIA/' in norm:
+                        marker = 'MEDIA VCB folder/'
+                        idx = norm.find(marker)
+                        if idx != -1:
+                            sub = norm[idx + len(marker):]
+                            translated = os.path.join(nas_base, sub)
+                            if os.path.isdir(translated):
+                                logger.info(f"🔄 Translated {folder_type}: {path} → {translated}")
+                                folders[folder_type] = translated
+        # ────────────────────────────────────────────────────────────────────
+        
         service = get_preprocessing_service()
         results = service.index_videos_from_folders(folders, videos_per_folder)
+
         
         total = sum(results.values())
         
@@ -384,29 +479,20 @@ def get_voices(request):
     try:
         from video_management.models import Voice
         
-        # Hardcoded system voices
-        system_voices = [
-            {"id": -1, "voice_id": "c6fb81520dcd42e0a02be231046a8639", "name": "Nam Minh (Natural)", "language": "vi-VN", "gender": "male", "provider": "heygen", "is_cloned": False, "is_system": True},
-            {"id": -2, "voice_id": "4286c03d11f44af093e379fc7e2cafa6", "name": "Chau (Natural)", "language": "vi-VN", "gender": "female", "provider": "heygen", "is_cloned": False, "is_system": True},
-            {"id": -3, "voice_id": "9a247a37f3c04e6aa934171998b9659c", "name": "Hoai (Natural)", "language": "vi-VN", "gender": "female", "provider": "heygen", "is_cloned": False, "is_system": True}
+        # ── ONLY HUYK VOICE ──────────────────────────────────────
+        # As requested by user, only keep the "HuyK" voice
+        all_voices = [
+            {
+                "id": -1, 
+                "voice_id": "3f7bd9c515cb40cead3a233461c713ca", 
+                "name": "HuyK", 
+                "language": "vi-VN", 
+                "gender": "male", 
+                "provider": "heygen", 
+                "is_cloned": True, 
+                "is_system": True
+            }
         ]
-
-        # OpenAI Voices
-        openai_voices = [
-            {"id": -4, "voice_id": "alloy", "name": "Alloy (OpenAI - Neutral)", "language": "mul", "gender": "neutral", "provider": "openai", "is_cloned": False, "is_system": True},
-            {"id": -5, "voice_id": "echo", "name": "Echo (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
-            {"id": -6, "voice_id": "fable", "name": "Fable (OpenAI - British)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
-            {"id": -7, "voice_id": "onyx", "name": "Onyx (OpenAI - Male)", "language": "mul", "gender": "male", "provider": "openai", "is_cloned": False, "is_system": True},
-            {"id": -8, "voice_id": "nova", "name": "Nova (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False, "is_system": True},
-            {"id": -9, "voice_id": "shimmer", "name": "Shimmer (OpenAI - Female)", "language": "mul", "gender": "female", "provider": "openai", "is_cloned": False, "is_system": True},
-        ]
-
-        # Only HeyGen voices from DB
-        db_voices = list(Voice.objects.filter(provider='heygen').values(
-            'id', 'name', 'voice_id', 'provider', 'language', 'gender', 'is_cloned', 'is_system'
-        ).order_by('-is_system', 'name'))  # System voices first
-        
-        all_voices = system_voices + openai_voices + db_voices
 
         return Response({
             'success': True,
@@ -915,10 +1001,11 @@ def smart_mix(request):
         logger.info(f"📥 Smart Mix Request - POST params: {dict(request.POST)}")
         logger.info(f"📥 FILES: {list(request.FILES.keys())}")
         
-        # Handle audio
+        # Handle audio (voice = main audio, background_music = optional low-volume)
         audio_path = None
         temp_audio = None
-        
+        temp_bgmusic = None
+
         if 'audio' in request.FILES:
             audio_file = request.FILES['audio']
             temp_audio = tempfile.NamedTemporaryFile(
@@ -931,19 +1018,62 @@ def smart_mix(request):
             audio_path = temp_audio.name
         elif request.POST.get('audio_path'):
             audio_path = request.POST.get('audio_path')
+            # Resolve relative URL to file system path
+            if audio_path.startswith('/media/'):
+                audio_path = os.path.join(settings.MEDIA_ROOT, audio_path[len('/media/'):])
         elif request.data.get('audio_path'):
             audio_path = request.data.get('audio_path')
-        else:
+            if audio_path.startswith('/media/'):
+                audio_path = os.path.join(settings.MEDIA_ROOT, audio_path[len('/media/'):])
+
+        if not audio_path or not os.path.isfile(str(audio_path)):
             return Response(
-                {'error': 'audio file or audio_path required'},
+                {'error': 'Cần có file audio giọng đọc (audio hoặc audio_path)'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        if not os.path.isfile(audio_path):
-            return Response(
-                {'error': f'Audio file not found: {audio_path}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+
+        # ── OPTIONAL: Mix background music at low volume behind voice ──────────
+        # background_music file + bg_music_volume (default 0.1 = 10%)
+        if 'background_music' in request.FILES:
+            try:
+                bg_file = request.FILES['background_music']
+                bg_volume = float(request.POST.get('bg_music_volume', '0.1'))
+                bg_volume = max(0.02, min(bg_volume, 0.5))  # Clamp 2%-50%
+
+                # Save bg music to temp
+                temp_bgmusic = tempfile.NamedTemporaryFile(
+                    delete=False, suffix=Path(bg_file.name).suffix or '.mp3'
+                )
+                for chunk in bg_file.chunks():
+                    temp_bgmusic.write(chunk)
+                temp_bgmusic.close()
+
+                # Mix: voice(100%) + bgmusic(bg_volume%) → mixed output
+                mixed_output = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                mixed_output.close()
+
+                mix_cmd = [
+                    'ffmpeg', '-y',
+                    '-i', audio_path,           # voice (main)
+                    '-i', temp_bgmusic.name,    # background music
+                    '-filter_complex',
+                    f'[0:a]volume=1.0[voice];[1:a]volume={bg_volume}[bg];'
+                    f'[voice][bg]amix=inputs=2:duration=first:normalize=0[out]',
+                    '-map', '[out]',
+                    '-ar', '44100',
+                    '-b:a', '192k',
+                    mixed_output.name
+                ]
+                import subprocess as sp
+                result = sp.run(mix_cmd, capture_output=True, timeout=60)
+                if result.returncode == 0 and os.path.isfile(mixed_output.name):
+                    audio_path = mixed_output.name
+                    logger.info(f"🎵 Mixed voice + bgmusic (volume={bg_volume}): {mixed_output.name}")
+                else:
+                    logger.warning(f"⚠️ Background music mix failed, using voice only: {result.stderr.decode()[:200]}")
+            except Exception as e:
+                logger.warning(f"⚠️ Background music processing failed: {e}, using voice only")
+        # ────────────────────────────────────────────────────────────────────────
         
         # Get parameters
         num_outputs = int(request.POST.get('num_outputs', 5) or 5)
@@ -1000,6 +1130,9 @@ def smart_mix(request):
         if active_slots >= _MIX_MAX_CONCURRENT:
             logger.warning(f"⚠️ Mix queue full ({active_slots}/{_MIX_MAX_CONCURRENT}). Job {progress_id} will wait.")
 
+        # Get base URL to ensure background task builds correct Cloudflare URLs
+        base_url = request.build_absolute_uri('/')[:-1]
+
         # Start mix task in background
         # daemon=False: thread không bị kill khi main process nhận SIGTERM
         # → mix vẫn hoàn thành ngay cả khi server đang reload
@@ -1018,7 +1151,8 @@ def smart_mix(request):
                 forced_product_video_id,
                 product_id,
                 product_category,
-                product_sku
+                product_sku,
+                base_url
             ),
             daemon=False,
             name=f"smart-mix-{progress_id[:8]}"
@@ -1074,7 +1208,8 @@ def _run_smart_mix_task(
     forced_product_video_id: Optional[int] = None,
     product_id: Optional[str] = None,
     product_category: Optional[str] = None,
-    product_sku: Optional[str] = None
+    product_sku: Optional[str] = None,
+    base_url: Optional[str] = None,
 ):
     """Background task for smart mix."""
     service = get_preprocessing_service()
@@ -1153,123 +1288,93 @@ def _run_smart_mix_task(
         if not sku_found and product_category:
             _auto_index_category_folder(service, product_category)
         
-        # Calculate flexible slot duration for A4 (slot 1-6 share audio duration)
-        slot_duration = audio_duration / 6 if use_a4_formula else None
+        # Build dynamic formula for A4 V4
+        dynamic_formula = _build_dynamic_formula(audio_duration) if use_a4_formula else None
+        # slot_duration kept for backward compat (pre-warm phase uses it)
+        slot_duration = dynamic_formula[0]['duration'] if dynamic_formula else None
         
         # Check if we have enough indexed videos for the selected mode
         if use_a4_formula:
-            # STRICT VALIDATION FOR A4 V3: ALL 7 SLOTS MUST HAVE VIDEOS!
+            # VALIDATION FOR A4 V4: All required folder types must have videos
             from video_management.models import IndexedVideo
             
-            logger.info("🔍 Validating A4 Formula V3 requirements (7 simple slots, flexible duration)...")
-            logger.info(f"🎵 Audio: {audio_duration}s → Slot 1-6: {slot_duration:.2f}s each, Slot 7: original")
-            logger.info("✨ Note: Simple fullscreen videos only (NO split layouts)")
+            required_folder_types = {"Sản phẩm", "HuyK", "Chế tác", "Sản phẩm HT", "Outtrol"}
+            logger.info(f"🔍 Validating A4 Formula V4 requirements...")
+            logger.info(f"🎵 Audio: {audio_duration:.2f}s → {len(dynamic_formula)} content slots")
             
-            missing_slots = []
-            
-            for i, slot in enumerate(A4_FORMULA, start=1):
-                folder_type = slot.get('folder_type')
-                is_flexible = slot.get('flexible', False)
-                required_duration = slot_duration if is_flexible else slot.get('duration', 3)
-                
-                # Validation: chỉ cần folder có ít nhất 1 video (không check duration)
-                # Auto-fill sẽ tự concat nhiều clip ngắn nếu video ngắn hơn required_duration
+            missing_types = []
+            for ft in required_folder_types:
                 count = IndexedVideo.objects.filter(
-                    folder_type=folder_type,
+                    folder_type=ft,
                     is_available=True
                 ).count()
-                
                 if count == 0:
-                    missing_slots.append(f"Slot {i}: {folder_type}")
-                    logger.error(f"❌ Slot {i}/7: {folder_type} - KHÔNG CÓ VIDEO NÀO ĐƯỢC INDEX!")
+                    missing_types.append(ft)
+                    logger.error(f"❌ Folder type '{ft}' - KHÔNG CÓ VIDEO NÀO ĐƯỢC INDEX!")
                 else:
-                    # Log thêm thông tin về video đủ dài
-                    count_ok = IndexedVideo.objects.filter(
-                        folder_type=folder_type,
-                        is_available=True,
-                        duration__gte=required_duration
-                    ).count()
-                    if count_ok > 0:
-                        logger.info(f"✅ Slot {i}/7: {folder_type} - {count_ok}/{count} videos >= {required_duration:.1f}s")
-                    else:
-                        logger.warning(
-                            f"⚠️ Slot {i}/7: {folder_type} - {count} videos nhưng KHÔNG CÓ video nào >= {required_duration:.1f}s. "
-                            f"Auto-fill sẽ ghép nhiều clip ngắn lại."
-                        )
+                    logger.info(f"✅ Folder type '{ft}' - {count} videos available")
             
-            if missing_slots:
-                error_details = "\n".join(missing_slots)
-                logger.error(f"\n⚠️ A4 V3 VALIDATION FAILED!\nMissing slots:\n{error_details}")
-                logger.error("\n💡 Solution: Go to 'Quản lý Folders' and index ALL required folder types!")
-                
+            if missing_types:
+                error_details = "\n".join([f"- {ft}" for ft in missing_types])
                 raise ValueError(
-                    f"❌ A4 Formula V3 requires all slots to have videos!\n\n"
-                    f"Missing slots:\n{error_details}\n\n"
-                    f"⚠️ ESPECIALLY CHECK:\n"
-                    f"- Slot 7: 'Outtrol' (Outro with original audio)\n\n"
-                    f"Note: Slot 1 'Sản phẩm' will be auto-indexed if you provide product SKU/category."
+                    f"❌ A4 Formula V4 requires all folder types to have videos!\n\n"
+                    f"Missing folder types:\n{error_details}\n\n"
+                    f"💡 Go to 'Quản lý Folders' and index ALL required folder types!"
                 )
             
-            logger.info(f"✅ A4 V3 Validation passed! All required slots have videos.")
+            logger.info(f"✅ A4 V4 Validation passed! All required folder types have videos.")
         else:
             # Quick validation for random mode
             video_dict = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
             available_count = sum(1 for v in video_dict.values() if v is not None)
-            if available_count < 5:
-                raise ValueError(f"Not enough videos indexed. Only {available_count} folder(s) have videos. Need at least 5!")
+            if available_count < 4:
+                raise ValueError(f"Not enough videos indexed. Only {available_count} folder(s) have videos. Need at least 4!")
         
         # ── PHASE 1: Chọn videos cho tất cả outputs ──────────────────────────
         # globally_used: track video đã dùng theo từng folder_type giữa các outputs
-        # → đảm bảo 5 outputs khác nhau (đặc biệt slot Sản phẩm)
         _update_progress(progress_id, 12, "Selecting videos for all outputs...")
-        all_selections = []
+        all_selections = []  # List of (slot_list, formula) tuples
         globally_used = {}  # { folder_type: set(video_ids) }
         
         for i in range(num_outputs):
             if use_a4_formula:
-                sel = _get_a4_formula_videos(
-                    service, slot_duration,
+                sel, sel_formula = _get_a4_formula_videos_v4(
+                    service, dynamic_formula,
                     product_category=product_category,
                     product_sku=product_sku,
                     globally_used=globally_used
                 )
                 # Cập nhật globally_used sau mỗi output
-                for j, slot in enumerate(A4_FORMULA):
-                    ft = slot['folder_type']
-                    if j < len(sel) and sel[j] is not None:
-                        globally_used.setdefault(ft, set()).add(sel[j])
-                logger.info(f"Output {i+1}: A4 V3 formula selected ({len(sel)} slots)")
+                for slot_cfg, vid_id in zip(sel_formula, sel):
+                    ft = slot_cfg['folder_type']
+                    if vid_id is not None:
+                        globally_used.setdefault(ft, set()).add(vid_id)
+                logger.info(f"Output {i+1}: A4 V4 formula selected ({len(sel)} slots)")
             else:
                 vd = service.get_random_videos(FOLDER_TYPES, product_category=product_category)
                 sel = list(vd.values())
+                sel_formula = None
                 logger.info(f"Output {i+1}: Random mode ({len([v for v in sel if v])} videos)")
-            all_selections.append(sel)
+            all_selections.append((sel, sel_formula))
 
         # ── PHASE 2: Pre-warm clip cache (SONG SONG) ──────────────────────────
-        # Thu thập tất cả unique video IDs cần generate clip
-        # Các outputs khác nhau → chọn video khác nhau → ít share cache
-        # Nhưng CÙNG output: clip của slot X được dùng cho output 1
-        # Key insight: pre-generate tất cả clips trước, rồi mix sẽ là cache HIT
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # Collect (video_id, clip_duration) cần pre-warm từ tất cả selections
-        # Dùng set để dedup (cùng video_id + duration → chỉ generate 1 lần)
         prewarm_tasks = set()  # (video_id, clip_duration_rounded)
-        for i, sel in enumerate(all_selections):
+        for i, (sel, sel_formula) in enumerate(all_selections):
+            formula_to_use = sel_formula if use_a4_formula and sel_formula else []
             for j, video_id in enumerate(sel):
                 if video_id is None:
                     continue
-                if use_a4_formula and j < len(A4_FORMULA):
-                    slot_cfg = A4_FORMULA[j]
+                if j < len(formula_to_use):
+                    slot_cfg = formula_to_use[j]
                     is_outro = slot_cfg.get('use_original_audio', False)
                     if is_outro:
-                        # Outro duration cần query DB - skip pre-warm (nhanh vì cache)
                         continue
-                    dur = slot_duration if slot_cfg.get('flexible') else slot_cfg.get('duration', 8)
+                    dur = slot_cfg.get('duration', 4.0)
                 else:
-                    dur = 8
-                # Round duration để dedup tốt hơn
-                prewarm_tasks.add((video_id, round(dur, 2)))
+                    dur = 4.0
+                prewarm_tasks.add((video_id, round(dur, 3)))
         
         if prewarm_tasks:
             logger.info(f"🚀 Pre-warming {len(prewarm_tasks)} unique clips in parallel...")
@@ -1309,13 +1414,13 @@ def _run_smart_mix_task(
         mix_lock = threading.Lock()
         
         def _mix_one(i):
-            sel = all_selections[i]
+            sel, sel_formula = all_selections[i]
             try:
                 f = _generate_one_mix(
                     progress_id, i, sel,
                     audio_path, audio_duration,
                     width, height, use_gpu, service, output_dir,
-                    use_a4_formula, slot_duration, forced_product_video_id
+                    use_a4_formula, sel_formula, forced_product_video_id
                 )
                 with mix_lock:
                     _update_progress(
@@ -1341,8 +1446,8 @@ def _run_smart_mix_task(
         # Giữ nguyên thứ tự output
         output_files = [output_files_map[i] for i in range(num_outputs) if i in output_files_map]
         
-        # Generate URLs - Use full URL with AI service host
-        ai_service_url = os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
+        # Generate URLs - Use base_url from request if available, otherwise fallback to AI_SERVICE_URL
+        ai_service_url = base_url if base_url else os.getenv('AI_SERVICE_URL', 'http://localhost:8001')
         output_urls = [
             f"{ai_service_url}{settings.MEDIA_URL}mix_outputs/{progress_id}/{os.path.basename(f)}"
             for f in output_files
@@ -1383,25 +1488,25 @@ def _generate_one_mix(
     output_index: int,
     video_selections: List[Optional[int]],
     audio_path: str,
-    audio_duration: float,  # NOW PASSED FROM PARENT (same for all outputs!)
+    audio_duration: float,
     width: int,
     height: int,
     use_gpu: Optional[bool],
     service,
     output_dir: str,
     use_a4_formula: bool = False,
-    slot_duration: Optional[float] = None,  # For A4 V3 flexible slots
+    dynamic_formula: Optional[List[Dict]] = None,  # Slot config list from _build_dynamic_formula
     forced_product_video_id: Optional[int] = None
 ) -> Optional[str]:
     """
     Generate one mixed video using cached clips.
     
-    For A4 V3:
-    - Slot 1-6: Use slot_duration (flexible, based on audio)
-    - Slot 7 (Outro): Use original duration + original audio
+    For A4 V4 (dynamic slots):
+    - Content slots: Use duration từ dynamic_formula, tổng = audio_duration chính xác
+    - Outro (cuối): Use original duration + original audio
     """
     
-    # Validate forced product video (có thể đã bị xóa khi clear index hoặc không còn available)
+    # Validate forced product video
     if forced_product_video_id:
         try:
             exists = IndexedVideo.objects.filter(
@@ -1410,7 +1515,6 @@ def _generate_one_mix(
             ).exists()
         except Exception:
             exists = False
-
         if not exists:
             logger.warning(
                 f"⚠️ Forced product video ID {forced_product_video_id} not found or unavailable. "
@@ -1418,179 +1522,436 @@ def _generate_one_mix(
             )
             forced_product_video_id = None
 
-    logger.info(f"Output {output_index}: Target duration = {audio_duration}s" + 
-                (f", Slot duration = {slot_duration:.2f}s" if slot_duration else ""))
+    logger.info(f"🎬 Output {output_index}: Target audio_duration = {audio_duration:.3f}s")
     
-    # Get/generate clips for each slot
-    clip_paths = []
-    clip_durations = []
-    outro_clip_path = None  # For A4 V3: Outro with original audio
+    clip_paths = []         # content clips only
+    clip_durations = []     # matching durations
+    outro_clip_path = None
     outro_duration = None
     
-    for i, video_selection in enumerate(video_selections):
-        # Check if this is Outro slot (last slot in A4 V3)
-        is_outro = (use_a4_formula and i == len(video_selections) - 1 and 
-                    i < len(A4_FORMULA) and A4_FORMULA[i].get('use_original_audio'))
+    # formula_list: list of slot configs including outro at end (in v4 selections)
+    formula_list = dynamic_formula if (use_a4_formula and dynamic_formula) else []
+    
+    for i, video_id in enumerate(video_selections):
+        # Determine if this is the Outro slot
+        # In V4: outro video appended at end of selections (after content slots)
+        is_outro = False
+        slot_cfg = {}
         
-        # A4 V3: All slots are simple videos (no SPLIT layouts)
-        video_id = video_selection
+        if use_a4_formula:
+            if i < len(formula_list):
+                slot_cfg = formula_list[i]
+                is_outro = slot_cfg.get('use_original_audio', False)
+            else:
+                # Index beyond formula → treat as outro
+                is_outro = True
+                slot_cfg = {"folder_type": "Outtrol", "use_original_audio": True}
         
-        # --- FORCE PRODUCT VIDEO LOGIC ---
-        if forced_product_video_id:
-            # Check if this slot is "Sản phẩm"
-            current_folder_type = None
-            if use_a4_formula and i < len(A4_FORMULA):
-                current_folder_type = A4_FORMULA[i].get('folder_type')
-            elif i < len(FOLDER_TYPES):
-                current_folder_type = FOLDER_TYPES[i]
-            
-            if current_folder_type == "Sản phẩm":
-                video_id = forced_product_video_id
-                logger.info(f"🔒 Output {output_index}: FORCED specific video for 'Sản phẩm' slot (ID {video_id})")
-        # ---------------------------------
+        # Apply forced product video for "Sản phẩm" slots
+        if forced_product_video_id and slot_cfg.get('folder_type') == "Sản phẩm":
+            video_id = forced_product_video_id
+            logger.info(f"🔒 Output {output_index}: FORCED specific video for 'Sản phẩm' slot (ID {video_id})")
         
         if video_id is None:
-            slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-            
+            slot_name = slot_cfg.get('folder_type', f'Slot {i}')
             if use_a4_formula:
-                raise ValueError(f"❌ A4 Formula: Slot {i+1}/{len(A4_FORMULA)} ({slot_name}) has no video!")
-            
+                raise ValueError(f"❌ A4 Formula: Slot {i+1} ({slot_name}) has no video!")
             logger.warning(f"{slot_name}: No video available, skipping")
             continue
         
-        # Get duration for this slot
-        if use_a4_formula and i < len(A4_FORMULA):
-            if is_outro:
-                # Outro: Get original video duration
-                from video_management.models import IndexedVideo
-                try:
-                    indexed_video = IndexedVideo.objects.get(id=video_id)
-                    clip_duration = indexed_video.duration
-                    logger.info(f"🎬 Slot {i+1}: Outro with ORIGINAL duration ({clip_duration:.2f}s)")
-                except IndexedVideo.DoesNotExist:
-                    clip_duration = 5  # Fallback
-                    logger.warning(f"⚠️ Outro video {video_id} not found, using fallback 5s")
-            elif A4_FORMULA[i].get('flexible'):
-                clip_duration = slot_duration
-            else:
-                clip_duration = A4_FORMULA[i].get('duration', 8)
-        else:
-            clip_duration = 8
-        
-        # ===== USE ANTI-FREEZE HELPER =====
+        # Determine clip duration
         if is_outro:
-            # Outro: Giữ nguyên âm thanh gốc (không re-encode audio)
-            clip_path = service.get_or_generate_clip(
+            # Outro: use original video duration from DB
+            try:
+                indexed_video = IndexedVideo.objects.get(id=video_id)
+                clip_duration = indexed_video.duration
+                logger.info(f"🎬 Slot {i+1} (Outro): original duration = {clip_duration:.2f}s")
+            except IndexedVideo.DoesNotExist:
+                clip_duration = 5.0
+                logger.warning(f"⚠️ Outro video {video_id} not found in DB, fallback 5s")
+        else:
+            clip_duration = slot_cfg.get('duration', 4.0)
+        
+        # Generate clip
+        if is_outro:
+            # Outro: use original audio, but normalize to uniform resolution/fps
+            # We do NOT mute or replace audio for outro
+            outro_raw = service.get_or_generate_clip(
                 video_id, use_gpu, duration=clip_duration, keep_original_audio=True
             )
+            clip_path = outro_raw
         else:
-            # Use auto-fill helper to prevent freeze
             fill_output = os.path.join(output_dir, f"filled_{output_index}_{i}.mp4")
-            clip_path = _get_clip_with_autofill(video_id, clip_duration, use_gpu, service, fill_output)
+            clip_path = _get_clip_with_autofill(
+                video_id, clip_duration, use_gpu, service, fill_output
+            )
         
         if clip_path and os.path.isfile(clip_path):
             if is_outro:
-                # Store outro separately (to preserve its original audio)
                 outro_clip_path = clip_path
                 outro_duration = clip_duration
-                logger.info(f"✅ Slot {i+1}/{len(video_selections)}: Outro (ORIGINAL AUDIO, {clip_duration:.2f}s)")
+                logger.info(f"✅ Slot {i+1} (Outro): {os.path.basename(clip_path)} ({clip_duration:.2f}s) [ORIGINAL AUDIO]")
             else:
                 clip_paths.append(clip_path)
                 clip_durations.append(clip_duration)
-                
-                slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-                logger.info(f"✅ Slot {i+1}/{len(video_selections)}: {slot_name} ({clip_duration:.2f}s)")
+                slot_name = slot_cfg.get('folder_type', f'Slot {i}')
+                logger.info(f"✅ Slot {i+1} ({slot_name}): {os.path.basename(clip_path)} ({clip_duration:.3f}s)")
         else:
-            slot_name = A4_FORMULA[i].get('folder_type', f"Slot {i}") if use_a4_formula and i < len(A4_FORMULA) else f"Slot {i}"
-            
+            slot_name = slot_cfg.get('folder_type', f'Slot {i}')
             if use_a4_formula:
                 raise ValueError(f"❌ A4 Formula: Failed to generate clip for Slot {i+1} ({slot_name})")
-            
             logger.warning(f"{slot_name}: Failed to get clip for video {video_id}")
     
-    # Log all clips for debugging
-    logger.info(f"📋 Clip summary: {len(clip_paths)} content clips + {1 if outro_clip_path else 0} outro")
-    for idx, (clip, dur) in enumerate(zip(clip_paths, clip_durations), start=1):
-        logger.info(f"  Clip {idx}: {os.path.basename(clip)} ({dur:.2f}s)")
+    # Summary log
+    total_content = sum(clip_durations)
+    logger.info(f"📋 Content clips: {len(clip_paths)}, total = {total_content:.3f}s (audio = {audio_duration:.3f}s)")
     if outro_clip_path:
-        logger.info(f"  Outro: {os.path.basename(outro_clip_path)} ({outro_duration:.2f}s) [ORIGINAL AUDIO]")
+        logger.info(f"📋 Outro: {os.path.basename(outro_clip_path)} ({outro_duration:.2f}s) [ORIGINAL AUDIO]")
     
     # Validation
     if use_a4_formula:
-        expected_content_clips = 6  # Slot 1-6
-        if len(clip_paths) != expected_content_clips:
-            raise ValueError(f"❌ A4 V3 Formula requires {expected_content_clips} content clips! Got {len(clip_paths)} clips.")
+        expected = len(formula_list) if formula_list else 1
+        if len(clip_paths) < 2:
+            raise ValueError(
+                f"❌ A4 V4 Formula: Not enough content clips! Got {len(clip_paths)}, "
+                f"expected {expected} content slots."
+            )
         if not outro_clip_path:
-            raise ValueError(f"❌ A4 V3 Formula: Missing Outro (Slot 7)!")
-    elif len(clip_paths) < 5:
-        raise ValueError(f"Not enough clips generated: {len(clip_paths)} clips. Need at least 5 clips to mix.")
+            raise ValueError("❌ A4 V4 Formula: Missing Outro clip!")
+    elif len(clip_paths) < 3:
+        raise ValueError(f"Not enough clips generated: {len(clip_paths)} clips. Need at least 3 clips to mix.")
     
-    # Calculate total content duration (Slot 1-6)
-    total_content_duration = sum(clip_durations)
-    logger.info(f"📊 Content duration (Slot 1-6): {total_content_duration:.2f}s")
+    # --- For random mode: loop if video shorter than audio ---
+    if not use_a4_formula and total_content < audio_duration:
+        loops_needed = int(audio_duration / total_content) + 1
+        original_clips = clip_paths.copy()
+        original_durations = clip_durations.copy()
+        for _ in range(loops_needed - 1):
+            clip_paths.extend(original_clips)
+            clip_durations.extend(original_durations)
+        logger.info(f"🔄 Looped to {len(clip_paths)} clips, total {sum(clip_durations):.2f}s")
     
-    # For A4 V3: Content should match audio_duration (Slot 1-6 only)
-    # No need to loop - slot_duration is calculated to fill audio_duration exactly
-    if use_a4_formula and outro_clip_path:
-        logger.info(f"🎵 A4 V3 Mode:")
-        logger.info(f"  - Content (Slot 1-6): {total_content_duration:.2f}s (should match audio)")
-        logger.info(f"  - Outro (Slot 7): {outro_duration:.2f}s (original audio)")
-        logger.info(f"  - Total output: {total_content_duration + outro_duration:.2f}s")
-    else:
-        # For random mode: Loop clips if video is shorter than audio
-        if total_content_duration < audio_duration:
-            loops_needed = int(audio_duration / total_content_duration) + 1
-            logger.info(f"🔄 Video too short! Looping {loops_needed}x to match audio ({audio_duration}s)")
-            
-            original_clips = clip_paths.copy()
-            original_durations = clip_durations.copy()
-            
-            for _ in range(loops_needed - 1):
-                clip_paths.extend(original_clips)
-                clip_durations.extend(original_durations)
-            
-            logger.info(f"After looping: {len(clip_paths)} clips, total {sum(clip_durations):.2f}s")
+    # ===== STEP 1: Normalize all content clips to uniform codec =====
+    # This is critical to prevent freeze frames when concat-ing clips
+    # from different sources (different fps, codec, resolution)
+    ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
+    import shutil as _shutil
+    if not os.path.exists(ffmpeg_path):
+        ffmpeg_path = _shutil.which('ffmpeg') or 'ffmpeg'
     
-    # Concat content clips (Slot 1-6) - FAST - copy codec!
+    normalized_clips = []
+    for ci, cp in enumerate(clip_paths):
+        norm_path = os.path.join(output_dir, f"norm_{output_index}_{ci}.mp4")
+        norm_cmd = [
+            ffmpeg_path, '-y',
+            '-i', cp,
+            '-vf', f'fps=30,scale={width}:{height}:force_original_aspect_ratio=increase,'
+                   f'crop={width}:{height},setsar=1',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p',
+            '-an',          # Strip audio from content clips (will replace with voiceover)
+            '-t', str(clip_durations[ci]),
+            norm_path
+        ]
+        try:
+            r = subprocess.run(norm_cmd, capture_output=True, text=True,
+                               encoding='utf-8', errors='ignore', timeout=120)
+            if r.returncode == 0 and os.path.isfile(norm_path):
+                normalized_clips.append(norm_path)
+                logger.info(f"  ✅ Normalized clip {ci+1}: {os.path.basename(norm_path)}")
+            else:
+                logger.warning(f"  ⚠️ Normalize failed clip {ci+1}, using original: {r.stderr[:200]}")
+                normalized_clips.append(cp)
+        except Exception as e:
+            logger.warning(f"  ⚠️ Normalize exception clip {ci+1}: {e}, using original")
+            normalized_clips.append(cp)
+    
+    # ===== STEP 2: Concat normalized content clips =====
     temp_content = os.path.join(output_dir, f"temp_content_{output_index}.mp4")
-    concat_success = _concat_clips_fast(clip_paths, temp_content)
+    concat_success = _concat_clips_normalized(normalized_clips, temp_content, ffmpeg_path)
+    
+    # Cleanup normalized temp clips
+    for np in normalized_clips:
+        if np not in clip_paths and os.path.exists(np):
+            try:
+                os.remove(np)
+            except Exception:
+                pass
     
     if not concat_success:
+        logger.error(f"❌ Failed to concat content clips for output {output_index}")
         return None
     
-    # Replace audio for content part
+    # ===== STEP 3: Replace audio (voiceover) -> trim to exact audio_duration =====
     content_with_audio = os.path.join(output_dir, f"content_audio_{output_index}.mp4")
     audio_success = _replace_audio(temp_content, audio_path, content_with_audio, audio_duration)
     
-    # Cleanup temp content
     if os.path.exists(temp_content):
         os.remove(temp_content)
     
     if not audio_success:
+        logger.error(f"❌ Failed to replace audio for output {output_index}")
         return None
     
-    # Final output
     output_file = os.path.join(output_dir, f"output_{output_index}.mp4")
     
-    # If A4 V3: Concat content + outro (outro keeps original audio)
+    # ===== STEP 4 (A4 V4): Normalize outro + concat content+outro =====
     if use_a4_formula and outro_clip_path:
-        logger.info("🔗 Concatenating content + outro...")
-        final_concat_success = _concat_clips_fast([content_with_audio, outro_clip_path], output_file)
+        logger.info("🔗 Normalizing Outro then concatenating with content...")
         
-        # Cleanup temp content with audio
-        if os.path.exists(content_with_audio):
-            os.remove(content_with_audio)
+        # Normalize outro: uniform resolution/fps/codec, but KEEP original audio!
+        outro_norm_path = os.path.join(output_dir, f"outro_norm_{output_index}.mp4")
+        outro_norm_cmd = [
+            ffmpeg_path, '-y',
+            '-i', outro_clip_path,
+            '-vf', f'fps=30,scale={width}:{height}:force_original_aspect_ratio=increase,'
+                   f'crop={width}:{height},setsar=1',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+            outro_norm_path
+        ]
+        try:
+            r2 = subprocess.run(outro_norm_cmd, capture_output=True, text=True,
+                                encoding='utf-8', errors='ignore', timeout=120)
+            if r2.returncode == 0 and os.path.isfile(outro_norm_path):
+                logger.info(f"✅ Outro normalized: {os.path.basename(outro_norm_path)}")
+                outro_use = outro_norm_path
+            else:
+                logger.warning(f"⚠️ Outro normalize failed: {r2.stderr[:200]}, using raw outro")
+                outro_use = outro_clip_path
+        except Exception as e:
+            logger.warning(f"⚠️ Outro normalize exception: {e}, using raw outro")
+            outro_use = outro_clip_path
         
-        if final_concat_success:
-            logger.info(f"✅ A4 V3 Final output: {os.path.basename(output_file)}")
+        # Also normalize content_with_audio to same codec for concat compatibility
+        content_norm_path = os.path.join(output_dir, f"content_norm_{output_index}.mp4")
+        content_renorm_cmd = [
+            ffmpeg_path, '-y',
+            '-i', content_with_audio,
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+            '-t', str(audio_duration),
+            content_norm_path
+        ]
+        try:
+            r3 = subprocess.run(content_renorm_cmd, capture_output=True, text=True,
+                                encoding='utf-8', errors='ignore', timeout=120)
+            if r3.returncode == 0 and os.path.isfile(content_norm_path):
+                content_use = content_norm_path
+            else:
+                content_use = content_with_audio
+        except Exception:
+            content_use = content_with_audio
+        
+        # Final concat: content (with voiceover) + outro (with original audio)
+        final_ok = _concat_clips_normalized([content_use, outro_use], output_file, ffmpeg_path)
+        
+        # Cleanup temp files
+        for tmp in [content_with_audio, content_norm_path, outro_norm_path]:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except Exception:
+                    pass
+        
+        if final_ok:
+            logger.info(f"✅ A4 V4 Final output: {os.path.basename(output_file)}")
             return output_file
         return None
     else:
-        # For random mode: content_with_audio IS the final output
+        # Random mode: content_with_audio is final
         if os.path.exists(content_with_audio):
             os.rename(content_with_audio, output_file)
             return output_file
         return None
+
+
+def _concat_clips_normalized(clip_paths: List[str], output_path: str, ffmpeg_path: str = None) -> bool:
+    """
+    Concat clips that are ALREADY normalized to same codec (libx264/aac 44100 stereo).
+    Clips phải cùng fps/resolution/codec → dùng concat copy codec (nhanh + không mất audio).
+    
+    Nếu copy vẫn fail (rare) → fallback re-encode.
+    """
+    if not clip_paths:
+        logger.error("❌ _concat_clips_normalized: No clips!")
+        return False
+    
+    if ffmpeg_path is None:
+        import shutil as _sh
+        ffmpeg_path = _sh.which('ffmpeg') or 'ffmpeg'
+    
+    if len(clip_paths) == 1:
+        import shutil as _sh
+        try:
+            _sh.copy2(clip_paths[0], output_path)
+            return True
+        except Exception as e:
+            logger.error(f"❌ Copy single clip failed: {e}")
+            return False
+    
+    list_file = output_path + ".normlist.txt"
+    try:
+        with open(list_file, 'w', encoding='utf-8') as f:
+            for cp in clip_paths:
+                if not os.path.isfile(cp):
+                    logger.error(f"❌ Clip missing: {cp}")
+                    return False
+                safe = os.path.abspath(cp).replace("'", "\\'")
+                f.write(f"file '{safe}'\n")
+        
+        cmd = [
+            ffmpeg_path, '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_file,
+            '-c', 'copy',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        timeout = 60 + len(clip_paths) * 10
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding='utf-8', errors='ignore', timeout=timeout
+        )
+        
+        if result.returncode == 0 and os.path.isfile(output_path):
+            logger.info(f"✅ Concat normalized (copy) → {os.path.basename(output_path)}")
+            return True
+        
+        # Fallback: re-encode
+        logger.warning(f"⚠️ Concat copy failed, fallback re-encode: {result.stderr[:200]}")
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        
+        cmd2 = [
+            ffmpeg_path, '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_file,
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        timeout2 = 120 + len(clip_paths) * 30
+        result2 = subprocess.run(
+            cmd2, capture_output=True, text=True,
+            encoding='utf-8', errors='ignore', timeout=timeout2
+        )
+        if result2.returncode == 0 and os.path.isfile(output_path):
+            logger.info(f"✅ Concat normalized (re-encode fallback) → {os.path.basename(output_path)}")
+            return True
+        
+        logger.error(f"❌ Concat normalized FAILED both tries. Stderr: {result2.stderr[:400]}")
+        return False
+    
+    except subprocess.TimeoutExpired:
+        logger.error("❌ _concat_clips_normalized: TIMEOUT!")
+        return False
+    except Exception as e:
+        logger.error(f"❌ _concat_clips_normalized error: {e}", exc_info=True)
+        return False
+    finally:
+        if os.path.exists(list_file):
+            try:
+                os.remove(list_file)
+            except Exception:
+                pass
+
+
+def _get_a4_formula_videos_v4(
+    service,
+    dynamic_formula: List[Dict],
+    product_category: Optional[str] = None,
+    product_sku: Optional[str] = None,
+    globally_used: Optional[Dict[str, set]] = None
+):
+    """
+    Get videos for A4 Formula V4 (dynamic slots, 3-4s per scene).
+    
+    Args:
+        service: SmartPreprocessingService instance
+        dynamic_formula: List of slot configs from _build_dynamic_formula()
+                         (chưa bao gồm Outro)
+        product_category: Optional category filter
+        product_sku: Optional SKU filter
+        globally_used: Dict { folder_type: set(video_ids) } đã dùng ở outputs trước
+    
+    Returns:
+        (video_id_list, formula_with_outro)
+        - video_id_list: List[int|None] - video IDs for ALL slots (content + outro)
+        - formula_with_outro: List[Dict] - slot configs for ALL slots (content + outro)
+    """
+    from video_management.models import IndexedVideo
+    import random
+    
+    if globally_used is None:
+        globally_used = {}
+    
+    selected_videos = []
+    locally_used = {}   # { folder_type: set(video_ids) } - track within this output
+    
+    # Chọn videos cho content slots (dynamic_formula, không có outro)
+    for i, slot_cfg in enumerate(dynamic_formula, start=1):
+        folder_type = slot_cfg['folder_type']
+        required_duration = slot_cfg.get('duration', 3.5)
+        
+        local_exclude = locally_used.get(folder_type, set())
+        global_exclude = globally_used.get(folder_type, set())
+        all_exclude = local_exclude | global_exclude
+        
+        video_id = _pick_video_for_slot(
+            folder_type=folder_type,
+            required_duration=required_duration,
+            product_category=product_category,
+            product_sku=product_sku,
+            exclude_ids=all_exclude,
+            fallback_exclude_ids=local_exclude,
+        )
+        
+        if video_id:
+            selected_videos.append(video_id)
+            locally_used.setdefault(folder_type, set()).add(video_id)
+            logger.info(f"✅ A4 V4 Slot {i}/{len(dynamic_formula)}: {folder_type} ({required_duration:.3f}s) → Video {video_id}")
+        else:
+            logger.error(f"❌ A4 V4 Slot {i}/{len(dynamic_formula)}: {folder_type} → NO VIDEO FOUND!")
+            selected_videos.append(None)
+    
+    # Validation content slots
+    missing = [i for i, v in enumerate(selected_videos) if v is None]
+    if missing:
+        missing_names = [dynamic_formula[i]['folder_type'] for i in missing]
+        raise ValueError(
+            f"❌ A4 Formula V4 FAILED! Missing video for slots: {missing_names}\n"
+            f"Please index ALL required folder types!"
+        )
+    
+    # Chọn video Outro
+    outro_video_id = _pick_video_for_slot(
+        folder_type="Outtrol",
+        required_duration=3.0,  # Any duration, use original
+        product_category=None,
+        product_sku=None,
+        exclude_ids=globally_used.get("Outtrol", set()),
+        fallback_exclude_ids=set(),
+    )
+    
+    if outro_video_id is None:
+        raise ValueError("❌ A4 Formula V4: No Outro (Outtrol) video found! Please index Outro folder.")
+    
+    logger.info(f"✅ A4 V4 Outro: Video {outro_video_id} [ORIGINAL AUDIO]")
+    
+    # Build formula with outro appended
+    outro_cfg = {"folder_type": "Outtrol", "use_original_audio": True, "duration": 0}
+    formula_with_outro = list(dynamic_formula) + [outro_cfg]
+    video_id_list = selected_videos + [outro_video_id]
+    
+    logger.info(f"✅ A4 Formula V4 complete: {len(video_id_list)} slots selected ({len(selected_videos)} content + 1 outro)")
+    return video_id_list, formula_with_outro
 
 
 def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
@@ -1637,6 +1998,7 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
             '-safe', '0',
             '-i', list_file,
             '-c', 'copy',  # COPY codec - super fast!
+            '-movflags', '+faststart',
             '-y',
             output_path
         ]
@@ -1687,6 +2049,7 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
             '-ar', '44100',                 # ✅ Consistent audio sample rate
             '-ac', '2',                     # ✅ Stereo
             '-b:a', '128k',
+            '-movflags', '+faststart',
             '-y',
             output_path
         ]
@@ -1731,10 +2094,11 @@ def _concat_clips_fast(clip_paths: List[str], output_path: str) -> bool:
 
 def _replace_audio(video_path: str, audio_path: str, output_path: str, audio_duration: float = None) -> bool:
     """
-    Replace audio in video (minimal encoding).
+    Replace audio in video.
     
-    IMPORTANT: We loop video clips to match audio duration before calling this.
-    If audio_duration is provided, output will be trimmed to exactly match audio length.
+    - Ghép audio (voiceover) vào video content
+    - Trim output theo audio_duration để khớp chính xác
+    - -shortest: đảm bảo output KHÔNG dài hơn audio
     """
     try:
         ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
@@ -1743,30 +2107,34 @@ def _replace_audio(video_path: str, audio_path: str, output_path: str, audio_dur
             ffmpeg_path = shutil.which('ffmpeg') or 'ffmpeg'
         
         cmd = [
-            ffmpeg_path,
+            ffmpeg_path, '-y',
             '-i', video_path,
             '-i', audio_path,
-            '-c:v', 'copy',  # Copy video - no re-encoding!
-            '-c:a', 'aac',   # Only encode audio
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
             '-map', '0:v:0',
             '-map', '1:a:0',
+            '-shortest',           # Output ends when shorter stream ends
+            '-movflags', '+faststart',
         ]
         
         # Trim output to exact audio duration if specified
         if audio_duration:
             cmd.extend(['-t', str(audio_duration)])
-            logger.info(f"Trimming output to audio duration: {audio_duration}s")
+            logger.info(f"✂️ Trimming content to exact audio_duration: {audio_duration:.3f}s")
         
-        cmd.extend(['-y', output_path])
-
+        cmd.append(output_path)
         
+        # Timeout: base 120s + 2s per second of audio content
+        timeout = 120 + int(audio_duration or 0) * 2
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             encoding='utf-8',
-            errors='ignore',  # Ignore Unicode decode errors
-            timeout=60
+            errors='ignore',
+            timeout=timeout
         )
         
         if result.returncode != 0:
@@ -2422,53 +2790,107 @@ def index_manufacturing_folder(request):
 def _auto_index_outro(service):
     """
     Find and index "Outtrol" (Outro) folder.
-    Primary location: \\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK\OUTRO HUYK
-    Fallback: scan for any folder containing 'outro' (case-insensitive).
+    Uses VIDEO_BASE_PATHS from settings (works on both Windows and NAS/Linux).
+    Scans for any folder containing 'outro' or 'source huyk' (case-insensitive).
     """
+    from django.conf import settings
+    import os
+
     try:
         logger.info("🔍 Auto-scanning for Outro folder...")
-        
-        # Primary: direct confirmed path
-        primary_path = r"\\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK\OUTRO HUYK"
-        if os.path.isdir(primary_path):
-            logger.info(f"✅ Found Outro folder (primary): {primary_path}")
-            service.index_videos_from_folders({"Outtrol": primary_path})
+
+        # Build dynamic search roots from settings (works on Windows AND NAS)
+        base_video_paths = getattr(settings, 'VIDEO_BASE_PATHS', [])
+        if not base_video_paths:
+            base_video_paths = [
+                r"\\VCB_MEDIA\MEDIA VCB folder\Generate Video",  # Windows fallback
+                "/volume1/MEDIA VCB folder/Generate Video",      # NAS fallback
+            ]
+
+        # Also try parent of each base path (e.g. /volume1/MEDIA VCB folder)
+        search_roots = []
+        for base in base_video_paths:
+            base = os.path.normpath(base.replace('/', os.sep))
+            search_roots.append(base)
+            parent = os.path.dirname(base)
+            if parent and parent != base and parent not in search_roots:
+                search_roots.append(parent)
+
+        logger.info(f"💡 Will search in: {search_roots}")
+
+        # Priority 1: Use OUTRO_FOLDER_PATH directly if configured
+        outro_direct = getattr(settings, 'OUTRO_FOLDER_PATH', '').strip()
+        if outro_direct and os.path.isdir(outro_direct):
+            logger.info(f"✅ Found Outro folder (OUTRO_FOLDER_PATH): {outro_direct}")
+            service.index_videos_from_folders({"Outtrol": outro_direct})
             return
 
-        # Fallback: scan known roots for any 'outro' subfolder
-        search_roots = [
-            r"\\VCB_MEDIA\MEDIA VCB folder\SOURCE HUYK",
-            r"\\VCB_MEDIA\MEDIA VCB folder\Generate Video",
-            r"\\VCB_MEDIA\MEDIA VCB folder",
-        ]
-        
+        # Priority 2: Use HUYK_VIDEO_PATH + scan for outro subfolder
+        huyk_direct = getattr(settings, 'HUYK_VIDEO_PATH', '').strip()
+        if huyk_direct and os.path.isdir(huyk_direct):
+            logger.info(f"📂 HUYK_VIDEO_PATH found: {huyk_direct}. Scanning for 'outro' subfolder...")
+            outro_sub = service.find_folder_by_name(
+                root_path=huyk_direct,
+                target_name="outro",
+                exact_match=False,
+                max_depth=2
+            )
+            if outro_sub:
+                logger.info(f"✅ Found Outro subfolder in HuyK: {outro_sub}")
+                service.index_videos_from_folders({"Outtrol": outro_sub})
+                return
+            else:
+                logger.info(f"ℹ️ No 'outro' subfolder, indexing all HuyK as Outtrol: {huyk_direct}")
+                service.index_videos_from_folders({"Outtrol": huyk_direct})
+                return
+
+        # Priority 3: Dynamic scan from VIDEO_BASE_PATHS
         target_path = None
-        
+
         for root in search_roots:
             if not os.path.exists(root):
                 continue
-                
-            logger.info(f"📂 Scanning '{root}' for folders containing 'outro'...")
-            
+
+            logger.info(f"📂 Scanning '{root}' for folders containing 'outro' or 'huyk'...")
+
+            # Try 'outro' first
             path = service.find_folder_by_name(
                 root_path=root,
                 target_name="outro",
                 exact_match=False,
-                max_depth=3
+                max_depth=4
             )
-            
             if path:
                 target_path = path
                 break
-        
+
+            # Try 'source huyk' (contains huyk videos including outro)
+            path = service.find_folder_by_name(
+                root_path=root,
+                target_name="source huyk",
+                exact_match=False,
+                max_depth=3
+            )
+            if path:
+                # Look for outro subfolder inside HUYK folder
+                outro_sub = service.find_folder_by_name(
+                    root_path=path,
+                    target_name="outro",
+                    exact_match=False,
+                    max_depth=2
+                )
+                target_path = outro_sub or path
+                break
+
         if target_path:
-            logger.info(f"✅ Found Outro folder: {target_path}")
+            logger.info(f"✅ Found Outro/HuyK folder: {target_path}")
             service.index_videos_from_folders({"Outtrol": target_path})
         else:
             logger.error("❌ Could not find any folder with 'outro' in name!")
-            logger.error(f"💡 Searched in: {', '.join(search_roots)}")
-             
+            logger.error(f"💡 Searched in: {search_roots}")
+
     except Exception as e:
-        logger.error(f"Auto-index Outro error: {e}")
+        logger.error(f"Auto-index Outro error: {e}", exc_info=True)
+
 
 

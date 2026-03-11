@@ -222,7 +222,7 @@ class ContentGenerationService:
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {self.openai_key}'
                 }
-                system_msg = "Bạn là copywriter. Nhiệm vụ: đọc content gốc, lấy CÂU CHUYỆN/CHỦ ĐỀ từ đó, rồi viết lại theo cấu trúc 7 bước KOC Huy Ca (lý do → câu chuyện → tâm sự → yêu cầu khách → sản phẩm (chế tác/ý nghĩa, KHÔNG spec) → chúc → outro). Viết liền mạch. KHÔNG hashtag, KHÔNG emoji, KHÔNG dấu chấm than, KHÔNG liệt kê spec sản phẩm."
+                system_msg = "Bạn là copywriter. Nhiệm vụ: đọc content gốc, lấy CÂU CHUYỆN/CHỦ ĐỀ từ đó, rồi viết lại theo cấu trúc 6 bước KOC Huy Ca (lý do → câu chuyện → tâm sự → yêu cầu khách → sản phẩm (chế tác/ý nghĩa, KHÔNG spec) → chúc khách). Phần Outro đã có sẵn video riêng nên KHÔNG viết tự xưng 'Mình là HuyK...'. Viết liền mạch. KHÔNG hashtag, KHÔNG emoji, KHÔNG dấu chấm than, KHÔNG liệt kê spec sản phẩm."
                 payload = {
                     "model": model,
                     "messages": [
@@ -310,20 +310,27 @@ QUY TẮC QUAN TRỌNG — ĐỌC TRƯỚC KHI VIẾT:
 - Ví dụ bài mẫu nói về "nhẫn bắt sáng khi gặp ánh nắng" → ghi nhận đặc điểm đó, lồng vào phần SP
 - Chuyển bối cảnh bài mẫu thành câu chuyện khách tìm đến Huy Ca
 
-BỐ CỤC 7 BƯỚC (BẮT BUỘC, theo đúng thứ tự):
+BỐ CỤC 6 BƯỚC (BẮT BUỘC, theo đúng thứ tự):
 1. MỞ ĐẦU = LÝ DO: Hook lấy từ chủ đề/điểm nổi bật của bài mẫu
 2. CÂU CHUYỆN: Lấy đúng bối cảnh/nhân vật từ bài mẫu → viết thành câu chuyện khách tìm đến Huy Ca
 3. HUY CA TÂM SỰ: Cảm nhận của Huy Ca về câu chuyện khách
 4. YÊU CẦU CỦA KHÁCH: Khách muốn gì → đặt sản phẩm trong "THÔNG TIN SẢN PHẨM THẬT"
 5. NÓI QUA VỀ SẢN PHẨM: Kể kiểu thợ tâm sự — công đoạn chế tác, thời gian làm, ý nghĩa đặc biệt (dùng thông tin từ bài mẫu nếu có, không liệt kê spec kỹ thuật)
-6. CHÚC KHÁCH: Một câu chúc nhẹ nhàng
-7. OUTRO: "Mình là HuyCa đến từ {brand_name}."
+6. CHÚC KHÁCH: Một câu chúc nhẹ nhàng. KẾT THÚC NGAY TẠI ĐÂY.
+
+⛔ TUYỆT ĐỐI KHÔNG ĐƯỢC VIẾT các câu sau ở bất kỳ vị trí nào:
+- "Mình là Huy Ca đến từ Viễn Chí Bảo"
+- "Mình là HuyK đến từ Viễn Chí Bảo"
+- "Huy Ca đến từ Viễn Chí Bảo"
+- Bất kỳ câu tự xưng tên + thương hiệu nào
+Lý do: Video đã có sẵn phần Outro riêng để giới thiệu, KHÔNG được lặp lại.
 
 QUY TẮC:
 - Xưng "Huy Ca", gọi khách "anh chị"/"mọi người"
 - Giọng chân thật, trầm ấm, tử tế như thợ tâm sự
 - KHÔNG dùng "giá sốc", "cao cấp", "số 1", dấu chấm than, hashtag, icon
 - Viết liền mạch 1 đoạn văn nói cho video. KHÔNG xuống dòng, KHÔNG đánh số bước
+- Câu cuối cùng phải là câu CHÚC KHÁCH, không thêm bất cứ thứ gì sau đó
 
 Trả về CHỈ bài viết, bắt đầu ngay câu đầu tiên.
 """
@@ -358,6 +365,24 @@ Trả về CHỈ bài viết, bắt đầu ngay câu đầu tiên.
         script = re.sub(r'[\U0001F600-\U0001F9FF\U00002702-\U000027B0\U0001F1E0-\U0001F1FF\U0000FE00-\U0000FE0F\U00002600-\U000026FF]', '', script)  # emoji
         script = re.sub(r'[!]+', '.', script)  # dấu ! → dấu .
         script = re.sub(r'\s{2,}', ' ', script).strip()  # multiple spaces
+
+        # ⛔ XÓA câu tự xưng tên branding ở cuối (Outro video sẽ nói phần này)
+        # Bắt tất cả biến thể: "Mình là Huy Ca...", "HuyK đến từ...", v.v.
+        outro_patterns = [
+            r'\.?\s*Mình là Huy\s*[Cc]a[^.]*Viễn Chí Bảo[^.]*\.?',
+            r'\.?\s*Mình là Huy\s*[Kk][^.]*Viễn Chí Bảo[^.]*\.?',
+            r'\.?\s*Huy\s*[Cc]a đến từ Viễn Chí Bảo[^.]*\.?',
+            r'\.?\s*Huy\s*[Kk] đến từ Viễn Chí Bảo[^.]*\.?',
+            r'\.?\s*Mình là Huy\s*[Cc]a[^.]*\.?\s*$',
+            r'\.?\s*từ Viễn Chí Bảo[^.]*\.?\s*$',
+        ]
+        for pattern in outro_patterns:
+            before = script
+            script = re.sub(pattern, '.', script, flags=re.IGNORECASE).strip()
+            if script != before:
+                logger.info(f"🚫 Stripped outro self-introduction phrase from generated content")
+        # Dọn dấu câu thừa ở cuối
+        script = re.sub(r'[\.]+\s*$', '.', script).strip()
         
         # Gộp nhiều xuống dòng thành 1 đoạn văn liền (tối đa 2 đoạn) - tránh tách từng câu
         lines = [line.strip() for line in script.split('\n') if line.strip()]

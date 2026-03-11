@@ -38,6 +38,14 @@ DEBUG = env('DEBUG', default=True)
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '0.0.0.0'])
 
+# ── Proxy / HTTPS settings (behind Cloudflare Tunnel) ──────────────────────
+# Cloudflare Tunnel terminates SSL and forwards X-Forwarded-Proto: https
+# This tells Django to trust that header so build_absolute_uri() returns https://
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+# ───────────────────────────────────────────────────────────────────────────
+
+
 
 # Application definition
 
@@ -379,6 +387,14 @@ PRODUCT_VIDEO_PATHS = env.list('PRODUCT_VIDEO_PATHS', default=[])
 # Manufacturing (Chế tác) folder - append dưới VIDEO_BASE_PATHS
 # Ví dụ: Chế tác sản phẩm\Việt Nam → path: Generate Video\Chế tác sản phẩm\Việt Nam\<Nhẫn>\<NM101_...>
 MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'Chế tác sản phẩm\Việt Nam')
+
+# HuyK video folder (chứa video KOC/HuyK cho Slot 2 & 4)
+# Nếu để trống, hệ thống tự scan trong VIDEO_BASE_PATHS
+HUYK_VIDEO_PATH = env('HUYK_VIDEO_PATH', default='')
+
+# Outro folder (chứa video outro cho Slot 7)
+# Nếu để trống, hệ thống tự scan tìm folder 'outro' hoặc 'source huyk'
+OUTRO_FOLDER_PATH = env('OUTRO_FOLDER_PATH', default='')
 
 
 # Reload triggered

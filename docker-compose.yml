@@ -5,6 +5,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - /volume1:/volume1  # Mount NAS media folder vào container
     ports:
       - "8000:8000"
     env_file:
@@ -16,10 +17,12 @@ services:
     command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
   worker:
     build: .
     volumes:
       - .:/app
+      - /volume1:/volume1  # Mount NAS media folder vào container
     env_file:
       - .env
     environment:
@@ -36,6 +39,7 @@ services:
     build: .
     volumes:
       - .:/app
+      - /volume1:/volume1  # Mount NAS media folder vào container
     env_file:
       - .env
     environment:

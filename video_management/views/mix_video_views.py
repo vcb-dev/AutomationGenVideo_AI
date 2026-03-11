@@ -453,6 +453,7 @@ def _replace_audio(video_path: str, audio_path: str, output_path: str) -> Tuple[
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-shortest",
+        "-movflags", "+faststart",
         output_path
     ]
     return _run_ffmpeg(args, step_name="replace audio")
@@ -481,6 +482,7 @@ def _concat_files(part_files: List[str], output_path: str, step_name: Optional[s
             "-c:a", "aac",
             "-ar", "44100",
             "-ac", "2",
+            "-movflags", "+faststart",
             output_path
         ]
         return _run_ffmpeg(args, step_name=step_name)

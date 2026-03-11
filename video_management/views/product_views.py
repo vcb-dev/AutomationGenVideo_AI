@@ -287,14 +287,22 @@ def find_product_video_path(request):
             video_id = service.scan_and_index_specific_sku(sku_normalized, prod_folder_path)
             
             if video_id:
-                 video = IndexedVideo.objects.get(id=video_id)
-                 return Response({
-                    'success': True,
-                    'sku': sku,
-                    'video_path': video.file_path,
-                    'video_id': video.id,
-                    'source': 'realtime_scan'
-                })
+                 # Use filter().first() to handle race conditions where
+                 # parallel processes may have deleted/re-indexed the video
+                 video = IndexedVideo.objects.filter(
+                     folder_type="Sản phẩm",
+                     file_path__icontains=sku_normalized
+                 ).first()
+                 if not video:
+                     video = IndexedVideo.objects.filter(id=video_id).first()
+                 if video:
+                     return Response({
+                        'success': True,
+                        'sku': sku,
+                        'video_path': video.file_path,
+                        'video_id': video.id,
+                        'source': 'realtime_scan'
+                    })
         else:
             logger.warning("Could not determine product folder path for real-time scan.")
         

@@ -3,7 +3,7 @@ Virtual Mix Views - Smart video preview.
 
 Strategy:
   1. Try cached clips first (instant)
-  2. If not enough → generate ONLY the clips needed (7 clips, not 112)
+  2. If not enough → show all slots, use stream URL for uncached
   3. Show progress to user in real-time via polling
 """
 
@@ -39,61 +39,74 @@ _gen_lock = threading.Lock()
 def virtual_mix(request):
     """
     Create virtual mix manifests.
-    
+
     Smart strategy:
+    - Build dynamic slots (3-4s each) using _build_dynamic_formula
     - Pick videos for each slot
-    - Use cached clips where available
-    - Generate missing clips on-the-fly (only what's needed, ~7 clips)
-    - Returns manifest with stream URLs
+    - Use cached clips where available (instant stream)
+    - Fall back to stream/video_id for uncached clips
+    - Returns manifest with ALL slots visible
     """
     start_time = _time.time()
-    
+
     try:
         audio_file = request.FILES.get('audio')
         num_outputs = int(request.POST.get('num_outputs', 5))
         product_sku = request.POST.get('product_sku')
         use_a4 = request.POST.get('use_a4_formula', 'true').lower() == 'true'
-        
+
         if not audio_file:
             return Response({'error': 'Audio file is required'}, status=400)
-        
+
         # Save audio
         audio_dir = os.path.join(settings.MEDIA_ROOT, 'virtual_mix_audio')
         os.makedirs(audio_dir, exist_ok=True)
         audio_id = f"{random.randint(100000, 999999)}"
         audio_path = os.path.join(audio_dir, f'audio_{audio_id}.mp3')
-        
+
         with open(audio_path, 'wb') as f:
             for chunk in audio_file.chunks():
                 f.write(chunk)
-        
+
         service = get_preprocessing_service()
         audio_duration = _get_audio_duration(service.ffprobe_path, audio_path)
-        
+
         if not audio_duration or audio_duration <= 0:
             return Response({'error': 'Could not determine audio duration'}, status=400)
-        
-        # ── Build slot configs ─────────────────────────────────────
-        slot_duration = audio_duration / 6 if use_a4 else audio_duration / 5
-        
+
+        # ── Build slot configs dùng Dynamic Formula V4 ─────────────
+        from video_management.views.smart_mix_video_views import _build_dynamic_formula
+
         if use_a4:
+            # Mỗi slot 3-4s, tự động tính số slot dựa trên audio_duration
+            dynamic_slots = _build_dynamic_formula(audio_duration)
             slot_configs = [
-                {'name': 'Sản phẩm', 'folder_type': 'Sản phẩm', 'duration': slot_duration},
-                {'name': 'HuyK', 'folder_type': 'HuyK', 'duration': slot_duration},
-                {'name': 'Chế tác', 'folder_type': 'Chế tác', 'duration': slot_duration},
-                {'name': 'HuyK', 'folder_type': 'HuyK', 'duration': slot_duration},
-                {'name': 'Chế tác', 'folder_type': 'Chế tác', 'duration': slot_duration},
-                {'name': 'Sản phẩm HT', 'folder_type': 'Sản phẩm HT', 'duration': slot_duration},
-                {'name': 'Outtrol', 'folder_type': 'Outtrol', 'duration': None},
+                {
+                    'name': s['folder_type'],
+                    'folder_type': s['folder_type'],
+                    'duration': s['duration']
+                }
+                for s in dynamic_slots
             ]
+            # Thêm Outro cuối
+            slot_configs.append({
+                'name': 'Outtrol',
+                'folder_type': 'Outtrol',
+                'duration': None  # dùng duration gốc của video
+            })
+            logger.info(
+                f"🎬 Virtual Mix V4: {len(slot_configs)} slots "
+                f"({len(dynamic_slots)} content + 1 outro) for {audio_duration:.1f}s"
+            )
         else:
+            slot_duration_r = audio_duration / 5
             slot_configs = [
-                {'name': f'Clip {i+1}', 'folder_type': 'Sản phẩm', 'duration': slot_duration}
+                {'name': f'Clip {i+1}', 'folder_type': 'Sản phẩm', 'duration': slot_duration_r}
                 for i in range(5)
             ]
-        
+
         # ── Pre-load cache map (instant DB query) ──────────────────
-        cache_map = {}  # video_id → cache_id
+        cache_map = {}  # video_id → cache_info
         for cache in VideoClipCache.objects.all():
             if os.path.isfile(cache.clip_path):
                 fsize = os.path.getsize(cache.clip_path)
@@ -104,18 +117,37 @@ def virtual_mix(request):
                     'cache_id': cache.id,
                     'duration': cache.duration or 12.0,
                 }
-        
+
         logger.info(f"⚡ Virtual Mix: audio={audio_duration:.1f}s, cached={len(cache_map)} clips")
-        
-        # ── Select videos for ALL outputs, prefer cached ──────────
-        all_selections = []  # [(output_idx, slot_idx, video_id, config)]
-        need_gen = set()  # video IDs that need clip generation
-        
+
+        # ── Pre-check: tất cả slot types phải có ít nhất 1 cached clip ──
+        # Nếu thiếu bất kỳ loại nào → block preview hoàn toàn
+        required_folder_types = list(dict.fromkeys(c['folder_type'] for c in slot_configs))
+        missing_types = []
+        for ft in required_folder_types:
+            qs = IndexedVideo.objects.filter(folder_type=ft, is_available=True)
+            all_ids = list(qs.values_list('id', flat=True))
+            has_cache = any(vid in cache_map for vid in all_ids)
+            if not has_cache:
+                missing_types.append(ft)
+
+        if missing_types:
+            missing_str = ', '.join(missing_types)
+            logger.warning(f"🚫 Preview blocked: missing cached clips for: {missing_str}")
+            return Response({
+                'error': 'preview_not_ready',
+                'message': f'Preview chưa sẵn sàng. Các loại clip sau chưa được cache: {missing_str}. Vui lòng chạy Pre-generation trước.',
+                'missing_types': missing_types,
+            }, status=400)
+
+        # ── Select videos cho preview – CHỈ dùng cached clips ────
+        all_selections = []
+
         for output_idx in range(num_outputs):
             used_ids = set()
             for slot_idx, config in enumerate(slot_configs):
                 ft = config['folder_type']
-                
+
                 # Get available videos
                 qs = IndexedVideo.objects.filter(
                     folder_type=ft, is_available=True
@@ -124,55 +156,26 @@ def virtual_mix(request):
                     sku_filtered = qs.filter(file_path__icontains=product_sku)
                     if sku_filtered.exists():
                         qs = sku_filtered
-                
+
                 candidates = list(qs.exclude(id__in=used_ids).values_list('id', flat=True))
                 if not candidates:
                     candidates = list(qs.values_list('id', flat=True))
                 if not candidates:
+                    logger.warning(f"⚠️ No videos for slot {slot_idx+1} ({ft}), skipping")
                     continue
-                
-                # Prefer videos that already have cache
+
+                # CHỈ chọn video đã có cached clips
                 cached_candidates = [v for v in candidates if v in cache_map]
-                
-                if cached_candidates:
-                    vid = random.choice(cached_candidates)
-                else:
-                    vid = random.choice(candidates)
-                    need_gen.add(vid)
-                
+                if not cached_candidates:
+                    logger.warning(f"⚠️ Slot {slot_idx+1} ({ft}): no cached clips")
+                    continue
+
+                vid = random.choice(cached_candidates)
                 used_ids.add(vid)
                 all_selections.append((output_idx, slot_idx, vid, config))
-        
-        # ── Generate missing clips in PARALLEL (only what's needed!) ────
-        if need_gen:
-            logger.info(f"📹 Need to generate {len(need_gen)} clips in parallel...")
-            
-            def _gen_single_clip(vid_id):
-                try:
-                    logger.info(f"  🔧 Parallel generating clip for video {vid_id}...")
-                    # use_gpu=None means it will auto-detect from ENV (USE_GPU=true)
-                    path = service.get_or_generate_clip(vid_id, use_gpu=None)
-                    return vid_id, path
-                except Exception as e:
-                    logger.error(f"  ❌ Parallel gen error for {vid_id}: {e}")
-                    return vid_id, None
 
-            # Limit parallel workers to avoid overloading CPU/GPU (especially on SMB/NAS)
-            max_workers = min(6, len(need_gen))
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="virtual_preview") as executor:
-                futures = [executor.submit(_gen_single_clip, vid_id) for vid_id in need_gen]
-                for future in as_completed(futures):
-                    vid_id, path = future.result()
-                    if path:
-                        # Refresh cache map
-                        cached = VideoClipCache.objects.filter(source_video_id=vid_id).first()
-                        if cached:
-                            cache_map[vid_id] = {
-                                'cache_id': cached.id,
-                                'duration': cached.duration or 12.0,
-                            }
-                            logger.info(f"  ✅ Parallel clip READY for video {vid_id}")
-        
+        logger.info(f"⚡ Virtual Mix: {len(all_selections)} slots with cached clips selected")
+
         # ── Build manifests ────────────────────────────────────────
         manifests = []
         for output_idx in range(num_outputs):
@@ -180,24 +183,26 @@ def virtual_mix(request):
             for (oi, si, vid, config) in all_selections:
                 if oi != output_idx:
                     continue
-                
+
                 cache_info = cache_map.get(vid)
-                if not cache_info:
-                    continue  # Skip if generation failed
-                
+
                 dur = config['duration']
                 if dur is None:
-                    dur = cache_info['duration']
-                
+                    dur = cache_info['duration'] if cache_info else 12.0
+
+                # All selected videos guaranteed to have cache (selected above)
+                stream_url = f'/api/videos/stream-clip/{cache_info["cache_id"]}/'
+
                 clips.append({
                     'video_id': vid,
                     'slot': si + 1,
                     'slot_name': config['name'],
                     'duration': round(dur, 2),
-                    'stream_url': f'/api/videos/stream-clip/{cache_info["cache_id"]}/',
+                    'stream_url': stream_url,
                     'folder_type': config['folder_type'],
+                    'cached': True,
                 })
-            
+
             if clips:
                 manifests.append({
                     'output_index': output_idx,
@@ -206,26 +211,26 @@ def virtual_mix(request):
                     'total_duration': round(audio_duration, 2),
                     'slot_count': len(clips),
                 })
-        
+
         generation_time = (_time.time() - start_time) * 1000
-        
+
         logger.info(
             f"✅ Virtual Mix: {len(manifests)} manifests, "
-            f"{len(need_gen)} generated + {len(all_selections) - len(need_gen)} from cache, "
+            f"{len(all_selections)} cached clips, "
             f"{generation_time:.0f}ms"
         )
-        
+
         return Response({
             'success': True,
             'manifests': manifests,
             'audio_duration': audio_duration,
             'audio_id': audio_id,
             'generation_time_ms': round(generation_time),
-            'clips_generated': len(need_gen),
-            'clips_from_cache': len(all_selections) - len(need_gen),
+            'clips_generated': 0,
+            'clips_from_cache': len(all_selections),
             'message': f'Created {len(manifests)} mixes in {generation_time/1000:.1f}s'
         })
-    
+
     except Exception as e:
         logger.error(f"Virtual mix error: {e}", exc_info=True)
         return Response({'error': str(e)}, status=500)
@@ -233,14 +238,19 @@ def virtual_mix(request):
 
 @api_view(['GET'])
 def stream_video(request, video_id):
-    """Stream video's cached clip."""
+    """Stream video's clip, generating it seamlessly if not yet cached."""
     try:
-        cached = VideoClipCache.objects.filter(source_video_id=video_id).first()
-        if cached and os.path.isfile(cached.clip_path):
-            return _serve_file_with_range(request, cached.clip_path)
-        return Response({'error': 'No cached clip'}, status=404)
-    except Exception:
-        return Response({'error': 'Not found'}, status=404)
+        service = get_preprocessing_service()
+        # This checks cache first, then generates if missing (auto-detects GPU)
+        clip_path = service.get_or_generate_clip(video_id, use_gpu=None)
+
+        if clip_path and os.path.isfile(clip_path):
+            return _serve_file_with_range(request, clip_path)
+
+        return Response({'error': 'Failed to generate preview clip'}, status=404)
+    except Exception as e:
+        logger.error(f"stream_video on-the-fly generation error: {e}")
+        return Response({'error': str(e)}, status=404)
 
 
 @api_view(['GET'])
@@ -270,9 +280,9 @@ def _serve_file_with_range(request, file_path):
     """Serve file with HTTP Range support."""
     file_size = os.path.getsize(file_path)
     content_type = mimetypes.guess_type(file_path)[0] or 'video/mp4'
-    
+
     range_header = request.META.get('HTTP_RANGE', '')
-    
+
     if range_header:
         try:
             range_spec = range_header.replace('bytes=', '')
@@ -281,7 +291,7 @@ def _serve_file_with_range(request, file_path):
             end = int(parts[1]) if parts[1] else file_size - 1
             end = min(end, file_size - 1)
             length = end - start + 1
-            
+
             def file_iterator():
                 with open(file_path, 'rb') as f:
                     f.seek(start)
@@ -292,7 +302,7 @@ def _serve_file_with_range(request, file_path):
                             break
                         remaining -= len(data)
                         yield data
-            
+
             response = StreamingHttpResponse(
                 file_iterator(), status=206, content_type=content_type
             )
@@ -303,7 +313,7 @@ def _serve_file_with_range(request, file_path):
             return response
         except (ValueError, IndexError):
             pass
-    
+
     response = FileResponse(open(file_path, 'rb'), content_type=content_type)
     response['Content-Length'] = file_size
     response['Accept-Ranges'] = 'bytes'
