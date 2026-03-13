@@ -303,6 +303,7 @@ LARK_APP_ID = env('LARK_APP_ID', default='')
 LARK_APP_SECRET = env('LARK_APP_SECRET', default='')
 LARK_BASE_ID = env('LARK_BASE_ID', default='')   # app_token trong URL Bitable
 LARK_TABLE_ID = env('LARK_TABLE_ID', default='')
+LARK_OUTSTANDING_TABLE_ID = env('LARK_OUTSTANDING_TABLE_ID', default='tbluurIuf2qDCdFr')
 LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 
 # ==========================================

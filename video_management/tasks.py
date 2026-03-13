@@ -11,8 +11,11 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import TrackedChannel, SearchHistory, SearchStatus, Platform
+from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding, LarkEmployee
 from .services.apify_service import create_scraper
+from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
+import json
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -199,22 +202,87 @@ def cleanup_old_cache_task() -> Dict[str, Any]:
         }
 
 
-@shared_task(name='video_management.update_video_stats')
-def update_video_stats_task(video_ids: list = None) -> Dict[str, Any]:
+@shared_task(name='video_management.push_report_to_lark')
+def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
     """
-    Update statistics for videos (optional feature for refreshing data).
-    
-    Args:
-        video_ids: List of video IDs to update (None = all recent)
+    Background task to push a report and its associated outstanding items to Lark.
+    """
+    try:
+        report = LarkReport.objects.get(id=report_id)
+        logger.info(f"Starting background sync to Lark for report: {report_id}")
         
-    Returns:
-        Update summary
-    """
-    # This is a placeholder for future enhancement
-    # Could re-scrape videos to update their stats
-    logger.info("Video stats update task (not yet implemented)")
-    
-    return {
-        'success': True,
-        'message': 'Feature not yet implemented'
-    }
+        lark_token = get_lark_tenant_access_token()
+        
+        # 1. Push main report
+        sync_date = report.date or report.created_at or timezone.now()
+        lark_timestamp = int(sync_date.timestamp() * 1000)
+        lark_report_fields = {
+            "HoTen": report.name,
+            "Email": report.email,
+            "Date": lark_timestamp,
+            "Answers": json.dumps(report.answers, ensure_ascii=False) if isinstance(report.answers, dict) else (report.answers or ""),
+        }
+        
+        if report.role:
+            lark_report_fields["Role"] = report.role
+        if report.team:
+            lark_report_fields["Team"] = report.team
+        if report.employee:
+            lark_report_fields["Nhân viên"] = report.employee
+
+        try:
+            lark_resp = create_bitable_record(lark_token, lark_report_fields)
+        except Exception as e:
+            logger.error(f"Error creating bitable record for report {report_id}: {e}")
+            return {"status": "error", "message": f"Push to main report failed: {e}"}
+
+        lark_record_id = None
+        
+        if lark_resp.get("code") == 0:
+            lark_record_id = lark_resp.get("data", {}).get("record", {}).get("record_id")
+            logger.info(f"Successfully pushed report to Lark: {lark_record_id}")
+            # Note: We don't change the local report ID as it's the PK, 
+            # but we could store lark_record_id in a separate field if it existed.
+        
+        # 2. Push Outstanding items
+        # Use DD/MM/YYYY since we save it that way in the view
+        report_date_str = report.date.strftime("%d/%m/%Y") if report.date else ""
+        outstanding_items = ReportOutstanding.objects.filter(
+            email=report.email,
+            date=report_date_str,
+            name=report.name
+        )
+        
+        outstanding_table_id = getattr(settings, "LARK_OUTSTANDING_TABLE_ID", "tbluurIuf2qDCdFr")
+        
+        for item in outstanding_items:
+            try:
+                # Map fields precisely to tbluurIuf2qDCdFr schema
+                # Based on actual API check: HoTen, Email, Role, Team, Ngày tháng, Phân loại, Nội dung
+                lark_out_fields = {
+                    "HoTen": item.name,
+                    "Email": item.email,
+                    "Role": report.role if report.role else "",
+                    "Team": item.team if item.team else "",
+                    "Ngày tháng": report_date_str, # Field is type Text (1) - using user's format
+                    "Phân loại": item.category, # e.g. "KHÓ KHĂN CẦN HỖ TRỢ"
+                    "Nội dung": item.content,    # The actual answer text
+                }
+                
+                if report.employee:
+                    lark_out_fields["Nhân viên"] = report.employee
+                
+                logger.info(f"Pushing outstanding item category: {item.category} for {report.name}")
+                create_bitable_record(lark_token, lark_out_fields, table_id=outstanding_table_id)
+            except Exception as e:
+                logger.error(f"Error pushing outstanding item {item.id} to Lark: {e}")
+
+
+        return {"success": True, "lark_id": lark_record_id}
+
+    except LarkReport.DoesNotExist:
+        logger.error(f"Report {report_id} not found for background sync")
+        return {"success": False, "error": "Report not found"}
+    except Exception as e:
+        logger.exception(f"Background sync to Lark failed for report {report_id}: {e}")
+        return {"success": False, "error": str(e)}

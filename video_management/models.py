@@ -1308,8 +1308,9 @@ class AppUser(models.Model):
     id = models.CharField(max_length=255, primary_key=True)
     email = models.CharField(max_length=255, unique=True)
     full_name = models.CharField(max_length=255)
-    role = models.CharField(max_length=50)
+    roles = models.TextField(db_column='roles', null=True, blank=True)
     manager_id = models.CharField(max_length=255, null=True, blank=True)
+
 
     class Meta:
         db_table = 'users'
@@ -1335,11 +1336,13 @@ class LarkPermission(models.Model):
 class ReportOutstanding(models.Model):
     id = models.CharField(max_length=255, primary_key=True)
     name = models.CharField(max_length=255)
-    date = models.DateTimeField(default=timezone.now)
+    date = models.CharField(max_length=100, null=True, blank=True)
     team = models.CharField(max_length=255, null=True, blank=True)
-    content = models.TextField(null=True, blank=True)
-    idea_content = models.TextField(null=True, blank=True)
+
+    category = models.TextField(db_column='category', null=True, blank=True)
+    content = models.TextField(db_column='content', null=True, blank=True)
     status = models.CharField(max_length=255, null=True, blank=True)
+
     email = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1347,6 +1350,44 @@ class ReportOutstanding(models.Model):
     class Meta:
         db_table = 'report_outstanding'
         managed = False
+
+class ReportSettings(BaseModel):
+    """
+    Settings for reporting checklist, including allowed time ranges and randomization.
+    """
+    schedule = models.JSONField(
+        default=dict,
+        help_text="Khung giờ báo cáo theo ngày (monday, tuesday, ...)"
+    )
+    one_report_per_day = models.BooleanField(
+        default=True,
+        help_text="Chỉ cho phép submit 1 báo cáo/ngày"
+    )
+    timezone = models.CharField(
+        max_length=50,
+        default='Asia/Ho_Chi_Minh'
+    )
+    # Fields for random reporting
+    is_random = models.BooleanField(
+        default=False,
+        help_text="Bật chế độ báo cáo ngẫu nhiên"
+    )
+    random_minutes = models.IntegerField(
+        default=30,
+        help_text="Số phút báo cáo ngẫu nhiên trong khung giờ"
+    )
+    updated_by = models.CharField(
+        max_length=255,
+        blank=True
+    )
+
+    class Meta:
+        verbose_name = "Report Settings"
+        verbose_name_plural = "Report Settings"
+
+    def __str__(self):
+        return f"Report Settings (Updated by: {self.updated_by})"
+
 
 # Import search-related models
 from .models_search import SearchQuery, TrendingKeyword
