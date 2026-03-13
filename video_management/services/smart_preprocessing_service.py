@@ -651,7 +651,8 @@ class SmartPreprocessingService:
             kwargs = {'capture_output': True, 'text': True, 'encoding': 'utf-8', 'errors': 'ignore', 'timeout': 180}
             if priority == 'low' and os.name == 'nt':
                 kwargs['creationflags'] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
-                
+            
+            t1 = time.time()
             result1 = subprocess.run(cmd_extract, **kwargs)
             pass1_time = time.time() - t1
             
@@ -669,41 +670,46 @@ class SmartPreprocessingService:
             # ── PASS 2: Encode from LOCAL temp file (no network I/O!) ──────────
             logger.info(f"⚡ [PASS 2] Encoding from local temp (no network)...")
             
-            encoder = 'h264_nvenc' if use_gpu else 'libx264'
+            # Cache mode (priority=low): STREAM COPY - không decode/encode!
+            # Tốc độ: ~14s/clip (encode) → ~1-2s/clip (copy) = 7-10x nhanh hơn
+            # Cache chỉ dùng nội bộ để preview, không cần đối đa đệu tiêu chuẩn
+            is_cache_mode = (priority == 'low')
             
-            cmd_encode = [
-                self.ffmpeg_path,
-                '-i', temp_raw,          # ⚡ Reading from LOCAL disk!
-                '-t', str(clip_duration), # Trim to exact duration
-                '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
-                '-c:v', encoder,
-            ]
-            
-            if use_gpu:
-                cmd_encode.extend([
-                    '-preset', 'fast',
-                    '-profile:v', 'main',
-                    '-level', '4.1',
-                    '-b:v', '2M',
-                    '-maxrate', '2.5M',
-                    '-bufsize', '4M',
-                    '-rc', 'vbr',
-                    '-pix_fmt', 'yuv420p',
-                ])
-            else:
-                cmd_encode.extend([
-                    '-preset', 'ultrafast',
-                    '-crf', '23',
-                    '-pix_fmt', 'yuv420p',
-                ])
-            
-            if keep_original_audio:
-                cmd_encode.extend(['-c:a', 'copy', '-y', clip_path])
-            else:
-                cmd_encode.extend([
-                    '-c:a', 'aac', '-ar', '44100', '-ac', '2',
+            if is_cache_mode:
+                # Stream copy: đọc thẳng bitstream, không encode lại
+                cmd_encode = [
+                    self.ffmpeg_path,
+                    '-i', temp_raw,
+                    '-t', str(clip_duration),
+                    '-c:v', 'copy',   # không encode video
+                    '-c:a', 'copy',   # không encode audio
+                    '-avoid_negative_ts', 'make_non_negative',
                     '-y', clip_path
-                ])
+                ]
+            else:
+                encoder = 'h264_nvenc' if use_gpu else 'libx264'
+                vf_scale = 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1'
+                cmd_encode = [
+                    self.ffmpeg_path,
+                    '-i', temp_raw,
+                    '-t', str(clip_duration),
+                    '-vf', vf_scale,
+                    '-c:v', encoder,
+                ]
+                if use_gpu:
+                    cmd_encode.extend([
+                        '-preset', 'fast', '-profile:v', 'main', '-level', '4.1',
+                        '-b:v', '2M', '-maxrate', '2.5M', '-bufsize', '4M',
+                        '-rc', 'vbr', '-pix_fmt', 'yuv420p',
+                    ])
+                else:
+                    cmd_encode.extend(['-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p'])
+                
+                if keep_original_audio:
+                    cmd_encode.extend(['-c:a', 'copy'])
+                else:
+                    cmd_encode.extend(['-c:a', 'aac', '-ar', '44100', '-ac', '2'])
+                cmd_encode.extend(['-y', clip_path])
             
             t2 = time.time()
             kwargs_encode = {'capture_output': True, 'text': True, 'encoding': 'utf-8', 'errors': 'ignore', 'timeout': 90}
@@ -713,12 +719,13 @@ class SmartPreprocessingService:
             result2 = subprocess.run(cmd_encode, **kwargs_encode)
             pass2_time = time.time() - t2
             
-            # GPU fallback to CPU
-            if result2.returncode != 0 and use_gpu:
+            # GPU fallback to CPU (chỉ khi encode mode, không áp dụng cho cache stream copy)
+            if result2.returncode != 0 and use_gpu and not is_cache_mode:
                 logger.warning(f"⚠️ GPU encode failed, retrying with CPU...")
+                vf_scale_fb = 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1'
                 cmd_encode_cpu = [
                     self.ffmpeg_path, '-i', temp_raw, '-t', str(clip_duration),
-                    '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                    '-vf', vf_scale_fb,
                     '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
                     '-pix_fmt', 'yuv420p',
                 ]
@@ -732,6 +739,27 @@ class SmartPreprocessingService:
                 pass2_time = time.time() - t2
                 use_gpu = False
             
+            # Fallback to encode mode for cache (khi stream copy fail do video error metadata/keyframe)
+            if result2.returncode != 0 and is_cache_mode:
+                logger.warning(f"⚠️ Cache stream copy failed (bad video data) -> Fallback to encode mode for video {video.id}...")
+                
+                vf_scale_fb = 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1'
+                cmd_encode_fb = [
+                    self.ffmpeg_path, '-i', temp_raw, '-t', str(clip_duration),
+                    '-vf', vf_scale_fb,
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+                    '-pix_fmt', 'yuv420p',
+                ]
+                cmd_encode_fb.extend(
+                    ['-c:a', 'copy'] if keep_original_audio
+                    else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+                )
+                cmd_encode_fb.extend(['-y', clip_path])
+                t2 = time.time()
+                result2 = subprocess.run(cmd_encode_fb, **kwargs_encode)
+                pass2_time = time.time() - t2
+                use_gpu = False
+
             # Cleanup temp raw
             if os.path.exists(temp_raw):
                 os.remove(temp_raw)
@@ -799,38 +827,54 @@ class SmartPreprocessingService:
         clip_timeout = 120
         encoder = 'h264_nvenc' if use_gpu else 'libx264'
         
-        cmd = [
-            self.ffmpeg_path,
-            '-ss', str(start_time),
-            '-i', resolved_path,
-            '-t', str(clip_duration),
-            '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
-            '-c:v', encoder,
-        ]
+        # Cache mode (priority=low): Use stream copy (no encode) for instant caching!
+        is_cache_mode = (priority == 'low')
         
-        if use_gpu:
-            cmd.extend([
-                '-preset', 'fast',
-                '-profile:v', 'main',
-                '-level', '4.1',
-                '-b:v', '2M',
-                '-maxrate', '2.5M',
-                '-bufsize', '4M',
-                '-rc', 'vbr',
-                '-pix_fmt', 'yuv420p',
-            ])
+        if is_cache_mode:
+            cmd = [
+                self.ffmpeg_path,
+                '-ss', str(start_time),
+                '-i', resolved_path,
+                '-t', str(clip_duration),
+                '-c:v', 'copy',
+                '-c:a', 'copy',
+                '-avoid_negative_ts', 'make_non_negative',
+                '-y', clip_path
+            ]
         else:
-            cmd.extend([
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-            ])
-        
-        cmd.extend(
-            ['-c:a', 'copy'] if keep_original_audio
-            else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
-        )
-        cmd.extend(['-y', clip_path])
+            vf_scale = 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1'
+            cmd = [
+                self.ffmpeg_path,
+                '-ss', str(start_time),
+                '-i', resolved_path,
+                '-t', str(clip_duration),
+                '-vf', vf_scale,
+                '-c:v', encoder,
+            ]
+            
+            if use_gpu:
+                cmd.extend([
+                    '-preset', 'fast',
+                    '-profile:v', 'main',
+                    '-level', '4.1',
+                    '-b:v', '2M',
+                    '-maxrate', '2.5M',
+                    '-bufsize', '4M',
+                    '-rc', 'vbr',
+                    '-pix_fmt', 'yuv420p',
+                ])
+            else:
+                cmd.extend([
+                    '-preset', 'ultrafast',
+                    '-crf', '23',
+                    '-pix_fmt', 'yuv420p',
+                ])
+            
+            cmd.extend(
+                ['-c:a', 'copy'] if keep_original_audio
+                else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+            )
+            cmd.extend(['-y', clip_path])
         
         try:
             start = time.time()
@@ -842,6 +886,29 @@ class SmartPreprocessingService:
             result = subprocess.run(cmd, **kwargs)
             
             generation_time = time.time() - start
+            
+            # Fallback to encode mode for cache (khi stream copy fail do video error metadata/keyframe)
+            if result.returncode != 0 and is_cache_mode:
+                logger.warning(f"⚠️ Cache stream copy failed (bad video data) -> Fallback to encode mode for video {video.id}...")
+                
+                cmd_encode_fb = [
+                    self.ffmpeg_path,
+                    '-ss', str(start_time),
+                    '-i', resolved_path,
+                    '-t', str(clip_duration),
+                    '-vf', 'fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+                    '-pix_fmt', 'yuv420p',
+                ]
+                cmd_encode_fb.extend(
+                    ['-c:a', 'copy'] if keep_original_audio
+                    else ['-c:a', 'aac', '-ar', '44100', '-ac', '2']
+                )
+                cmd_encode_fb.extend(['-y', clip_path])
+                start = time.time()
+                result = subprocess.run(cmd_encode_fb, **kwargs)
+                generation_time = time.time() - start
+                use_gpu = False
             
             # GPU failed → retry CPU
             if result.returncode != 0 and use_gpu:
@@ -1030,7 +1097,28 @@ def cancel_pregen():
     """Cancel running pre-generation."""
     _pregen_cancel.set()
     with _pregen_lock:
-        _pregen_progress["message"] = "Cancelling..."
+        _pregen_progress["status"] = "idle"
+        _pregen_progress["message"] = "Cancelled"
+
+
+def stop_background_pregen(wait_ms: int = 300):
+    """Cancel pregen và reset toàn bộ progress về trạng thái ban đầu."""
+    import time
+    _pregen_cancel.set()
+    with _pregen_lock:
+        _pregen_progress.update({
+            "status": "idle",
+            "total": 0,
+            "done": 0,
+            "cached": 0,
+            "generated": 0,
+            "failed": 0,
+            "percent": 0,
+            "message": "",
+            "started_at": None,
+            "completed_at": None,
+        })
+    time.sleep(wait_ms / 1000.0)
 
 
 def start_background_pregen(clip_duration: float = 12.0):
@@ -1054,6 +1142,9 @@ def start_background_pregen(clip_duration: float = 12.0):
         if _pregen_progress["status"] == "running":
             logger.info("⚠️ Pre-generation already running, skipping")
             return
+        # Đánh dấu running ngay trong lock để ngăn thread thứ hai start cùng lúc
+        _pregen_progress["status"] = "running"
+        _pregen_progress["message"] = "Đang khởi động..."
     
     def _run_pregen():
         from video_management.models import IndexedVideo, VideoClipCache
@@ -1066,9 +1157,12 @@ def start_background_pregen(clip_duration: float = 12.0):
         try:
             started_at = time.time()
             
-            # Khởi tạo progress
+            # Khởi tạo progress - chỉ đếm clip có file thực tế trên disk
             total_all = IndexedVideo.objects.filter(is_available=True).count()
-            already_cached_init = VideoClipCache.objects.values('source_video_id').distinct().count()
+            already_cached_init = sum(
+                1 for clip in VideoClipCache.objects.only('id', 'clip_path')
+                if os.path.isfile(clip.clip_path)
+            )
             
             with _pregen_lock:
                 _pregen_progress.update({
@@ -1092,10 +1186,21 @@ def start_background_pregen(clip_duration: float = 12.0):
                 
                 # Re-query moi pass: bat ca video moi index + retry failed
                 all_videos = list(IndexedVideo.objects.filter(is_available=True))
-                videos_with_cache = set(
-                    VideoClipCache.objects.values_list('source_video_id', flat=True)
-                )
-                
+
+                # Verify files actually exist on disk; delete stale DB records
+                videos_with_cache = set()
+                stale_ids = []
+                for clip in VideoClipCache.objects.only('id', 'source_video_id', 'clip_path'):
+                    if os.path.isfile(clip.clip_path):
+                        videos_with_cache.add(clip.source_video_id)
+                    else:
+                        stale_ids.append(clip.id)
+                if stale_ids:
+                    VideoClipCache.objects.filter(id__in=stale_ids).delete()
+                    logger.warning(
+                        f"🧹 [Pass {pass_num}] Xóa {len(stale_ids)} record cache bị mất file trên disk"
+                    )
+
                 videos_to_generate = [v for v in all_videos if v.id not in videos_with_cache]
                 total_all = len(all_videos)
                 already_cached = len(videos_with_cache)
@@ -1133,7 +1238,7 @@ def start_background_pregen(clip_duration: float = 12.0):
                         clip_path = service.get_or_generate_clip(
                             video.id, use_gpu=None, duration=clip_duration, priority='low'
                         )
-                        time.sleep(0.5)  # 0.5s (giam tu 1.0s)
+                        # Removed sleep - không cần delay nữa, workers tự điều tiết
                         
                         with gen_lock:
                             if clip_path:
@@ -1168,8 +1273,9 @@ def start_background_pregen(clip_duration: float = 12.0):
                             pass_fail += 1
                         logger.error(f"Pre-gen failed for video {video.id}: {e}")
                 
-                # 3 workers de can bang toc do va tai he thong
-                max_workers = min(3, total_to_gen)
+                # 8 workers: NAS I/O bound nên parallel giúp nhiều
+                # CPU encode 1 clip ~5-10s, 8 workers → throughput cao hơn khi có nhiều video
+                max_workers = min(8, total_to_gen)
                 with ThreadPoolExecutor(
                     max_workers=max_workers,
                     thread_name_prefix=f"pregen_p{pass_num}"
@@ -1202,24 +1308,35 @@ def start_background_pregen(clip_duration: float = 12.0):
                 final_pct = _pregen_progress.get("percent", 0)
             else:
                 final_indexed = IndexedVideo.objects.filter(is_available=True).count()
-                final_cached_count = VideoClipCache.objects.values('source_video_id').distinct().count()
+                # Verify actual files on disk, clean up stale records
+                final_valid_ids = set()
+                final_stale = []
+                for clip in VideoClipCache.objects.only('id', 'source_video_id', 'clip_path'):
+                    if os.path.isfile(clip.clip_path):
+                        final_valid_ids.add(clip.source_video_id)
+                    else:
+                        final_stale.append(clip.id)
+                if final_stale:
+                    VideoClipCache.objects.filter(id__in=final_stale).delete()
+                    logger.warning(f"🧹 Final cleanup: xóa {len(final_stale)} stale records")
+                final_cached_count = len(final_valid_ids)
                 missing = final_indexed - final_cached_count
                 
-                if missing <= 0:
+                if missing > 0:
+                    logger.warning(f"Còn {missing} video chưa cache → tự restart")
                     msg = (
-                        f"Hoan tat! {final_cached_count}/{final_indexed} videos da cache "
-                        f"(100%) - {elapsed:.0f}s"
+                        f"Đang cache tiếp {missing} video còn lại "
+                        f"({final_cached_count}/{final_indexed} đã xong)..."
                     )
-                    final_pct = 100
+                    final_pct = int(final_cached_count / final_indexed * 100) if final_indexed > 0 else 0
+                    final_status = "running"
                 else:
                     msg = (
-                        f"Cache gan xong: {final_cached_count}/{final_indexed} "
-                        f"({missing} video khong the cache) - {elapsed:.0f}s"
+                        f"Hoàn tất! {final_cached_count}/{final_indexed} videos đã cache "
+                        f"(100% thành công) - {elapsed:.0f}s"
                     )
-                    final_pct = int(final_cached_count / final_indexed * 100) if final_indexed > 0 else 100
-                    logger.warning(f"{missing} videos khong the cache sau {MAX_PASSES} passes")
-                
-                final_status = "completed"
+                    final_pct = 100
+                    final_status = "completed"
             
             logger.info(msg)
             
@@ -1229,7 +1346,19 @@ def start_background_pregen(clip_duration: float = 12.0):
                     "percent": final_pct,
                     "message": msg,
                     "completed_at": time.time(),
+                    # Sync lại total/done theo số thực tế trong DB
+                    "total": final_indexed,
+                    "done": final_cached_count,
+                    "cached": final_cached_count,
                 })
+            
+            # Nếu còn video chưa cache (do được index trong khi chạy), tự restart
+            if missing > 0 and not _pregen_cancel.is_set():
+                import time as _time
+                _time.sleep(1.0)
+                with _pregen_lock:
+                    _pregen_progress["status"] = "idle"
+                start_background_pregen(clip_duration=clip_duration)
         
         except Exception as e:
             logger.error(f"Pre-generation error: {e}", exc_info=True)
