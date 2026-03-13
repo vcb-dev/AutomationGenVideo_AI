@@ -383,13 +383,13 @@ class ChecklistSubmitView(APIView):
                     except Exception as e:
                         logger.error("Lỗi lưu ReportOutstanding local cho câu hỏi '%s': %s", q_key, e)
 
-            # --- TRIGGER BACKGROUND SYNC TO LARK ---
-            try:
-                # Gửi task vào Celery để xử lý việc đẩy dữ liệu lên Lark ở background
-                push_report_to_lark_task.delay(main_record_id)
-                logger.info("Triggered background sync to Lark for %s", user_email)
-            except Exception as e:
-                logger.error("Could not trigger background task for Lark sync: %s", e)
+            # --- TRIGGER BACKGROUND SYNC TO LARK DISABLED ---
+            # try:
+            #     # Gửi task vào Celery để xử lý việc đẩy dữ liệu lên Lark ở background
+            #     push_report_to_lark_task.delay(main_record_id)
+            #     logger.info("Triggered background sync to Lark for %s", user_email)
+            # except Exception as e:
+            #     logger.error("Could not trigger background task for Lark sync: %s", e)
 
             return Response({
                 "success": True,
