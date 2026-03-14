@@ -26,6 +26,51 @@ from ..models import Platform
 logger = logging.getLogger(__name__)
 
 
+def normalize_username(username_or_url: str) -> str:
+    """
+    Extract a clean username from a potential URL or @handle.
+    Supports TikTok, Instagram, Facebook, and Douyin URLs.
+    """
+    if not username_or_url:
+        return ""
+        
+    # Remove leading/trailing spaces and leading @
+    clean = username_or_url.strip().lstrip('@')
+    
+    # Handle common URL patterns
+    lower_clean = clean.lower()
+    if any(domain in lower_clean for domain in ['tiktok.com', 'instagram.com', 'facebook.com', 'douyin.com']):
+        # Remove query parameters and fragments
+        clean = clean.split('?')[0].split('#')[0]
+        # Remove trailing slash
+        clean = clean.rstrip('/')
+        # Split by slash
+        parts = clean.split('/')
+        
+        # Douyin has /user/ID
+        if 'douyin.com' in lower_clean:
+            for i, part in enumerate(parts):
+                if part == 'user' and i + 1 < len(parts):
+                    return parts[i+1]
+        
+        # General strategy: find part starting with @ or take the last non-empty part
+        # Most platforms use /@username or /username
+        for part in reversed(parts):
+            if part.startswith('@'):
+                return part.replace('@', '')
+            # If it's a known non-username part, skip
+            if part.lower() in [
+                'www.tiktok.com', 'tiktok.com', 'www.instagram.com', 'instagram.com', 
+                'facebook.com', 'www.facebook.com', 'explore', 'reels', 'p', 'user', 'video', 'watch'
+            ]:
+                continue
+            if part:
+                return part
+                
+    # If not a URL, just remove any remaining @
+    return clean.replace("@", "")
+
+
 def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
     """
     Fetch TikTok user profile stats (followers, likes, videos, avatar)
@@ -44,7 +89,7 @@ def fetch_tiktok_user_profile(username: str) -> Optional[Dict[str, Any]]:
         return None
 
     client = ApifyClient(api_token)
-    clean_user = username.replace("@", "").strip()
+    clean_user = normalize_username(username)
     profile_url = f"https://www.tiktok.com/@{clean_user}"
 
     # Per actor docs, single-user runs should still fetch at least
@@ -226,8 +271,8 @@ class ApifyScraperService(BaseScraperService):
         input_data = {}
         if username:
             # Crawl a specific page/user
-            # Clean username just in case
-            clean_user = username.replace('@', '').strip()
+            # Clean username using robust normalizer
+            clean_user = normalize_username(username)
             
             # SMART LIMIT: Based strictly on frontend calculation (8 * N days)
             effective_limit = max_results 
@@ -309,7 +354,7 @@ class ApifyScraperService(BaseScraperService):
         """
         if self.platform == Platform.TIKTOK:
             if username:
-                clean_user = username.replace("@", "").strip()
+                clean_user = normalize_username(username)
                 limit = min(max_results, self.max_results_limit)
                 if "clockworks/free-tiktok-scraper" in (self.actor_id or ""):
                     return {"profiles": [clean_user], "resultsPerPage": limit}
@@ -1066,12 +1111,8 @@ class ApifyScraperService(BaseScraperService):
              
              self.logger.info(f"Fetching Page Info for {username} using {page_actor_id}")
              
-             # Clean user
-             clean_user = username.replace('@', '').strip()
-             if 'facebook.com' in clean_user:
-                 # Extract username/id if full url given
-                 parts = clean_user.rstrip('/').split('/')
-                 clean_user = parts[-1]
+             # Clean user using robust normalizer
+             clean_user = normalize_username(username)
 
              run_input = {
                 "startUrls": [{"url": f"https://www.facebook.com/{clean_user}"}],
