@@ -358,12 +358,10 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 
 # Celery Beat Schedule
-from celery.schedules import crontab
-
 CELERY_BEAT_SCHEDULE = {
     'cleanup-cache-daily': {
         'task': 'video_management.cleanup_old_cache',
-        'schedule': crontab(hour=0, minute=0),
+        'schedule': 86400.0,  # every 24 hours
     },
 }
 
