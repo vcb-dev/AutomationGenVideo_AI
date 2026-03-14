@@ -87,10 +87,10 @@ FOLDER_TYPES = [
 # - audio 60s → 60/3.5 ≈ 17 slots, mỗi slot ~3.53s
 # ============================================================================
 
-# Cấu hình slot duration target
-SCENE_DURATION_MIN = 3.0   # seconds
-SCENE_DURATION_MAX = 4.0   # seconds
-SCENE_DURATION_TARGET = 3.5  # seconds (điểm giữa)
+# Cấu hình slot duration theo từng loại folder
+SP_SCENE_DURATION = 4.0       # Sản phẩm / Sản phẩm HT: 4s
+MID_SCENE_DURATION = 5.5      # Chế tác / HuyK: target 5.5s (range 5-6s)
+MID_SCENE_MIN = 3.0           # Tối thiểu SPHT cuối
 
 # A4_FORMULA giờ chỉ dùng cho validation (không còn là list cố định)
 # Logic thực tế trong _build_dynamic_formula(audio_duration)
@@ -107,7 +107,7 @@ def _build_dynamic_formula(audio_duration: float) -> List[Dict]:
     """
     Xây dựng danh sách slots động dựa trên audio_duration.
     
-    Pattern: Sản phẩm → [Chế tác → HuyK → ...] → Sản phẩm HT → (Outro handled separately)
+    Pattern: Sản phẩm (4s) → [HuyK → Chế tác → ...] (5-6s mỗi slot) → Sản phẩm HT (phần còn lại ≥3s)
     
     Args:
         audio_duration: Thời lượng audio tính bằng giây
@@ -116,60 +116,52 @@ def _build_dynamic_formula(audio_duration: float) -> List[Dict]:
         List of slot dicts: [{"folder_type": ..., "duration": ...}, ...]
         Không bao gồm Outro (Outro xử lý riêng)
     """
-    # Tính số slot tối ưu để mỗi slot nằm trong khoảng 3-4s
-    num_slots = max(3, round(audio_duration / SCENE_DURATION_TARGET))
-    
-    # Điều chỉnh để scene_duration nằm trong [3.0, 4.0]
-    scene_duration = audio_duration / num_slots
-    
-    # Nếu scene quá ngắn, tăng scene duration (giảm num_slots)
-    while scene_duration < SCENE_DURATION_MIN and num_slots > 3:
-        num_slots -= 1
-        scene_duration = audio_duration / num_slots
-    
-    # Nếu scene quá dài, giảm scene duration (tăng num_slots)
-    while scene_duration > SCENE_DURATION_MAX and num_slots < 50:
-        num_slots += 1
-        scene_duration = audio_duration / num_slots
-    
+    sp_dur = SP_SCENE_DURATION        # Sản phẩm: 4s
+    mid_dur = MID_SCENE_DURATION      # Chế tác / HuyK: 5.5s target
+
+    # Tính số middle slots: dành ít nhất MID_SCENE_MIN cho SPHT cuối
+    budget = audio_duration - sp_dur
+    N = max(1, round((budget - MID_SCENE_MIN) / mid_dur))
+
+    # Tính SPHT = phần còn lại
+    spht_dur = audio_duration - sp_dur - N * mid_dur
+
+    # Nếu SPHT quá ngắn → giảm N
+    while spht_dur < MID_SCENE_MIN and N > 1:
+        N -= 1
+        spht_dur = audio_duration - sp_dur - N * mid_dur
+
+    # Nếu SPHT quá dài (>8s) → tăng N thêm
+    while spht_dur > 8.0:
+        N += 1
+        spht_dur = audio_duration - sp_dur - N * mid_dur
+
+    spht_dur = max(MID_SCENE_MIN, spht_dur)
+
     logger.info(
         f"🎬 Dynamic formula: audio={audio_duration:.2f}s → "
-        f"{num_slots} slots × {scene_duration:.3f}s/slot"
+        f"SP(4s) + {N}×mid({mid_dur}s) + SPHT({spht_dur:.2f}s)"
     )
-    
-    # Xây dựng pattern slots
-    # Slot đầu: Sản phẩm
-    # Slots giữa: xen kẽ Chế tác → HuyK → Chế tác → ...
-    # Slot cuối: Sản phẩm HT
+
     slots = []
-    
+
     # Slot 1: Sản phẩm
-    slots.append({"folder_type": "Sản phẩm", "duration": scene_duration, "flexible": True})
-    
-    # Slots giữa (num_slots - 2 slots)
-    middle_count = num_slots - 2
-    middle_pattern = ["HuyK", "Chế tác"]  # Bắt đầu bằng HuyK → HuyK xuất hiện >= Chế tác
-    
-    for i in range(middle_count):
-        folder_type = middle_pattern[i % 2]
-        slots.append({"folder_type": folder_type, "duration": scene_duration, "flexible": True})
-    
+    slots.append({"folder_type": "Sản phẩm", "duration": sp_dur, "flexible": True})
+
+    # Slots giữa: xen kẽ HuyK → Chế tác → ...
+    middle_pattern = ["HuyK", "Chế tác"]
+    for i in range(N):
+        slots.append({"folder_type": middle_pattern[i % 2], "duration": mid_dur, "flexible": True})
+
     # Slot cuối: Sản phẩm HT
-    # Duration = audio_duration - sum(all previous slots) để khớp chính xác
-    sum_prev = scene_duration * (num_slots - 1)
-    last_duration = audio_duration - sum_prev
-    # Ensure last slot is at least 1s
-    if last_duration < 1.0:
-        last_duration = scene_duration
-    slots.append({"folder_type": "Sản phẩm HT", "duration": last_duration, "flexible": True})
-    
-    # Log formula
+    slots.append({"folder_type": "Sản phẩm HT", "duration": spht_dur, "flexible": True})
+
     logger.info(f"📋 Formula slots ({len(slots)} total):")
     for i, s in enumerate(slots, 1):
         logger.info(f"  Slot {i}: {s['folder_type']} → {s['duration']:.3f}s")
     total = sum(s['duration'] for s in slots)
     logger.info(f"  Total content: {total:.3f}s (audio: {audio_duration:.3f}s)")
-    
+
     return slots
 
 
@@ -447,11 +439,15 @@ def cache_stats(request):
             ).count()
             by_folder[folder_type] = count
         
-        # Cache stats
-        cached_clips = VideoClipCache.objects.count()
-        cache_size = VideoClipCache.objects.aggregate(
-            total=Sum('file_size')
-        )['total'] or 0
+        # Cache stats - only count clips where file actually exists on disk
+        valid_video_ids = set()
+        total_size = 0
+        for clip in VideoClipCache.objects.only('id', 'source_video_id', 'clip_path', 'file_size'):
+            if clip.source_video_id not in valid_video_ids and os.path.isfile(clip.clip_path):
+                valid_video_ids.add(clip.source_video_id)
+                total_size += (clip.file_size or 0)
+        cached_clips = len(valid_video_ids)
+        cache_size = total_size
         
         cache_size_mb = cache_size / (1024 * 1024)
         cache_size_gb = cache_size / (1024 * 1024 * 1024)
@@ -637,7 +633,7 @@ def _call_heygen_tts_chunk(chunk_text: str, voice_id: str, api_key: str, chunk_i
                 'voice_id': voice_id,
                 'text_type': 'text'
             },
-            timeout=120  # 2 minutes per chunk (shorter chunks = faster)
+            timeout=300  # 5 minutes per chunk
         )
 
         elapsed = time_module.time() - start
@@ -1016,15 +1012,38 @@ def smart_mix(request):
                 temp_audio.write(chunk)
             temp_audio.close()
             audio_path = temp_audio.name
-        elif request.POST.get('audio_path'):
-            audio_path = request.POST.get('audio_path')
-            # Resolve relative URL to file system path
-            if audio_path.startswith('/media/'):
-                audio_path = os.path.join(settings.MEDIA_ROOT, audio_path[len('/media/'):])
-        elif request.data.get('audio_path'):
-            audio_path = request.data.get('audio_path')
-            if audio_path.startswith('/media/'):
-                audio_path = os.path.join(settings.MEDIA_ROOT, audio_path[len('/media/'):])
+        elif request.POST.get('audio_path') or request.data.get('audio_path'):
+            raw_audio_path = request.POST.get('audio_path') or request.data.get('audio_path')
+            logger.info(f"📥 audio_path received: {raw_audio_path}")
+
+            if raw_audio_path.startswith(('http://', 'https://')):
+                # Absolute URL → download to temp file
+                try:
+                    import requests as _req
+                    logger.info(f"⬇️ Downloading audio from URL: {raw_audio_path}")
+                    r = _req.get(raw_audio_path, timeout=60)
+                    if r.status_code == 200:
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                        tmp.write(r.content)
+                        tmp.close()
+                        audio_path = tmp.name
+                        temp_audio = tmp  # mark for cleanup
+                        logger.info(f"✅ Downloaded audio → {audio_path} ({len(r.content)/1024:.1f} KB)")
+                    else:
+                        logger.error(f"❌ Failed to download audio. Status: {r.status_code}")
+                except Exception as dl_err:
+                    logger.error(f"❌ Download audio error: {dl_err}")
+            elif raw_audio_path.startswith('/api/audio/cache/'):
+                # Relative API path → resolve to AUDIO_CACHE_DIR
+                filename = raw_audio_path.split('/')[-1]
+                audio_path = os.path.join(AUDIO_CACHE_DIR, filename)
+                logger.info(f"🗂️ Resolved /api/audio/cache/ → {audio_path}")
+            elif raw_audio_path.startswith('/media/'):
+                # Relative media path → resolve to MEDIA_ROOT
+                audio_path = os.path.join(settings.MEDIA_ROOT, raw_audio_path[len('/media/'):])
+                logger.info(f"🗂️ Resolved /media/ → {audio_path}")
+            else:
+                audio_path = raw_audio_path
 
         if not audio_path or not os.path.isfile(str(audio_path)):
             return Response(
@@ -2775,6 +2794,12 @@ def index_manufacturing_folder(request):
         if sku:
             # Index Product + Chế tác theo đúng mã SKU
             _auto_index_by_sku_global(service, sku, category)
+            # Cancel pregen đang chạy (nếu có) rồi restart để cache video mới
+            from video_management.services.smart_preprocessing_service import (
+                start_background_pregen, stop_background_pregen
+            )
+            stop_background_pregen()
+            start_background_pregen()
             return Response({'success': True, 'message': f'Indexed for SKU={sku}, Cat={category}'})
         # Không fallback folder tổng — Chế tác bắt buộc theo SKU
         return Response({
