@@ -302,10 +302,24 @@ class ChecklistSubmitView(APIView):
             
             # Thời gian báo cáo (Asia/Ho_Chi_Minh)
             vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
-            current_datetime = datetime.now(vietnam_tz)
+            # Kiểm tra xem có reportDate tùy chỉnh từ frontend không
+            custom_report_date = payload.get("reportDate")
+            if custom_report_date:
+                try:
+                    # Chấp nhận định dạng ISO hoặc YYYY-MM-DD
+                    if 'T' in custom_report_date:
+                        current_datetime = datetime.fromisoformat(custom_report_date.replace('Z', '+00:00')).astimezone(vietnam_tz)
+                    else:
+                        current_datetime = datetime.strptime(custom_report_date, "%Y-%m-%d")
+                        current_datetime = vietnam_tz.localize(current_datetime)
+                except Exception as e:
+                    logger.warning("Lỗi parse custom_report_date '%s', dùng giờ HT: %s", custom_report_date, e)
+                    current_datetime = datetime.now(vietnam_tz)
+            else:
+                current_datetime = datetime.now(vietnam_tz)
             
             # Loại bỏ userEmail và userName khỏi payload checklist
-            checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName"]}
+            checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName", "reportDate"]}
             
             # 1. Lookup thông tin từ table AppUser (users)
             user_role = None
