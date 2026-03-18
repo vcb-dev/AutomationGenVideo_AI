@@ -18,7 +18,7 @@ from rest_framework.response import Response
 logger = logging.getLogger(__name__)
 
 MAX_AUDIO_SIZE_MB = 24   # Whisper giới hạn 25MB
-DOWNLOAD_TIMEOUT  = 60   # seconds (yt-dlp)
+DOWNLOAD_TIMEOUT  = 300  # seconds (yt-dlp) — 5 phút cho video dài hoặc kết nối chậm
 
 
 @api_view(['POST'])
@@ -201,7 +201,7 @@ def _download_with_ytdlp(ytdlp: str, ffmpeg: str, url: str, audio_out: str):
                 subprocess.run(
                     [ffmpeg, '-i', found_file, '-acodec', 'libmp3lame',
                      '-ar', '16000', '-ac', '1', '-b:a', '64k', '-y', audio_out],
-                    capture_output=True, timeout=60
+                    capture_output=True, timeout=120
                 )
                 if os.path.exists(found_file): os.remove(found_file)
             return True, None
@@ -215,7 +215,7 @@ def _download_with_ytdlp(ytdlp: str, ffmpeg: str, url: str, audio_out: str):
         return False, f'yt-dlp không tạo được file. Chi tiết: {err[-200:]}'
 
     except subprocess.TimeoutExpired:
-        return False, 'Tải video timeout (>60s). Video quá dài hoặc kết nối chậm.'
+        return False, f'Tải video timeout (>{DOWNLOAD_TIMEOUT}s). Video quá dài hoặc kết nối chậm. Hãy thử đổi link khác.'
     except Exception as e:
         return False, str(e)
 
@@ -250,7 +250,7 @@ def _download_direct(ffmpeg: str, url: str, tmp_dir: str, uid: str, audio_out: s
             ffmpeg, '-i', video_path, '-vn',
             '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1', '-b:a', '64k',
             '-y', audio_out
-        ], capture_output=True, text=True, timeout=60)
+        ], capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
             return False, f'FFmpeg lỗi: {result.stderr[-200:]}'

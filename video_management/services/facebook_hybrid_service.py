@@ -11,8 +11,10 @@ import logging
 import re
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
+from urllib.parse import quote
 from django.conf import settings
 
+from ..models import Platform
 from .facebook_graph_service import FacebookGraphService
 from .apify_service import ApifyScraperService
 
@@ -48,9 +50,9 @@ class FacebookHybridService:
         except Exception as e:
             logger.warning(f"⚠️  Graph API not available: {str(e)}")
         
-        # Initialize Apify
+        # Initialize Apify (cần platform để ApifyScraperService init thành công)
         try:
-            self.apify_service = ApifyScraperService()
+            self.apify_service = ApifyScraperService(Platform.FACEBOOK, 'posts')
             logger.info("✅ Apify initialized")
         except Exception as e:
             logger.warning(f"⚠️  Apify not available: {str(e)}")
@@ -253,8 +255,12 @@ class FacebookHybridService:
         
         logger.info(f"🕷️  Fetching via Apify: {identifier}")
         
-        # Build Facebook URL
-        fb_url = f"https://www.facebook.com/{identifier}"
+        # Build Facebook URL (encode để xử lý khoảng trắng/unicode - Apify cần URL hợp lệ)
+        id_clean = (identifier or '').strip()
+        if not id_clean:
+            raise ValueError("Facebook identifier is empty")
+        id_encoded = quote(id_clean, safe='.-_')
+        fb_url = f"https://www.facebook.com/{id_encoded}"
         
         from apify_client import ApifyClient
         client = ApifyClient(settings.APIFY_API_TOKEN)
@@ -285,15 +291,15 @@ class FacebookHybridService:
             except Exception as e:
                 logger.warning(f"⚠️  Failed to fetch page stats: {str(e)}")
 
-        # 2. Fetch posts via Apify Actor
+        # 2. Fetch posts via Apify Actor (startUrls: array of {url} - format chuẩn Apify)
         actor_id = "apify/facebook-posts-scraper"
         
         run_input = {
-            "startUrls": [fb_url],
+            "startUrls": [{"url": fb_url}],
             "resultsLimit": max_posts,
         }
         
-        logger.info(f"🚀 Starting Apify actor: {actor_id}")
+        logger.info(f"🚀 Starting Apify actor: {actor_id} | fb_url={fb_url}")
         run = client.actor(actor_id).call(run_input=run_input)
         
         # Fetch results

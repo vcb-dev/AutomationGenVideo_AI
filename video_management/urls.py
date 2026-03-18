@@ -50,6 +50,12 @@ from .views.facebook_analysis_views import (
     analyze_facebook_url,
     get_available_methods,
     detect_facebook_type,
+    analyze_facebook_competitor,
+    facebook_channel_metrics,
+)
+from .views.channel_analysis_generic_views import (
+    channel_insights_generic,
+    channel_metrics_generic,
 )
 from .views.douyin_search_views import search_douyin_videos
 from .views.douyin_profile_views import fetch_douyin_channel_profile
@@ -155,6 +161,12 @@ urlpatterns = [
     path('facebook/analyze/', analyze_facebook_url, name='facebook-analyze'),
     path('facebook/methods/', get_available_methods, name='facebook-methods'),
     path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
+    path('facebook/competitor-insights/', analyze_facebook_competitor, name='facebook-competitor-insights'),
+    path('facebook/channel-metrics/', facebook_channel_metrics, name='facebook-channel-metrics'),
+
+    # Generic Channel Analysis (all platforms)
+    path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
+    path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
     
     # Douyin Search
     path('douyin/search/', search_douyin_videos, name='douyin-search'),

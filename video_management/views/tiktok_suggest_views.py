@@ -264,7 +264,7 @@ def _fetch_gemini_pool(query: str, platform: str = 'tiktok', pool_size: int = 40
         return []
 
     try:
-        model = "gemini-2.0-flash"
+        model = "gemini-2.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
         # Platform-specific personas
