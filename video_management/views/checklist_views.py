@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import uuid
 from rest_framework.permissions import AllowAny
-from ..models import LarkReport, AppUser, LarkEmployee, ReportOutstanding, LarkPermission, ReportSettings
+from ..models import LarkReport, AppUser, ReportOutstanding, LarkPermission, ReportSettings
 from ..utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
 from ..tasks import push_report_to_lark_task
 
@@ -332,16 +332,18 @@ class ChecklistSubmitView(APIView):
                 logger.warning("Lỗi lookup AppUser: %s", e)
 
 
-            # 2. Lookup thông tin từ table LarkEmployee (nếu có để lấy Team)
+            # 2. Team + employee_data từ users (đồng bộ Lark, trước đây lark_employees)
             user_team = None
             user_emp_data = None
             try:
-                emp_record = LarkEmployee.objects.filter(name=user_name).first()
-                if emp_record:
-                    user_team = emp_record.team
-                    user_emp_data = emp_record.employee_data
+                emp_user = AppUser.objects.filter(full_name__iexact=(user_name or "").strip()).first()
+                if not emp_user:
+                    emp_user = AppUser.objects.filter(email__iexact=(user_email or "").strip()).first()
+                if emp_user:
+                    user_team = emp_user.team
+                    user_emp_data = emp_user.employee_data
             except Exception as e:
-                logger.warning("Lỗi lookup LarkEmployee: %s", e)
+                logger.warning("Lỗi lookup user (Lark fields): %s", e)
 
             # Tạo ID ngẫu nhiên cho bản ghi Local
             main_record_id = f"local_{uuid.uuid4().hex[:12]}"

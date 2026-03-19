@@ -1286,31 +1286,21 @@ class LarkReport(models.Model):
         db_table = 'lark_reports'
         managed = False
 
-class LarkEmployee(models.Model):
-    id = models.CharField(max_length=255, primary_key=True)
-    employee_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    name = models.CharField(max_length=255)
-    image_url = models.CharField(max_length=1000, null=True, blank=True)
-    employee_data = models.JSONField(null=True, blank=True)
-    tag_code = models.CharField(max_length=255, null=True, blank=True)
-    position = models.CharField(max_length=255, null=True, blank=True)
-    team = models.CharField(max_length=255, null=True, blank=True)
-    status = models.CharField(max_length=255, null=True, blank=True)
-    date = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'lark_employees'
-        managed = False
-
 class AppUser(models.Model):
+    """Đồng bộ với bảng users (Prisma): nhân viên Lark nằm trực tiếp trên user."""
     id = models.CharField(max_length=255, primary_key=True)
     email = models.CharField(max_length=255, unique=True)
     full_name = models.CharField(max_length=255)
     roles = models.TextField(db_column='roles', null=True, blank=True)
     manager_id = models.CharField(max_length=255, null=True, blank=True)
-
+    team = models.CharField(max_length=255, null=True, blank=True)
+    image_url = models.TextField(null=True, blank=True)
+    employee_data = models.JSONField(null=True, blank=True)
+    lark_employee_record_id = models.CharField(max_length=255, null=True, blank=True)
+    employee_id = models.CharField(max_length=255, null=True, blank=True)
+    employee_position = models.CharField(max_length=255, null=True, blank=True)
+    employee_status = models.CharField(max_length=255, null=True, blank=True)
+    employee_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'users'

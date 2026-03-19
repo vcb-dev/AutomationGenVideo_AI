@@ -11,7 +11,7 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding, LarkEmployee
+from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding
 from .services.apify_service import create_scraper
 from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
 import json
