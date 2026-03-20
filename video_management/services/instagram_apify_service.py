@@ -79,7 +79,8 @@ class InstagramApifyService:
             
             run = self.client.actor(self.profile_actor).call(
                 run_input=actor_input,
-                timeout_secs=60
+                timeout_secs=60,
+                memory_mbytes=1024
             )
             
             # Check run status
@@ -158,7 +159,8 @@ class InstagramApifyService:
             # Run the instagram scraper actor
             run = self.client.actor(self.scraper_actor).call(
                 run_input=actor_input,
-                timeout_secs=self.timeout
+                timeout_secs=self.timeout,
+                memory_mbytes=1024
             )
             
             # Check run status

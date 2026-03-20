@@ -1338,7 +1338,7 @@ class UserVideosView(APIView):
                             'following_count': page_info.get('followingCount', 0),
                             'posts_count': total_posts,  # Total posts (photos + videos + reels)
                             'total_likes': fetched_likes,  # Sum of likes from fetched posts
-                            'total_videos': len([v for v in normalized if v.get('content_type') in ['Video', 'Reel']]),
+                            'total_videos': len([v for v in normalized if (v.get('content_type') or '').lower() in ['video', 'reel', 'sidecar']]) or len(normalized),
                             'total_views': fetched_views,
                             'engagement_rate': round(engagement_rate, 2),
                             'platform': platform_str,
@@ -1503,8 +1503,6 @@ class UserVideosView(APIView):
                     # Save to TikTokUserCache
                     try:
                         from ..models import TikTokUserCache
-                        from django.utils import timezone
-                        from datetime import timedelta
                         
                         TikTokUserCache.objects.update_or_create(
                             username=username,

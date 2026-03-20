@@ -677,6 +677,30 @@ class FacebookPageCache(BaseModel):
         }
 
 
+class ChannelAnalysis(BaseModel):
+    """
+    Store previously generated AI insights and metrics for a channel,
+    to avoid re-running expensive Apify and Gemini calls.
+    """
+    platform = models.CharField(max_length=20, choices=Platform.choices, db_index=True)
+    username = models.CharField(max_length=255, db_index=True)
+    max_posts = models.IntegerField(default=30)
+    
+    insights = models.JSONField(default=dict, blank=True, help_text="Stored Gemini insights JSON")
+    metrics = models.JSONField(default=dict, blank=True, help_text="Stored metrics/charts JSON")
+    
+    class Meta:
+        verbose_name = "Channel Analysis"
+        verbose_name_plural = "Channel Analyses"
+        # Unique per platform+username so we just update the latest analysis
+        unique_together = [['platform', 'username']]
+        indexes = [
+            models.Index(fields=['platform', 'username']),
+        ]
+        
+    def __str__(self):
+        return f"{self.platform}: {self.username} ({self.updated_at.strftime('%Y-%m-%d')})"
+
 class TikTokUserCache(BaseModel):
     """
     Stores TikTok user profile information with 24h TTL.

@@ -13,7 +13,11 @@ from datetime import timedelta
 
 from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding
 from .services.apify_service import create_scraper
-from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
+try:
+    from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record  # type: ignore
+except Exception:  # pragma: no cover
+    get_lark_tenant_access_token = None  # type: ignore
+    create_bitable_record = None  # type: ignore
 import json
 from django.conf import settings
 
@@ -208,6 +212,12 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
     Background task to push a report and its associated outstanding items to Lark.
     """
     try:
+        if get_lark_tenant_access_token is None:
+            return {
+                "success": False,
+                "error": "Missing video_management.utils.lark_utils (get_lark_tenant_access_token).",
+            }
+
         report = LarkReport.objects.get(id=report_id)
         logger.info(f"Starting background sync to Lark for report: {report_id}")
         

@@ -16,6 +16,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from ..services.facebook_hybrid_service import get_facebook_hybrid_service
+from ..models import ChannelAnalysis
 
 logger = logging.getLogger(__name__)
     
@@ -157,7 +158,8 @@ def analyze_facebook_competitor(request):
         "url": "https://www.facebook.com/...",
         "max_posts": 30,          # optional
         "force_method": "auto",   # optional: auto|graph|apify
-        "language": "vi"          # optional, default vi
+        "language": "vi",         # optional, default vi
+        "force_refresh": false    # optional
     }
 
     Response:
@@ -169,10 +171,26 @@ def analyze_facebook_competitor(request):
     """
     try:
         url = (request.data.get('url') or '').strip()
-        max_posts = int(request.data.get('max_posts') or 30)
+        max_posts = min(int(request.data.get('max_posts') or 30), 100)
         # Apify-only per project requirement (Graph API not used)
         force_method = (request.data.get('force_method') or 'apify').lower()
         language = (request.data.get('language') or 'vi').strip()
+        force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
+        start_date_str = (request.data.get('start_date') or '').strip()
+        end_date_str = (request.data.get('end_date') or '').strip()
+
+        # Parse date range
+        start_dt = None
+        end_dt = None
+        try:
+            if start_date_str:
+                start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+            if end_date_str:
+                end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+                # Include the full end day
+                end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
 
         if not url:
             return Response(
@@ -184,12 +202,58 @@ def analyze_facebook_competitor(request):
             force_method = 'apify'
         # Force Apify even if caller passes "auto" (Graph API not used)
         method = 'apify' if force_method == 'auto' else force_method
+        
+        # Determine username to get/store from Cache
+        from .channel_analysis_generic_views import _extract_username_from_url
+        username = _extract_username_from_url('facebook', url)
+        
+        if not force_refresh and username:
+            try:
+                cached = ChannelAnalysis.objects.get(platform='facebook', username=username)
+                if cached.insights:
+                    return Response({
+                        'success': True,
+                        'data': {},
+                        'insights': cached.insights,
+                        'insights_text': 'CACHED',
+                    }, status=status.HTTP_200_OK)
+            except ChannelAnalysis.DoesNotExist:
+                pass
 
         service = get_facebook_hybrid_service()
         raw = service.get_facebook_data(url=url, max_posts=max_posts, force_method=method)
 
+        # Filter posts by date range if provided
+        all_posts = raw.get('posts') or []
+        if start_dt or end_dt:
+            def _get_post_dt(p):
+                ts = p.get('timestamp')
+                if isinstance(ts, (int, float)) and ts > 1_000_000:
+                    return datetime.fromtimestamp(int(ts))
+                t = p.get('time') or p.get('created_time') or ''
+                if isinstance(t, str) and t:
+                    try:
+                        return datetime.fromisoformat(t.replace('Z', '+00:00').replace('+00:00', ''))
+                    except Exception:
+                        pass
+                return None
+            filtered = []
+            for p in all_posts:
+                pdt = _get_post_dt(p)
+                if pdt is None:
+                    continue
+                if start_dt and pdt < start_dt:
+                    continue
+                if end_dt and pdt > end_dt:
+                    continue
+                filtered.append(p)
+            posts = filtered
+        else:
+            posts = all_posts
+
+        scanned_count = len(posts)
+
         # Chuẩn bị context chi tiết cho Gemini - để AI "hiểu" kênh trước khi phân tích
-        posts = raw.get('posts') or []
         compact_posts = []
         for p in posts[:30]:
             txt = (p.get('text') or p.get('message') or p.get('title') or '')
@@ -212,6 +276,7 @@ def analyze_facebook_competitor(request):
             reverse=True
         )[:3]
 
+
         context = {
             'channel': {
                 'name': raw.get('name') or raw.get('identifier') or 'Kênh',
@@ -223,6 +288,8 @@ def analyze_facebook_competitor(request):
             },
             'channel_summary': {
                 'total_posts_analyzed': len(compact_posts),
+                'scanned_count': scanned_count,
+                'date_range': {'start': start_date_str or None, 'end': end_date_str or None},
                 'video_posts': video_count,
                 'text_posts': len(compact_posts) - video_count,
                 'top_3_engaged': [{'text': p['text'][:300], 'likes': p['likes'], 'comments': p['comments']} for p in top_by_engagement],
@@ -350,12 +417,19 @@ DỮ LIỆU KÊNH (JSON):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        if username:
+            obj, _ = ChannelAnalysis.objects.get_or_create(platform='facebook', username=username)
+            obj.insights = insights
+            obj.max_posts = max_posts
+            obj.save(update_fields=['insights', 'max_posts', 'updated_at'])
+
         return Response(
             {
                 'success': True,
                 'data': raw,
                 'insights': insights,
                 'insights_text': text,  # fallback raw
+                'scanned_count': scanned_count,
             },
             status=status.HTTP_200_OK,
         )
@@ -402,7 +476,8 @@ def facebook_channel_metrics(request):
     {
         "url": "https://www.facebook.com/...",
         "max_posts": 50,          # optional (default 50)
-        "force_method": "apify"   # optional: auto|graph|apify
+        "force_method": "apify",  # optional: auto|graph|apify
+        "force_refresh": false    # optional
     }
 
     Response:
@@ -414,8 +489,23 @@ def facebook_channel_metrics(request):
     """
     try:
         url = (request.data.get('url') or '').strip()
-        max_posts = int(request.data.get('max_posts') or 50)
+        max_posts = min(int(request.data.get('max_posts') or 30), 100)
         force_method = (request.data.get('force_method') or 'apify').lower()
+        force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
+        start_date_str = (request.data.get('start_date') or '').strip()
+        end_date_str = (request.data.get('end_date') or '').strip()
+
+        # Parse date range
+        start_dt = None
+        end_dt = None
+        try:
+            if start_date_str:
+                start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+            if end_date_str:
+                end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+                end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
 
         if not url:
             return Response(
@@ -426,10 +516,54 @@ def facebook_channel_metrics(request):
         if force_method not in ['auto', 'graph', 'apify']:
             force_method = 'apify'
         method = 'apify' if force_method == 'auto' else force_method
+        
+        from .channel_analysis_generic_views import _extract_username_from_url
+        username = _extract_username_from_url('facebook', url)
+        
+        if not force_refresh and username:
+            try:
+                cached = ChannelAnalysis.objects.get(platform='facebook', username=username)
+                if cached.metrics:
+                    return Response({
+                        'success': True,
+                        'data': {},
+                        'metrics': cached.metrics
+                    }, status=status.HTTP_200_OK)
+            except ChannelAnalysis.DoesNotExist:
+                pass
 
         service = get_facebook_hybrid_service()
         raw = service.get_facebook_data(url=url, max_posts=max_posts, force_method=method)
-        posts = raw.get('posts') or []
+        all_posts = raw.get('posts') or []
+
+        # Filter posts by date range if provided
+        if start_dt or end_dt:
+            def _get_post_dt_m(p):
+                ts = p.get('timestamp')
+                if isinstance(ts, (int, float)) and ts > 1_000_000:
+                    return datetime.fromtimestamp(int(ts))
+                t = p.get('time') or p.get('created_time') or ''
+                if isinstance(t, str) and t:
+                    try:
+                        return datetime.fromisoformat(t.replace('Z', '+00:00').replace('+00:00', ''))
+                    except Exception:
+                        pass
+                return None
+            filtered = []
+            for p in all_posts:
+                pdt = _get_post_dt_m(p)
+                if pdt is None:
+                    continue
+                if start_dt and pdt < start_dt:
+                    continue
+                if end_dt and pdt > end_dt:
+                    continue
+                filtered.append(p)
+            posts = filtered
+        else:
+            posts = all_posts
+
+        scanned_count = len(posts)
 
         def _safe_int(x):
             try:
@@ -551,6 +685,18 @@ def facebook_channel_metrics(request):
             d = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d')
             by_date.setdefault(d, []).append(p)
 
+        if by_date:
+            min_date = min(by_date.keys())
+            max_date = max(by_date.keys())
+            from datetime import timedelta
+            curr = datetime.strptime(min_date, '%Y-%m-%d')
+            end_obj = datetime.strptime(max_date, '%Y-%m-%d')
+            while curr <= end_obj:
+                d_str = curr.strftime('%Y-%m-%d')
+                if d_str not in by_date:
+                    by_date[d_str] = []
+                curr += timedelta(days=1)
+
         posting_frequency = [{'date': d, 'count': len(lst)} for d, lst in sorted(by_date.items())]
 
         avg_engagement_by_day = []
@@ -560,10 +706,10 @@ def facebook_channel_metrics(request):
                 {
                     'date': d,
                     'posts': len(lst),
-                    'avgLikes': sum(p['likes'] for p in lst) / n,
-                    'avgComments': sum(p['comments'] for p in lst) / n,
-                    'avgShares': sum(p['shares'] for p in lst) / n,
-                    'avgViews': sum(p['views'] for p in lst) / n,
+                    'avgLikes': sum(p.get('likes') or 0 for p in lst) / n,
+                    'avgComments': sum(p.get('comments') or 0 for p in lst) / n,
+                    'avgShares': sum(p.get('shares') or 0 for p in lst) / n,
+                    'avgViews': sum(p.get('views') or 0 for p in lst) / n,
                 }
             )
 
@@ -579,24 +725,47 @@ def facebook_channel_metrics(request):
             ad_type_counts[t] = ad_type_counts.get(t, 0) + 1
         ad_format_distribution = [{'type': k, 'count': v} for k, v in sorted(ad_type_counts.items(), key=lambda kv: kv[1], reverse=True)]
 
+        # Hashtag A1-A5 stats: scan each post's text for content-line hashtags
+        CONTENT_HASHTAGS = ['a1', 'a2', 'a3', 'a4', 'a5']
+        hashtag_stats = []
+        for tag in CONTENT_HASHTAGS:
+            patterns = [f'#{tag}', f'#{tag.upper()}', f' {tag} ', f' {tag.upper()} ']
+            count = sum(
+                1 for p in enriched
+                if any(pat in (' ' + (p.get('text') or '') + ' ').lower() for pat in [f'#{tag}', f' {tag} '])
+            )
+            hashtag_stats.append({'hashtag': tag.upper(), 'count': count})
+        hashtag_stats.sort(key=lambda x: x['count'], reverse=True)
+
+        metrics_data = {
+            'top_viral_posts': top_viral,
+            'ad_posts': ad_posts,
+            'hashtag_stats': hashtag_stats,
+            'charts': {
+                'avg_engagement_by_day': avg_engagement_by_day,
+                'format_distribution': format_distribution,
+                'posting_frequency': posting_frequency,
+                'ad_format_distribution': ad_format_distribution,
+            },
+            'meta': {
+                'posts_analyzed': len(enriched),
+                'scanned_count': scanned_count,
+                'ad_posts_found': len([p for p in enriched if p.get('is_ad')]),
+            },
+        }
+
+        if username:
+            obj, _ = ChannelAnalysis.objects.get_or_create(platform='facebook', username=username)
+            obj.metrics = metrics_data
+            obj.max_posts = max_posts
+            obj.save(update_fields=['metrics', 'max_posts', 'updated_at'])
+
         return Response(
             {
                 'success': True,
                 'data': raw,
-                'metrics': {
-                    'top_viral_posts': top_viral,
-                    'ad_posts': ad_posts,
-                    'charts': {
-                        'avg_engagement_by_day': avg_engagement_by_day,
-                        'format_distribution': format_distribution,
-                        'posting_frequency': posting_frequency,
-                        'ad_format_distribution': ad_format_distribution,
-                    },
-                    'meta': {
-                        'posts_analyzed': len(enriched),
-                        'ad_posts_found': len([p for p in enriched if p.get('is_ad')]),
-                    },
-                },
+                'metrics': metrics_data,
+                'scanned_count': scanned_count,
             },
             status=status.HTTP_200_OK,
         )

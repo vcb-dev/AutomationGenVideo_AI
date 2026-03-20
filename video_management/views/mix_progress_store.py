@@ -39,7 +39,7 @@ def _get_redis():
         try:
             import redis
             from django.conf import settings
-            url = getattr(settings, 'CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+            url = getattr(settings, 'CELERY_BROKER_URL', 'redis://redis:6379/0')
             client = redis.Redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
             client.ping()  # test connection
             _redis_client = client

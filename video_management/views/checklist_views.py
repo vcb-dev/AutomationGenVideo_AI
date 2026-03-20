@@ -13,9 +13,25 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 import uuid
 from rest_framework.permissions import AllowAny
-from ..models import LarkReport, AppUser, ReportOutstanding, LarkPermission, ReportSettings
-from ..utils.lark_utils import get_lark_tenant_access_token, create_bitable_record
-from ..tasks import push_report_to_lark_task
+from ..models import LarkReport, AppUser, ReportOutstanding, LarkPermission
+
+# NOTE: On NAS deployments that overwrite code folders, these optional modules
+# may be missing temporarily. Keep imports lazy to avoid crashing the whole worker.
+try:
+    from ..models import ReportSettings  # type: ignore
+except Exception:  # pragma: no cover
+    ReportSettings = None  # type: ignore
+
+try:
+    from ..utils.lark_utils import get_lark_tenant_access_token, create_bitable_record  # type: ignore
+except Exception:  # pragma: no cover
+    get_lark_tenant_access_token = None  # type: ignore
+    create_bitable_record = None  # type: ignore
+
+try:
+    from ..tasks import push_report_to_lark_task  # type: ignore
+except Exception:  # pragma: no cover
+    push_report_to_lark_task = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +197,12 @@ class ChecklistReportingStatusView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        if ReportSettings is None:
+            return Response(
+                {"error": "Checklist module chưa sẵn sàng (thiếu ReportSettings)."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         user_email = request.query_params.get('email', '')
         settings_obj = ReportSettings.objects.first()
         
@@ -271,6 +293,12 @@ class ChecklistSubmitView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        if ReportSettings is None:
+            return Response(
+                {"error": "Checklist module chưa sẵn sàng (thiếu ReportSettings)."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         try:
             payload = request.data
             # 0. Check settings
@@ -475,6 +503,12 @@ class ChecklistSettingsView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
+        if ReportSettings is None:
+            return Response(
+                {"error": "Checklist module chưa sẵn sàng (thiếu ReportSettings)."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         settings_obj = ReportSettings.objects.first()
         if not settings_obj:
             # Tạo default nếu chưa có
@@ -502,6 +536,12 @@ class ChecklistSettingsView(APIView):
 
 
     def put(self, request):
+        if ReportSettings is None:
+            return Response(
+                {"error": "Checklist module chưa sẵn sàng (thiếu ReportSettings)."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         try:
             data = request.data
             settings_obj = ReportSettings.objects.first()

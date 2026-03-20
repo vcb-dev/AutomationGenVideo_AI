@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from ..services.apify_service import create_scraper
 from .facebook_analysis_views import _parse_insights_json, _is_placeholder
+from ..models import ChannelAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -93,22 +94,68 @@ def _viral_score(p: dict) -> int:
 def channel_metrics_generic(request):
     """
     POST /api/channel/metrics/
-    Body: { platform: 'tiktok'|'instagram'|'facebook'|..., username?: string, url?: string, max_posts?: number }
+    Body: { platform, username?, url?, max_posts?, start_date?, end_date?, force_refresh? }
     """
     platform = _coerce_platform(request.data.get('platform'))
-    max_posts = _safe_int(request.data.get('max_posts') or 30) or 30
-    max_posts = min(max(max_posts, 10), 200)
+    max_posts = min(_safe_int(request.data.get('max_posts') or 30) or 30, 100)
+    max_posts = min(max(max_posts, 10), 500)
+    force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
+    start_date_str = (request.data.get('start_date') or '').strip()
+    end_date_str = (request.data.get('end_date') or '').strip()
+
+    # Parse date range
+    start_dt = None
+    end_dt = None
+    try:
+        if start_date_str:
+            start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+        if end_date_str:
+            end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+    except ValueError:
+        pass
 
     raw_user = request.data.get('username') or request.data.get('url') or ''
     username = _extract_username_from_url(platform, raw_user)
     if not platform or not username:
         return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
 
+    if not force_refresh and not start_dt and not end_dt:
+        try:
+            cached = ChannelAnalysis.objects.get(platform=platform, username=username)
+            if cached.metrics:
+                return Response({'success': True, 'metrics': cached.metrics}, status=status.HTTP_200_OK)
+        except ChannelAnalysis.DoesNotExist:
+            pass
+
     try:
         scraper = create_scraper(platform)
         raw_results = scraper.get_user_videos(username, max_results=max_posts)
         normalized = [scraper.normalize_video_data(v) for v in (raw_results or [])]
         normalized = [p for p in normalized if p]
+
+        # Filter by date range
+        if start_dt or end_dt:
+            filtered = []
+            for p in normalized:
+                dt = p.get('published_at')
+                if dt is None:
+                    continue
+                if hasattr(dt, 'replace'):
+                    pdt = dt.replace(tzinfo=None) if hasattr(dt, 'tzinfo') else dt
+                else:
+                    try:
+                        pdt = datetime.fromisoformat(str(dt).replace('Z', ''))
+                    except Exception:
+                        continue
+                if start_dt and pdt < start_dt:
+                    continue
+                if end_dt and pdt > end_dt:
+                    continue
+                filtered.append(p)
+            normalized = filtered
+
+        scanned_count = len(normalized)
 
         enriched = []
         for p in normalized:
@@ -147,6 +194,18 @@ def channel_metrics_generic(request):
             d = datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d')
             by_date.setdefault(d, []).append(p)
 
+        if by_date:
+            min_date = min(by_date.keys())
+            max_date = max(by_date.keys())
+            from datetime import timedelta
+            curr = datetime.strptime(min_date, '%Y-%m-%d')
+            end_obj = datetime.strptime(max_date, '%Y-%m-%d')
+            while curr <= end_obj:
+                d_str = curr.strftime('%Y-%m-%d')
+                if d_str not in by_date:
+                    by_date[d_str] = []
+                curr += timedelta(days=1)
+
         posting_frequency = [{'date': d, 'count': len(lst)} for d, lst in sorted(by_date.items())]
         avg_engagement_by_day = []
         for d, lst in sorted(by_date.items()):
@@ -158,24 +217,46 @@ def channel_metrics_generic(request):
                     'avgLikes': sum(p['likes'] for p in lst) / n,
                     'avgComments': sum(p['comments'] for p in lst) / n,
                     'avgShares': sum(p['shares'] for p in lst) / n,
-                    'avgViews': sum(p['views'] for p in lst) / n,
+                    'avgViews': sum(p.get('views') or 0 for p in lst) / n,
                 }
             )
+
+        # Hashtag A1-A5 stats: scan post text/description for content-line hashtags
+        CONTENT_HASHTAGS = ['a1', 'a2', 'a3', 'a4', 'a5']
+        hashtag_stats = []
+        for tag in CONTENT_HASHTAGS:
+            count = sum(
+                1 for p in enriched
+                if any(pat in (' ' + (p.get('text') or '') + ' ').lower() for pat in [f'#{tag}', f' {tag} '])
+            )
+            hashtag_stats.append({'hashtag': tag.upper(), 'count': count})
+        hashtag_stats.sort(key=lambda x: x['count'], reverse=True)
+
+        metrics_data = {
+            'top_viral_posts': top_viral,
+            'ad_posts': [],
+            'hashtag_stats': hashtag_stats,
+            'charts': {
+                'avg_engagement_by_day': avg_engagement_by_day,
+                'format_distribution': [{'format': 'video', 'count': len(enriched)}],
+                'posting_frequency': posting_frequency,
+                'ad_format_distribution': [],
+            },
+            'meta': {'posts_analyzed': len(enriched), 'scanned_count': scanned_count, 'ad_posts_found': 0},
+        }
+
+        # Only cache if no date filter (cache is for full channel)
+        if not start_dt and not end_dt:
+            obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
+            obj.metrics = metrics_data
+            obj.max_posts = max_posts
+            obj.save(update_fields=['metrics', 'max_posts', 'updated_at'])
 
         return Response(
             {
                 'success': True,
-                'metrics': {
-                    'top_viral_posts': top_viral,
-                    'ad_posts': [],  # Not supported generically (FB-only)
-                    'charts': {
-                        'avg_engagement_by_day': avg_engagement_by_day,
-                        'format_distribution': [{'format': 'video', 'count': len(enriched)}],
-                        'posting_frequency': posting_frequency,
-                        'ad_format_distribution': [],
-                    },
-                    'meta': {'posts_analyzed': len(enriched), 'ad_posts_found': 0},
-                },
+                'metrics': metrics_data,
+                'scanned_count': scanned_count,
             },
             status=status.HTTP_200_OK,
         )
@@ -183,23 +264,45 @@ def channel_metrics_generic(request):
         logger.error(f"❌ Generic channel metrics failed: {str(e)}", exc_info=True)
         return Response({'success': False, 'error': f'Failed to compute channel metrics: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 @csrf_exempt
 @api_view(['POST'])
 def channel_insights_generic(request):
     """
     POST /api/channel/insights/
-    Body: { platform, username?: string, url?: string, max_posts?: number, language?: 'vi' }
+    Body: { platform, username?, url?, max_posts?, start_date?, end_date?, language?, force_refresh? }
     """
     platform = _coerce_platform(request.data.get('platform'))
     language = (request.data.get('language') or 'vi').strip() or 'vi'
-    max_posts = _safe_int(request.data.get('max_posts') or 30) or 30
-    max_posts = min(max(max_posts, 10), 200)
+    max_posts = min(_safe_int(request.data.get('max_posts') or 30) or 30, 100)
+    max_posts = min(max(max_posts, 10), 500)
+    force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
+    start_date_str = (request.data.get('start_date') or '').strip()
+    end_date_str = (request.data.get('end_date') or '').strip()
+
+    # Parse date range
+    start_dt = None
+    end_dt = None
+    try:
+        if start_date_str:
+            start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+        if end_date_str:
+            end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+    except ValueError:
+        pass
 
     raw_user = request.data.get('username') or request.data.get('url') or ''
     username = _extract_username_from_url(platform, raw_user)
     if not platform or not username:
         return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not force_refresh and not start_dt and not end_dt:
+        try:
+            cached = ChannelAnalysis.objects.get(platform=platform, username=username)
+            if cached.insights:
+                return Response({'success': True, 'insights': cached.insights}, status=status.HTTP_200_OK)
+        except ChannelAnalysis.DoesNotExist:
+            pass
 
     try:
         scraper = create_scraper(platform)
@@ -207,8 +310,31 @@ def channel_insights_generic(request):
         normalized = [scraper.normalize_video_data(v) for v in (raw_results or [])]
         normalized = [p for p in normalized if p]
 
+        # Filter by date range
+        if start_dt or end_dt:
+            filtered = []
+            for p in normalized:
+                dt = p.get('published_at')
+                if dt is None:
+                    continue
+                if hasattr(dt, 'replace'):
+                    pdt = dt.replace(tzinfo=None) if hasattr(dt, 'tzinfo') else dt
+                else:
+                    try:
+                        pdt = datetime.fromisoformat(str(dt).replace('Z', ''))
+                    except Exception:
+                        continue
+                if start_dt and pdt < start_dt:
+                    continue
+                if end_dt and pdt > end_dt:
+                    continue
+                filtered.append(p)
+            normalized = filtered
+
+        scanned_count = len(normalized)
+
         compact_posts = []
-        for p in normalized[:max_posts]:
+        for p in normalized[:30]:
             ts = None
             dt = p.get('published_at')
             if dt:
@@ -239,6 +365,8 @@ def channel_insights_generic(request):
             'username': username,
             'channel_summary': {
                 'total_posts_analyzed': len(compact_posts),
+                'scanned_count': scanned_count,
+                'date_range': {'start': start_date_str or None, 'end': end_date_str or None},
                 'video_posts': len(compact_posts),
                 'text_posts': 0,
                 'top_3_engaged': [{'text': p['text'][:300], 'likes': p['likes'], 'comments': p['comments']} for p in top_by_eng],
@@ -283,8 +411,8 @@ def channel_insights_generic(request):
 Bạn là chuyên gia marketing phân tích kênh đối thủ trên nền tảng {platform.upper()}.
 
 QUY TRÌNH (bắt buộc):
-1. HIỂU KÊNH: Đọc kỹ JSON dữ liệu kênh (bài đăng/video + likes/comments/shares/views). Nắm rõ: kênh làm gì, phục vụ ai, giọng văn, loại nội dung chủ đạo, bài nào tương tác cao.
-2. PHÂN TÍCH CỤ THỂ: Viết phân tích RIÊNG CHO KÊNH NÀY. Mỗi mục phải có ví dụ/số liệu cụ thể nếu có.
+1. HIỂU KÊnh: Đọc kỹ JSON dữ liệu kênh (bài đăng/video + likes/comments/shares/views). Nắm rõ: kênh làm gì, phục vụ ai, giọng văn, loại nội dung chủ đạo, bài nào tương tác cao.
+2. PHÂN TÍCH CỤ THỂ: Viết phân tích RIÊNG CHO KÊnh NÀY. Mỗi mục phải có ví dụ/số liệu cụ thể nếu có.
 
 YÊU CẦU ĐẦU RA:
 - Viết bằng tiếng {language}.
@@ -293,7 +421,7 @@ YÊU CẦU ĐẦU RA:
 - Nếu thiếu dữ liệu thật sự: ghi "Chưa đủ dữ liệu để đánh giá".
 - Không bịa số.
 
-DỮ LIỆU KÊNH (JSON):
+DỮ LIỆU KÊnh (JSON):
 {json.dumps(context, ensure_ascii=False)}
 """.strip()
 
@@ -334,9 +462,15 @@ DỮ LIỆU KÊNH (JSON):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        return Response({'success': True, 'insights': insights, 'insights_text': text}, status=status.HTTP_200_OK)
+        # Only cache if no date filter
+        if not start_dt and not end_dt:
+            obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
+            obj.insights = insights
+            obj.max_posts = max_posts
+            obj.save(update_fields=['insights', 'max_posts', 'updated_at'])
+
+        return Response({'success': True, 'insights': insights, 'insights_text': text, 'scanned_count': scanned_count}, status=status.HTTP_200_OK)
 
     except Exception as e:
         logger.error(f"❌ Generic channel insights failed: {str(e)}", exc_info=True)
         return Response({'success': False, 'error': f'Failed to generate insights: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-

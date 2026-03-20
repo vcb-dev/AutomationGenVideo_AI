@@ -292,11 +292,16 @@ class FacebookHybridService:
                 logger.warning(f"⚠️  Failed to fetch page stats: {str(e)}")
 
         # 2. Fetch posts via Apify Actor (startUrls: array of {url} - format chuẩn Apify)
-        actor_id = "apify/facebook-posts-scraper"
+        actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_posts', 'apify/facebook-posts-scraper')
         
         run_input = {
             "startUrls": [{"url": fb_url}],
             "resultsLimit": max_posts,
+            "maxComments": 0,          # Bỏ qua quét chi tiết nội dung comment -> Tăng tốc ĐÁNG KỂ
+            "maxReplies": 0,           # Không quét reply
+            "scrapeAbout": False,      # Không quét trang giới thiệu
+            "scrapeComments": False,   # Tắt hẳn tính năng lấy text comments nếu actor hỗ trợ
+            # Nếu actor yêu cầu concurrency: "maxConcurrency": 20
         }
         
         logger.info(f"🚀 Starting Apify actor: {actor_id} | fb_url={fb_url}")

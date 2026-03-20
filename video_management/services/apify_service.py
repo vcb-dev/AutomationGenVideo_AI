@@ -689,10 +689,11 @@ class ApifyScraperService(BaseScraperService):
             self.logger.info(f"Running Apify actor: {self.actor_id}")
             self.logger.debug(f"Actor input: {actor_input}")
             
-            # Run the actor
+            # Run the actor with explicit memory limit to avoid 'exceed memory limit' errors
             run = self.client.actor(self.actor_id).call(
                 run_input=actor_input,
-                timeout_secs=timeout
+                timeout_secs=timeout,
+                memory_mbytes=1024  # Force 1GB to prevent exceeding 8GB limit across concurrent runs
             )
             
             # Check run status
@@ -1122,7 +1123,8 @@ class ApifyScraperService(BaseScraperService):
              # Use the client to call specifically this actor, ignoring self.actor_id which is for posts
              run = self.client.actor(page_actor_id).call(
                 run_input=run_input,
-                timeout_secs=60 # Short timeout for metadata
+                timeout_secs=60, # Short timeout for metadata
+                memory_mbytes=1024
              )
              
              if run['status'] == 'SUCCEEDED':
