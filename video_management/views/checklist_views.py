@@ -389,14 +389,21 @@ class ChecklistSubmitView(APIView):
             )
             
             # --- LƯU VÀO ReportOutstanding (LOCAL) ---
-            # 1. Tìm team từ LarkPermission nếu chưa có team
-            if not user_team:
+            # 1. Tìm team và role từ LarkPermission nếu chưa có team
+            if not user_team or not user_role:
                 try:
                     perm = LarkPermission.objects.filter(email__iexact=user_email).first()
                     if perm:
-                        user_team = perm.team
+                        if not user_team:
+                            user_team = perm.team
+                        if not user_role:
+                            user_role = perm.role
                 except Exception as e:
                     logger.warning("Lỗi lookup LarkPermission cho ReportOutstanding: %s", e)
+            
+            # Map role string representation if needed
+            if user_role and (user_role.startswith('{') or user_role.startswith('[')):
+                user_role = user_role.replace('{', '').replace('}', '').replace('[', '').replace(']', '').split(',')[0].strip('"').strip("'")
 
             # 2. Map các câu hỏi sang ReportOutstanding
             outstanding_mappings = [
@@ -418,6 +425,7 @@ class ChecklistSubmitView(APIView):
                             name=user_name,
                             date=current_datetime.strftime("%d/%m/%Y"),
                             team=user_team,
+                            role=user_role,
                             category=content_label,
                             content=answer.strip(),
                             email=user_email,

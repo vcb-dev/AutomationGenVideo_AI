@@ -1352,6 +1352,7 @@ class ReportOutstanding(models.Model):
     name = models.CharField(max_length=255)
     date = models.CharField(max_length=100, null=True, blank=True)
     team = models.CharField(max_length=255, null=True, blank=True)
+    role = models.CharField(max_length=255, null=True, blank=True)
 
     category = models.TextField(db_column='category', null=True, blank=True)
     content = models.TextField(db_column='content', null=True, blank=True)

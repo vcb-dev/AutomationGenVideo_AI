@@ -78,6 +78,7 @@ gen-n-CongThucA4.jpg
 
 # Celery
 celerybeat-schedule
+celerybeat-schedule.*
 celerybeat.pid
 
 # Pytest / Coverage
