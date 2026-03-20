@@ -181,7 +181,7 @@ def is_reporting_open(settings_obj, user_email=None):
         # Chuyển về UTC để query database (nếu date lưu UTC)
         # LarkReport.date có vẻ là DateTimeField
         already_reported = LarkReport.objects.filter(
-            email=user_email,
+            email__iexact=user_email,
             date__gte=today_start
         ).exists()
         if already_reported:
@@ -303,7 +303,7 @@ class ChecklistSubmitView(APIView):
             payload = request.data
             # 0. Check settings
             settings_obj = ReportSettings.objects.first()
-            user_email = payload.get("userEmail", "")
+            user_email = (payload.get("userEmail", "") or "").strip().lower()  # normalize before status check
             
             is_open, err_msg = is_reporting_open(settings_obj, user_email)
             if not is_open:
@@ -319,7 +319,7 @@ class ChecklistSubmitView(APIView):
                 )
 
             # Lấy thông tin user từ payload
-            user_email = payload.get("userEmail", "")
+            user_email = (payload.get("userEmail", "") or "").strip().lower()  # normalize to lowercase
             user_name = payload.get("userName", "")
             
             if not user_email or not user_name:
@@ -330,6 +330,9 @@ class ChecklistSubmitView(APIView):
             
             # Thời gian báo cáo (Asia/Ho_Chi_Minh)
             vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
+            now_vn = datetime.now(vietnam_tz)
+            today_vn = now_vn.date()
+
             # Kiểm tra xem có reportDate tùy chỉnh từ frontend không
             custom_report_date = payload.get("reportDate")
             if custom_report_date:
@@ -340,11 +343,18 @@ class ChecklistSubmitView(APIView):
                     else:
                         current_datetime = datetime.strptime(custom_report_date, "%Y-%m-%d")
                         current_datetime = vietnam_tz.localize(current_datetime)
+
+                    # Không cho báo cáo ngày tương lai
+                    if current_datetime.date() > today_vn:
+                        return Response(
+                            {"error": "Không thể gửi báo cáo cho ngày trong tương lai."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
                 except Exception as e:
                     logger.warning("Lỗi parse custom_report_date '%s', dùng giờ HT: %s", custom_report_date, e)
-                    current_datetime = datetime.now(vietnam_tz)
+                    current_datetime = now_vn
             else:
-                current_datetime = datetime.now(vietnam_tz)
+                current_datetime = now_vn
             
             # Loại bỏ userEmail và userName khỏi payload checklist
             checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName", "reportDate"]}
@@ -352,7 +362,7 @@ class ChecklistSubmitView(APIView):
             # 1. Lookup thông tin từ table AppUser (users)
             user_role = None
             try:
-                user_record = AppUser.objects.filter(email=user_email).first()
+                user_record = AppUser.objects.filter(email__iexact=user_email).first()
                 if user_record and user_record.roles:
                     # Parse first role if it's a string representation of postgres array
                     user_role = str(user_record.roles).replace("{", "").replace("}", "").split(",")[0]
