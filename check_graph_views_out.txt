@@ -1,0 +1,28 @@
+﻿============================================================
+1. TOKEN INFO (/me)
+============================================================
+HTTP 200: {
+  "id": "763339010200340",
+  "name": "NamblingJewelry",
+  "category": "Jewelry/watches",
+  "fan_count": 10633,
+  "followers_count": 10633
+}
+
+python : Traceback (most recent call last):
+At line:1 char:1
++ python check_graph_views.py 2>&1 | Out-File -FilePath check_graph_vie ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last) 
+   ::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\pc\OneDrive\Desktop\VietChiBaoPrj\AutomationGenVideo_AI\check_
+graph_views.py", line 102, in <module>
+    print(f"\n\u2705 Page: {page_name} (ID: {page_id})\n")
+  File 
+"C:\Users\pc\AppData\Local\Programs\Python\Python310\lib\encodings\cp1252.py", 
+line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in 
+position 2: character maps to <undefined>

@@ -3,13 +3,16 @@ version: '3.8'
 services:
   redis:
     image: redis:alpine
+    container_name: vcb_ai_redis
     restart: always
 
-  api:
+  vcb_ai_web:
     build: .
+    image: ai-server-web:latest
+    container_name: vcb_ai_web
     volumes:
       - .:/app
-      - /volume1:/volume1  # Mount NAS media folder vào container
+      - /volume1:/volume1
     ports:
       - "8000:8000"
     env_file:
@@ -17,42 +20,70 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - REDIS_URL=redis://redis:6379/0
+    # Đã tối ưu: pip install được thực hiện trong Dockerfile lúc build image
+    # Giữ lại logic migrate và chạy server
+    command: >
+      sh -c "
+      python -c 'import drf_spectacular; print(\"drf ok web\")' &&
+      python manage.py migrate --noinput &&
+      python manage.py runserver 0.0.0.0:8000
+      "
     depends_on:
       - redis
+    restart: always
 
-  worker:
+  vcb_ai_celery:
     build: .
+    image: ai-server-celery:latest
+    container_name: vcb_ai_celery
     volumes:
       - .:/app
-      - /volume1:/volume1  # Mount NAS media folder vào container
+      - /volume1:/volume1
     env_file:
       - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: celery -A core worker --loglevel=info
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - REDIS_URL=redis://redis:6379/0
+    command: >
+      sh -c "
+      python -c 'import drf_spectacular; print(\"drf ok celery\")' &&
+      celery -A core worker --loglevel=info --pool=threads --concurrency=4
+      "
     depends_on:
-      - api
       - redis
+      - vcb_ai_web
+    restart: always
 
-  beat:
+  vcb_ai_beat:
     build: .
+    image: ai-server-beat:latest
+    container_name: vcb_ai_beat
     volumes:
       - .:/app
-      - /volume1:/volume1  # Mount NAS media folder vào container
+      - /volume1:/volume1
     env_file:
       - .env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: celery -A core beat --loglevel=info
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    command: >
+      sh -c "
+      python -c 'import drf_spectacular; print(\"drf ok beat\")' &&
+      celery -A core beat --loglevel=info
+      "
     depends_on:
-      - api
       - redis
+      - vcb_ai_web
+    restart: always
+
+  vcb_ai_tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: vcb_ai_tunnel
+    env_file:
+      - .env
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - vcb_ai_web
+    restart: always

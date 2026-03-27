@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     
     # Third party apps
     'rest_framework',
+    'drf_spectacular',
     'corsheaders',
     
     # Internal apps
@@ -200,10 +201,32 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ] if not DEBUG else [
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
+    # Baseline guards for 50-100 concurrent users.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': env('DRF_THROTTLE_ANON', default='120/min'),
+        'user': env('DRF_THROTTLE_USER', default='600/min'),
+    },
+    # Global pagination defaults for list endpoints that use DRF pagination.
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': env.int('DRF_PAGE_SIZE', default=50),
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'AutomationGenVideo AI API',
+    'DESCRIPTION': 'Auto-generated API schema for video management and related services.',
+    'VERSION': '2.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 # Celery settings
@@ -214,13 +237,31 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-# Local Memory Cache for Development (Fallback if Redis is missing)
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "unique-snowflake",
+# Cache: Django 4.2+ native RedisCache (dùng redis-py, không cần django-redis)
+# Shared across multiple Gunicorn/Celery workers.
+_redis_url = env('REDIS_URL', default=env('CELERY_BROKER_URL', default='redis://localhost:6379/0'))
+try:
+    import redis as _redis_lib
+    _r_test = _redis_lib.from_url(_redis_url, socket_connect_timeout=1)
+    _r_test.ping()
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _redis_url,
+            "TIMEOUT": 300,       # 5 phút mặc định
+            "KEY_PREFIX": "ai",
+        }
     }
-}
+except Exception:
+    # Fallback khi Redis chưa chạy (dev local không có Redis)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ai-locmem",
+        }
+    }
+
+
 
 
 # CORS settings
@@ -252,8 +293,10 @@ APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
 # Proxy password for Apify Residential Proxy (image-proxy cho Facebook CDN).
 # Lấy từ: https://console.apify.com/proxy - khác với API Token. Nếu không set, dùng APIFY_API_TOKEN.
 APIFY_PROXY_PASSWORD = env('APIFY_PROXY_PASSWORD', default='')
-# Country cho Residential Proxy (US, VN, ...). Để trống = random.
+# Country cho Residential Proxy (US, VN, ...). Phát huy khi dùng cho Image Proxy
 APIFY_PROXY_COUNTRY = env('APIFY_PROXY_COUNTRY', default='US')
+# Danh sách Country code. Hệ thống quét sẽ tự động chọn ngẫu nhiên để lách chặn IP
+APIFY_PROXY_COUNTRIES = env('APIFY_PROXY_COUNTRIES', default='VN,US,JP,SG')
 
 # Apify Actor IDs for different platforms
 APIFY_ACTORS = {

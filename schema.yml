@@ -1,0 +1,2363 @@
+openapi: 3.0.3
+info:
+  title: AutomationGenVideo AI API
+  version: 2.0.0
+  description: Auto-generated API schema for video management and related services.
+paths:
+  /:
+    get:
+      operationId: root_retrieve
+      description: Root view that lists all available API endpoints
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/audio/cache/{filename}:
+    get:
+      operationId: api_audio_cache_retrieve
+      description: Serve cached audio files from AUDIO_CACHE_DIR.
+      parameters:
+      - in: path
+        name: filename
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/channel/insights/:
+    post:
+      operationId: api_channel_insights_create
+      description: |-
+        POST /api/channel/insights/
+        Body: { platform, username?, url?, max_posts?, start_date?, end_date?, language?, force_refresh? }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/channel/metrics/:
+    post:
+      operationId: api_channel_metrics_create
+      description: |-
+        POST /api/channel/metrics/
+        Body: { platform, username?, url?, max_posts?, start_date?, end_date?, force_refresh? }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/channels/:
+    get:
+      operationId: api_channels_list
+      description: |-
+        List all tracked channels or create a new one.
+
+        GET /api/channels/
+        POST /api/channels/
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTrackedChannelList'
+          description: ''
+    post:
+      operationId: api_channels_create
+      description: |-
+        List all tracked channels or create a new one.
+
+        GET /api/channels/
+        POST /api/channels/
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackedChannel'
+          description: ''
+  /api/channels/{id}/:
+    get:
+      operationId: api_channels_retrieve
+      description: |-
+        Retrieve, update or delete a tracked channel.
+
+        GET /api/channels/{id}/
+        PUT /api/channels/{id}/
+        DELETE /api/channels/{id}/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackedChannel'
+          description: ''
+    put:
+      operationId: api_channels_update
+      description: |-
+        Retrieve, update or delete a tracked channel.
+
+        GET /api/channels/{id}/
+        PUT /api/channels/{id}/
+        DELETE /api/channels/{id}/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TrackedChannel'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackedChannel'
+          description: ''
+    patch:
+      operationId: api_channels_partial_update
+      description: |-
+        Retrieve, update or delete a tracked channel.
+
+        GET /api/channels/{id}/
+        PUT /api/channels/{id}/
+        DELETE /api/channels/{id}/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedTrackedChannel'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTrackedChannel'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTrackedChannel'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackedChannel'
+          description: ''
+    delete:
+      operationId: api_channels_destroy
+      description: |-
+        Retrieve, update or delete a tracked channel.
+
+        GET /api/channels/{id}/
+        PUT /api/channels/{id}/
+        DELETE /api/channels/{id}/
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/channels/{id}/check/:
+    post:
+      operationId: api_channels_check_create
+      description: Trigger channel check - now runs synchronously.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/channels/check-by-username/:
+    post:
+      operationId: api_channels_check_by_username_create
+      description: |-
+        Trigger check for a channel by username and platform.
+
+        POST /api/channels/check-by-username/
+        Body: { "username": "...", "platform": "..." }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/checklist/check/:
+    get:
+      operationId: api_checklist_check_retrieve
+      description: |-
+        GET: Kiểm tra cấu hình Lark (không lộ secret). Gọi thử token + quyền Base.
+        Dùng để debug 403: xem app_id/base_id đang dùng và Lark trả gì.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/checklist/settings/:
+    get:
+      operationId: api_checklist_settings_retrieve
+      description: |-
+        GET: Lấy cấu hình khung giờ báo cáo.
+        PUT: Cập nhật cấu hình khung giờ báo cáo.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+    put:
+      operationId: api_checklist_settings_update
+      description: |-
+        GET: Lấy cấu hình khung giờ báo cáo.
+        PUT: Cập nhật cấu hình khung giờ báo cáo.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/checklist/status/:
+    get:
+      operationId: api_checklist_status_retrieve
+      description: Kiểm tra xem hiện tại user có được phép báo cáo hay không.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/checklist/submit/:
+    post:
+      operationId: api_checklist_submit_create
+      description: |-
+        POST: Nhận payload checklist từ frontend, lưu vào Lark Bitable (một field JSON).
+        Body mong đợi: JSON với các key checklist (boolean) và chi tiết (string), có thể có isLate.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/collections/:
+    get:
+      operationId: api_collections_list
+      description: List all collections.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedVideoCollectionListList'
+          description: ''
+    post:
+      operationId: api_collections_create
+      description: Create a new collection.
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+  /api/collections/{id}/:
+    get:
+      operationId: api_collections_retrieve
+      description: Get collection detail with videos.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+    put:
+      operationId: api_collections_update
+      description: Update collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+    patch:
+      operationId: api_collections_partial_update
+      description: |-
+        ViewSet for managing video collections.
+
+        Provides:
+        - List all collections
+        - Create new collection
+        - Get collection detail with videos
+        - Update collection
+        - Delete collection
+        - Add video to collection
+        - Remove video from collection
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedVideoCollection'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedVideoCollection'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedVideoCollection'
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+    delete:
+      operationId: api_collections_destroy
+      description: Delete collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/collections/{id}/add_video/:
+    post:
+      operationId: api_collections_add_video_create
+      description: Add a video to collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+  /api/collections/{id}/add_videos/:
+    post:
+      operationId: api_collections_add_videos_create
+      description: Add multiple videos to collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VideoCollection'
+        required: true
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+  /api/collections/{id}/remove-video/{video_id}/:
+    delete:
+      operationId: api_collections_remove_video_destroy
+      description: Remove a video from collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      - in: path
+        name: video_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/collections/{id}/videos/:
+    get:
+      operationId: api_collections_videos_retrieve
+      description: Get all videos in collection.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this Video Collection.
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoCollection'
+          description: ''
+  /api/content/{content_id}/:
+    get:
+      operationId: api_content_retrieve
+      description: |-
+        Get details of a generated content.
+
+        GET /api/content/<content_id>/
+      parameters:
+      - in: path
+        name: content_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/content/generate/:
+    post:
+      operationId: api_content_generate_create
+      description: |-
+        Generate marketing content based on a viral video.
+
+        POST /api/content/generate/
+        Body:
+        {
+            "video_id": 123,  // optional if video_description provided
+            "video_description": "...",  // optional if video_id provided
+            "video_title": "...",  // optional
+            "content_type": "A1",  // A1, A2, A3, A4, or A5
+            "brand_name": "Viễn Chí Bảo",  // optional
+            "industry": "kim hoàn",  // optional
+            "additional_context": "..."  // optional
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/content/generate-prompt/:
+    post:
+      operationId: api_content_generate_prompt_create
+      description: |-
+        Generate an optimized prompt based on video content.
+
+        POST /api/content/generate-prompt/
+        Body: same as generate_content
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/content/transcribe/:
+    post:
+      operationId: api_content_transcribe_create
+      description: |-
+        POST /api/content/transcribe/
+        Body: { "video_url": "https://..." }
+        Response: { "success": true, "transcript": "...", "char_count": N }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/content/video/{video_id}/:
+    get:
+      operationId: api_content_video_retrieve
+      description: |-
+        Get all generated contents for a video.
+
+        GET /api/content/video/<video_id>/
+      parameters:
+      - in: path
+        name: video_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/douyin/profile/:
+    post:
+      operationId: api_douyin_profile_create
+      description: |-
+        Fetch full Douyin channel profile (followers, likes, avatar, etc).
+
+        POST /api/douyin/profile/
+        Body: { "username": "someuser" }
+
+        Returns full channel profile including:
+        - follower_count
+        - total_likes (heart count)
+        - avatar_url
+        - display_name
+        - video_count
+        - engagement_rate (calculated)
+
+        TROUBLESHOOTING:
+        If follower_count, total_likes are returning 0, it means:
+        1. The channel might be PRIVATE (Apify can't access)
+        2. The username might not exist
+        3. Apify API might be rate limited
+        4. Apify actor response format changed - check console logs for field names
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/douyin/search/:
+    post:
+      operationId: api_douyin_search_create
+      description: |-
+        Search Douyin videos by keyword or hashtag.
+        Hỗ trợ "next batch": mỗi lần gọi với batchIndex tăng dần sẽ trả về pool video mới.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/facebook/analyze/:
+    post:
+      operationId: api_facebook_analyze_create
+      description: |-
+        Analyze a Facebook URL (Page or User Profile).
+
+        POST /api/facebook/analyze
+        Body:
+        {
+            "url": "https://www.facebook.com/...",
+            "max_posts": 20,  // optional, default 20
+            "force_method": "auto"  // optional: "auto", "graph", "apify"
+        }
+
+        Response:
+        {
+            "success": true,
+            "data": {
+                "type": "page" | "profile" | "group",
+                "method": "graph_api" | "apify",
+                "name": "Page Name",
+                "identifier": "page_id",
+                "followers_count": 10000 | null,
+                "posts_count": 500,
+                "posts": [...],
+                "metadata": {...}
+            }
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/facebook/channel-metrics/:
+    post:
+      operationId: api_facebook_channel_metrics_create
+      description: |-
+        Trả về metrics/biểu đồ cho kênh Facebook (không dùng Gemini).
+
+        POST /api/facebook/channel-metrics/
+        Body:
+        {
+            "url": "https://www.facebook.com/...",
+            "max_posts": 50,          # optional (default 50)
+            "force_method": "apify",  # optional: auto|graph|apify
+            "force_refresh": false    # optional
+        }
+
+        Response:
+        {
+            "success": true,
+            "data": {... raw ...},
+            "metrics": {...}
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/facebook/competitor-insights/:
+    post:
+      operationId: api_facebook_competitor_insights_create
+      description: |-
+        Sinh insight kênh đối thủ (SocialLens-style) bằng Gemini.
+
+        POST /api/facebook/competitor-insights/
+        Body:
+        {
+            "url": "https://www.facebook.com/...",
+            "max_posts": 30,          # optional
+            "force_method": "auto",   # optional: auto|graph|apify
+            "language": "vi",         # optional, default vi
+            "force_refresh": false    # optional
+        }
+
+        Response:
+        {
+            "success": true,
+            "data": {... thô từ FacebookHybridService ...},
+            "insights_text": "Tóm tắt Chiến lược: ...",
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/facebook/detect/:
+    post:
+      operationId: api_facebook_detect_create
+      description: |-
+        Detect if URL is a Page, Group, or User Profile.
+
+        POST /api/facebook/detect
+        Body:
+        {
+            "url": "https://www.facebook.com/..."
+        }
+
+        Response:
+        {
+            "success": true,
+            "data": {
+                "type": "page" | "profile" | "group",
+                "identifier": "page_id_or_username"
+            }
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/facebook/methods/:
+    get:
+      operationId: api_facebook_methods_retrieve
+      description: |-
+        Get available analysis methods.
+
+        GET /api/facebook/methods
+
+        Response:
+        {
+            "success": true,
+            "data": {
+                "graph_api": true | false,
+                "apify": true | false
+            }
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/health/:
+    get:
+      operationId: api_health_retrieve
+      description: Simple health check.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/{product_id}/:
+    get:
+      operationId: api_products_retrieve
+      description: |-
+        Get details of a specific product.
+
+        GET /api/products/<product_id>/
+      parameters:
+      - in: path
+        name: product_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/catalogs/:
+    get:
+      operationId: api_products_catalogs_retrieve
+      description: |-
+        Get all product catalogs.
+
+        GET /api/products/catalogs/
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/catalogs/{catalog_id}/:
+    get:
+      operationId: api_products_catalogs_retrieve_2
+      description: |-
+        Get a specific product catalog with all products.
+
+        GET /api/products/catalogs/<catalog_id>/
+      parameters:
+      - in: path
+        name: catalog_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/catalogs/{catalog_id}/by-category/:
+    get:
+      operationId: api_products_catalogs_by_category_retrieve
+      description: |-
+        Get products grouped by category.
+
+        GET /api/products/catalogs/<catalog_id>/by-category/
+      parameters:
+      - in: path
+        name: catalog_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/catalogs/{catalog_id}/delete/:
+    delete:
+      operationId: api_products_catalogs_delete_destroy
+      description: |-
+        Delete a product catalog and all its products.
+
+        DELETE /api/products/catalogs/<catalog_id>/
+      parameters:
+      - in: path
+        name: catalog_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/products/find-video/:
+    get:
+      operationId: api_products_find_video_retrieve
+      description: |-
+        Find a video file path in 'IndexedVideo' or 'Sản phẩm' folder based on SKU.
+
+        GET /api/products/find-video/?sku=...
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/products/upload/:
+    post:
+      operationId: api_products_upload_create
+      description: |-
+        Upload and parse an Excel product catalog.
+
+        POST /api/products/upload/
+        Form Data:
+            - file: Excel file (.xlsx, .xls)
+            - name: Optional name for the product list
+            - description: Optional description
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/:
+    post:
+      operationId: api_search_create
+      description: Handle search request.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/history/:
+    get:
+      operationId: api_search_history_retrieve
+      description: Get search history.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/status/{task_id}/:
+    get:
+      operationId: api_search_status_retrieve
+      description: Get task status.
+      parameters:
+      - in: path
+        name: task_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/suggestions/:
+    get:
+      operationId: api_search_suggestions_retrieve
+      description: |-
+        Get search suggestions based on query input.
+
+        Combines (in priority order):
+        0. TikTok/Google real-time suggestions (PRIMARY - like real TikTok)
+        1. Search history (user's past searches)
+        2. Trending keywords (from scraped videos)
+        3. AI-generated suggestions (fallback)
+
+        Query params:
+            - q: Search query (min 1 char)
+            - platform: Platform filter (TIKTOK, INSTAGRAM, etc.)
+            - limit: Max results (default 10)
+
+        Returns:
+            {
+                "success": true,
+                "query": "mèo",
+                "suggestions": [
+                    {"text": "mèo cute", "type": "tiktok"},
+                    {"text": "mèo trắng", "type": "history", "count": 5},
+                    {"text": "vòng tay mèo", "type": "ai"}
+                ]
+            }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/track/:
+    post:
+      operationId: api_search_track_create
+      description: |-
+        Track a search query for suggestions and analytics.
+
+        Call this when user actually performs a search (not just typing).
+
+        Body:
+            {
+                "query": "mèo cute",
+                "platform": "TIKTOK",
+                "result_count": 15  // optional
+            }
+
+        Returns:
+            {"success": true, "tracked": true}
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/translate/:
+    post:
+      operationId: api_search_translate_create
+      description: |-
+        Translate Vietnamese/English text to Chinese (Simplified) using Gemini.
+        Optimized for short search keywords.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/search/user-videos/:
+    post:
+      operationId: api_search_user_videos_create
+      description: Handle user videos request.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/stats/:
+    get:
+      operationId: api_stats_retrieve
+      description: Get system statistics.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/tiktok/search-v2/:
+    post:
+      operationId: api_tiktok_search_v2_create
+      description: |-
+        Search TikTok videos.
+        NOTE: TikHub removed. Use the main /api/search/ endpoint with platform=tiktok instead.
+        This endpoint is kept for backward compatibility but redirects to the Apify-based search.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/tiktok/suggest/:
+    get:
+      operationId: api_tiktok_suggest_retrieve
+      description: |-
+        Two-phase suggestion strategy (TikTok, Douyin, Xiaohongshu):
+        1. YouTube/Google Suggest — instant, real market data
+        2. Gemini pool — serves rotating batches, platform-aware
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/by-channel/:
+    get:
+      operationId: api_videos_by_channel_retrieve
+      description: |-
+        Get videos by channel username (search in DB).
+
+        GET /api/videos/by-channel/?platform=TIKTOK&username=...
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/cache/:
+    get:
+      operationId: api_videos_cache_retrieve
+      description: |-
+        GET: Lấy thống kê cache
+        POST: Cleanup cache
+
+        POST body options:
+        {
+            "action": "cleanup_invalid",  // Xóa cache không valid
+            "action": "cleanup_old",      // Xóa cache cũ
+            "days": 30                    // Số ngày (cho cleanup_old)
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+    post:
+      operationId: api_videos_cache_create
+      description: |-
+        GET: Lấy thống kê cache
+        POST: Cleanup cache
+
+        POST body options:
+        {
+            "action": "cleanup_invalid",  // Xóa cache không valid
+            "action": "cleanup_old",      // Xóa cache cũ
+            "days": 30                    // Số ngày (cho cleanup_old)
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/cache-stats/:
+    get:
+      operationId: api_videos_cache_stats_retrieve
+      description: |-
+        Get cache statistics.
+
+        Returns:
+        {
+            "indexed_videos": 1234,
+            "cached_clips": 456,
+            "cache_size_mb": 8542.5,
+            "cache_size_gb": 8.34,
+            "by_folder": {"Sản phẩm": 100, ...}
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/channel-hashtag-stats/:
+    get:
+      operationId: api_videos_channel_hashtag_stats_retrieve
+      description: |-
+        Get hashtag statistics for a specific channel
+        Uses existing videos in DB (from previous searches)
+        Count videos with company hashtags: a1, a2, a3, a4, a5
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+    post:
+      operationId: api_videos_channel_hashtag_stats_create
+      description: |-
+        Get hashtag statistics for a specific channel
+        Uses existing videos in DB (from previous searches)
+        Count videos with company hashtags: a1, a2, a3, a4, a5
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/clear-index/:
+    post:
+      operationId: api_videos_clear_index_create
+      description: |-
+        Xóa toàn bộ indexed videos và clip cache (reset để re-index từ đầu).
+        POST /api/videos/clear-index/
+        Body (optional): { "folder_types": ["Sản phẩm", "HuyK"] } để chỉ xóa một số folder_type.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/generate-audio/:
+    post:
+      operationId: api_videos_generate_audio_create
+      description: |-
+        Generate audio from script using selected voice.
+
+        OPTIMIZED with:
+        - Audio caching (SHA256 of script+voice_id) → instant if cached
+        - Parallel chunking for long scripts → 2-3x faster
+        - Local file storage → reliable playback
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/index-folders/:
+    post:
+      operationId: api_videos_index_folders_create
+      description: |-
+        Index videos from folders into database (one-time setup).
+        After indexing, automatically starts background pre-generation of clips.
+
+        POST Body:
+        {
+            "folders": {
+                "Sản phẩm": "\\VCB_MEDIA\...",
+                "HuyK": "\\VCB_MEDIA\...",
+                ...
+            },
+            "videos_per_folder": 100  // Max videos to index per folder (0 = unlimited)
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/index-manufacturing-folder/:
+    post:
+      operationId: api_videos_index_manufacturing_folder_create
+      description: |-
+        Manually trigger indexing for a specific manufacturing folder (Category + SKU).
+        Useful when frontend detects a new product selection.
+
+        POST Body:
+        {
+            "category": "Dây chuyền",
+            "sku": "MD64"
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/index-outro/:
+    post:
+      operationId: api_videos_index_outro_create
+      description: |-
+        Smart scan and index Outro folder.
+        Automatically finds folder containing 'outro' (case-insensitive).
+
+        Returns:
+        {
+            "success": true,
+            "message": "Found and indexed Outro folder",
+            "folder_path": "\\VCB_MEDIA\..."
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/mix/:
+    post:
+      operationId: api_videos_mix_create
+      description: |-
+        POST: multipart/form-data OR JSON with local folder paths.
+
+        Chế độ 1 (upload): 10 files (videos).
+        Chế độ 2 (upload): audio + folder_0..9 files.
+        Chế độ 3 (path):   JSON { "audio_path" or audio file, "folder_paths": [...10 paths...], "width", "height", "num_outputs" }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/mix-auto/:
+    post:
+      operationId: api_videos_mix_auto_create
+      description: |-
+        POST: Auto mix video - User chỉ cần cung cấp folder tổng + audio.
+        BE tự động scan, tìm 10 subfolder, và mix.
+
+        Body (multipart/form-data):
+        - base_folder_path: Đường dẫn folder tổng (string)
+        - audio: File audio (file)
+        - width: Width output (optional, default 720)
+        - height: Height output (optional, default 1280)
+        - num_outputs: Số video output (optional, default 5)
+        - min_videos_per_folder: Số video tối thiểu mỗi folder (optional, default 1)
+
+        Returns:
+        - progress_id để poll status
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/mix-upload/:
+    post:
+      operationId: api_videos_mix_upload_create
+      description: |-
+        Mix video với uploaded folders từ FE
+        Nhận folder_0..folder_9 (videos) và audio từ multipart/form-data
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/mix/cancel/{progress_id}/:
+    post:
+      operationId: api_videos_mix_cancel_create
+      description: 'POST: Huỷ bỏ quá trình mix video.'
+      parameters:
+      - in: path
+        name: progress_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/mix/status/{progress_id}/:
+    get:
+      operationId: api_videos_mix_status_retrieve
+      description: 'GET: trả về tiến trình và kết quả mix theo progress_id.'
+      parameters:
+      - in: path
+        name: progress_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/pregen/cancel/:
+    post:
+      operationId: api_videos_pregen_cancel_create
+      description: Cancel running pre-generation.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/pregen/start/:
+    post:
+      operationId: api_videos_pregen_start_create
+      description: |-
+        Manually start or restart background pre-generation.
+        Useful when new folders are indexed from auto-index during mix.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/pregen/status/:
+    get:
+      operationId: api_videos_pregen_status_retrieve
+      description: |-
+        Get background pre-generation progress.
+
+        Returns:
+        {
+            "status": "running",  // idle | running | completed | error
+            "total": 100,
+            "done": 45,
+            "cached": 30,
+            "generated": 15,
+            "failed": 0,
+            "percent": 45,
+            "message": "Pre-generating... 15/70 done"
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/scan-folder/:
+    post:
+      operationId: api_videos_scan_folder_create
+      description: |-
+        POST /api/videos/scan-folder/
+        Body: {
+            "path": "D:\Videos\MixVideo",
+            "use_cache": true,  // Optional: dùng cache để scan nhanh hơn
+            "recursive": true   // Optional: scan recursive vào subfolder
+        }
+        Returns subfolders with video file counts.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/scan-folder-batch/:
+    post:
+      operationId: api_videos_scan_folder_batch_create
+      description: |-
+        POST /api/videos/scan-folder-batch/
+
+        Scan nhiều folders cùng lúc (dành cho BE gọi).
+        BE sẽ gửi list paths, AI Service scan và return metadata.
+
+        Body (JSON):
+        {
+            "folder_paths": ["D:\Videos\Folder1", "D:\Videos\Folder2", ...],
+            "use_cache": true,
+            "recursive": true
+        }
+
+        Returns:
+        {
+            "success": true,
+            "results": [
+                {
+                    "path": "D:\Videos\Folder1",
+                    "video_count": 25,
+                    "videos": [
+                        {"path": "...", "duration": 120.5, "has_audio": true},
+                        ...
+                    ]
+                },
+                ...
+            ],
+            "cache_stats": {"hit_rate": 95.5, ...}
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/smart-mix/:
+    post:
+      operationId: api_videos_smart_mix_create
+      description: |-
+        Smart mix video using pre-processing approach.
+
+        POST Body (multipart or JSON):
+        {
+            "audio": <file>,  // or "audio_path": "path/to/audio.mp3"
+            "num_outputs": 5,
+            "width": 540,
+            "height": 960,
+            "use_gpu": true,  // Optional: force GPU on/off (null = auto)
+            "use_a4_formula": true  // Optional: Use A4 V3 formula (7 simple slots, no split layout)
+        }
+
+        Returns:
+        {
+            "progress_id": "abc123...",
+            "message": "Mix started"
+        }
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/smart-mix/status/{progress_id}/:
+    get:
+      operationId: api_videos_smart_mix_status_retrieve
+      description: Get mix progress status (reads from Redis, survives restart).
+      parameters:
+      - in: path
+        name: progress_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/stream-audio/{audio_id}/:
+    get:
+      operationId: api_videos_stream_audio_retrieve
+      description: Stream uploaded audio file.
+      parameters:
+      - in: path
+        name: audio_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/stream-clip/{clip_id}/:
+    get:
+      operationId: api_videos_stream_clip_retrieve
+      description: Stream a cached clip file.
+      parameters:
+      - in: path
+        name: clip_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/stream/{video_id}/:
+    get:
+      operationId: api_videos_stream_retrieve
+      description: Stream video's clip, generating it seamlessly if not yet cached.
+      parameters:
+      - in: path
+        name: video_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/virtual-mix/:
+    post:
+      operationId: api_videos_virtual_mix_create
+      description: |-
+        Create virtual mix manifests.
+
+        Smart strategy:
+        - Build dynamic slots (3-4s each) using _build_dynamic_formula
+        - Pick videos for each slot
+        - Use cached clips where available (instant stream)
+        - Fall back to stream/video_id for uncached clips
+        - Returns manifest with ALL slots visible
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/virtual-mix/render/:
+    post:
+      operationId: api_videos_virtual_mix_render_create
+      description: Placeholder for full render.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/videos/voices/:
+    get:
+      operationId: api_videos_voices_retrieve
+      description: Get available voices for TTS.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+  /api/xiaohongshu/search/:
+    post:
+      operationId: api_xiaohongshu_search_create
+      description: Search Xiaohongshu notes using Apify service.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - basicAuth: []
+      - {}
+      responses:
+        '200':
+          description: No response body
+components:
+  schemas:
+    CollectionVideo:
+      type: object
+      description: Serializer for videos in a collection.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        video:
+          allOf:
+          - $ref: '#/components/schemas/Video'
+          readOnly: true
+        video_id:
+          type: integer
+          writeOnly: true
+        notes:
+          type: string
+          description: User notes about why this video was added
+        order:
+          type: integer
+          maximum: 2147483647
+          minimum: -2147483648
+          description: Display order within collection
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - video
+      - video_id
+    PaginatedTrackedChannelList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackedChannel'
+    PaginatedVideoCollectionListList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoCollectionList'
+    PatchedTrackedChannel:
+      type: object
+      description: Serializer for tracked channels.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        platform_display:
+          type: string
+          readOnly: true
+        channel_id:
+          type: string
+          description: Platform-specific channel/user ID
+          maxLength: 255
+        username:
+          type: string
+          description: Channel username
+          maxLength: 255
+        display_name:
+          type: string
+          description: Channel display name
+          maxLength: 255
+        is_active:
+          type: boolean
+          description: Whether to actively track this channel
+        check_interval_minutes:
+          type: integer
+          maximum: 2147483647
+          minimum: 5
+          description: How often to check for new content (minutes)
+        min_likes_threshold:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+          description: Only track videos with at least this many likes
+        last_checked_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Last time this channel was checked
+        follower_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: -9223372036854775808
+          format: int64
+          description: Number of followers/subscribers
+        videos_count:
+          type: string
+          readOnly: true
+        total_likes:
+          type: string
+          readOnly: true
+        total_views:
+          type: string
+          readOnly: true
+        engagement:
+          type: string
+          readOnly: true
+        engagement_rate:
+          type: string
+          readOnly: true
+        should_check:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedVideoCollection:
+      type: object
+      description: Serializer for video collections.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          description: Collection name/label
+          maxLength: 255
+        description:
+          type: string
+          description: Collection description
+        color:
+          type: string
+          description: Color for UI display (hex format)
+          maxLength: 7
+        video_count:
+          type: string
+          readOnly: true
+        collection_videos:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionVideo'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PlatformEnum:
+      enum:
+      - tiktok
+      - douyin
+      - instagram
+      - facebook
+      - xiaohongshu
+      type: string
+      description: |-
+        * `tiktok` - TikTok
+        * `douyin` - Douyin
+        * `instagram` - Instagram
+        * `facebook` - Facebook
+        * `xiaohongshu` - Xiaohongshu
+    TrackedChannel:
+      type: object
+      description: Serializer for tracked channels.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        platform_display:
+          type: string
+          readOnly: true
+        channel_id:
+          type: string
+          description: Platform-specific channel/user ID
+          maxLength: 255
+        username:
+          type: string
+          description: Channel username
+          maxLength: 255
+        display_name:
+          type: string
+          description: Channel display name
+          maxLength: 255
+        is_active:
+          type: boolean
+          description: Whether to actively track this channel
+        check_interval_minutes:
+          type: integer
+          maximum: 2147483647
+          minimum: 5
+          description: How often to check for new content (minutes)
+        min_likes_threshold:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+          description: Only track videos with at least this many likes
+        last_checked_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+          description: Last time this channel was checked
+        follower_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: -9223372036854775808
+          format: int64
+          description: Number of followers/subscribers
+        videos_count:
+          type: string
+          readOnly: true
+        total_likes:
+          type: string
+          readOnly: true
+        total_views:
+          type: string
+          readOnly: true
+        engagement:
+          type: string
+          readOnly: true
+        engagement_rate:
+          type: string
+          readOnly: true
+        should_check:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - channel_id
+      - created_at
+      - engagement
+      - engagement_rate
+      - id
+      - last_checked_at
+      - platform
+      - platform_display
+      - should_check
+      - total_likes
+      - total_views
+      - updated_at
+      - username
+      - videos_count
+    Video:
+      type: object
+      description: Serializer for scraped video data.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        platform_display:
+          type: string
+          readOnly: true
+        video_id:
+          type: string
+          description: Platform-specific video ID
+          maxLength: 255
+        title:
+          type: string
+          description: Video title or caption
+        description:
+          type: string
+          description: Video description
+        author_username:
+          type: string
+          description: Content creator username
+          maxLength: 255
+        author_name:
+          type: string
+          description: Content creator display name
+          maxLength: 255
+        likes_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        views_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        comments_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        shares_count:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        engagement_rate:
+          type: string
+          readOnly: true
+        is_video:
+          type: string
+          readOnly: true
+        video_url:
+          type: string
+          format: uri
+          description: Direct video URL
+          maxLength: 1000
+        download_url:
+          type: string
+          format: uri
+          description: Download URL (if available)
+          maxLength: 1000
+        thumbnail_url:
+          type: string
+          format: uri
+          description: Thumbnail image URL
+          maxLength: 1000
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When video was published on platform
+        hashtags:
+          description: List of hashtags
+        music_info:
+          description: Music/audio information
+        raw_data:
+          description: Complete raw data from platform
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - author_username
+      - created_at
+      - engagement_rate
+      - id
+      - is_video
+      - platform
+      - platform_display
+      - updated_at
+      - video_id
+      - video_url
+    VideoCollection:
+      type: object
+      description: Serializer for video collections.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          description: Collection name/label
+          maxLength: 255
+        description:
+          type: string
+          description: Collection description
+        color:
+          type: string
+          description: Color for UI display (hex format)
+          maxLength: 7
+        video_count:
+          type: string
+          readOnly: true
+        collection_videos:
+          type: array
+          items:
+            $ref: '#/components/schemas/CollectionVideo'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - collection_videos
+      - created_at
+      - id
+      - name
+      - updated_at
+      - video_count
+    VideoCollectionList:
+      type: object
+      description: Lightweight serializer for collection list (without videos).
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          description: Collection name/label
+          maxLength: 255
+        description:
+          type: string
+          description: Collection description
+        color:
+          type: string
+          description: Color for UI display (hex format)
+          maxLength: 7
+        video_count:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - name
+      - updated_at
+      - video_count
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid

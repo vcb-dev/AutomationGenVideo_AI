@@ -139,7 +139,9 @@ class FacebookHybridService:
         self,
         url: str,
         max_posts: int = 20,
-        force_method: Optional[str] = None
+        force_method: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get Facebook data using the appropriate API.
@@ -182,7 +184,7 @@ class FacebookHybridService:
             if method == 'graph':
                 return self._fetch_via_graph_api(fb_type, identifier, max_posts)
             else:
-                return self._fetch_via_apify(fb_type, identifier, max_posts)
+                return self._fetch_via_apify(fb_type, identifier, max_posts, start_date, end_date)
                 
         except Exception as e:
             logger.error(f"❌ Failed to fetch Facebook data: {str(e)}", exc_info=True)
@@ -237,7 +239,9 @@ class FacebookHybridService:
         self,
         fb_type: str,
         identifier: str,
-        max_posts: int
+        max_posts: int,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Fetch data using Apify.
@@ -245,7 +249,9 @@ class FacebookHybridService:
         Args:
             fb_type: 'page', 'group', or 'profile'
             identifier: Page/Profile ID or username
-            max_posts: Max posts to fetch
+            max_posts: Max posts *to return* (will fetch more if date filter active)
+            start_date: Oldest date (YYYY-MM-DD)
+            end_date: Most recent date (YYYY-MM-DD)
             
         Returns:
             Standardized data dictionary
@@ -294,15 +300,28 @@ class FacebookHybridService:
         # 2. Fetch posts via Apify Actor (startUrls: array of {url} - format chuẩn Apify)
         actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_posts', 'apify/facebook-posts-scraper')
         
+        # Always fetch more than requested to allow for filtering/duplicates
+        # If max_posts=30, we fetch 50. If max_posts=100, we fetch 130.
+        fetch_limit = max_posts + 20
+        
+        if start_date:
+            fetch_limit = max(max_posts * 3, 100) # Fetch up to 3x more to find enough posts in range
+            fetch_limit = min(fetch_limit, 500)   # Cap at 500 total to avoid massive costs
+
         run_input = {
             "startUrls": [{"url": fb_url}],
-            "resultsLimit": max_posts,
-            "maxComments": 0,          # Bỏ qua quét chi tiết nội dung comment -> Tăng tốc ĐÁNG KỂ
-            "maxReplies": 0,           # Không quét reply
-            "scrapeAbout": False,      # Không quét trang giới thiệu
-            "scrapeComments": False,   # Tắt hẳn tính năng lấy text comments nếu actor hỗ trợ
-            # Nếu actor yêu cầu concurrency: "maxConcurrency": 20
+            "resultsLimit": fetch_limit,
+            "maxPosts": fetch_limit, # Some actors use maxPosts
+            "maxPostCount": fetch_limit, # Some others use maxPostCount
+            "scrapeComments": False,
+            "scrapeAbout": False,
+            "searchMode": "posts",
         }
+        
+        # Smart Stop: Tell scraper to stop at start_date
+        if start_date:
+            run_input["maxPostDate"] = start_date
+            logger.info(f"⏱️ Smart Stop enabled: Scraper will halt at {start_date}")
         
         logger.info(f"🚀 Starting Apify actor: {actor_id} | fb_url={fb_url}")
         run = client.actor(actor_id).call(run_input=run_input)

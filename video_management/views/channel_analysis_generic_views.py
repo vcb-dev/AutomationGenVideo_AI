@@ -44,7 +44,14 @@ def _extract_username_from_url(platform: str, raw: str) -> str:
     s = (raw or '').strip()
     if not s:
         return ''
-    if 'http' not in s and '.' not in s:
+
+    # --- Only treat as URL if it actually looks like one ---
+    # A real URL must start with http(s):// or contain a known social domain
+    SOCIAL_DOMAINS = ('facebook.com', 'fb.com', 'instagram.com', 'tiktok.com', 'douyin.com', 'xiaohongshu.com')
+    is_url = s.startswith('http') or any(d in s for d in SOCIAL_DOMAINS)
+
+    if not is_url:
+        # Plain username (may contain dots like nambling.jv or huyk.takumi) — return as-is
         return s.replace('@', '').strip()
 
     try:
@@ -120,18 +127,46 @@ def channel_metrics_generic(request):
     if not platform or not username:
         return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not force_refresh and not start_dt and not end_dt:
+    if not force_refresh:
         try:
             cached = ChannelAnalysis.objects.get(platform=platform, username=username)
             if cached.metrics:
-                return Response({'success': True, 'metrics': cached.metrics}, status=status.HTTP_200_OK)
+                meta = cached.metrics.get('meta', {})
+                cached_start = meta.get('start_date') or ''
+                cached_end = meta.get('end_date') or ''
+                # Always return cached data if force_refresh is false (when user clicks "Xem")
+                # Even if dates don't match perfectly, they want to view the old data.
+                logger.info(f"Returning Db CACHED metrics for {platform}:{username} (Stored dates: {cached_start} - {cached_end}, Requested: {start_date_str} - {end_date_str})")
+                return Response({
+                    'success': True,
+                    'metrics': cached.metrics,
+                    'scanned_count': meta.get('scanned_count', meta.get('posts_analyzed', 0))
+                }, status=status.HTTP_200_OK)
         except ChannelAnalysis.DoesNotExist:
             pass
 
     try:
         scraper = create_scraper(platform)
-        raw_results = scraper.get_user_videos(username, max_results=max_posts)
-        normalized = [scraper.normalize_video_data(v) for v in (raw_results or [])]
+        # Pass until_date=None: let Apify fetch max_posts*3 raw items, Python date-filter below does the slicing.
+        # Passing start_date_str as until_date incorrectly uses it as an API cutoff for platforms that support it.
+        raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
+
+        # Detect Apify-level errors (items with only error keys)
+        apify_error_items = [r for r in raw_results if set(r.keys()) <= {'error', 'errorDescription', 'requestedUrl'}]
+        raw_results = [r for r in raw_results if r not in apify_error_items]
+
+        if not raw_results and apify_error_items:
+            # Extract the most descriptive error message from Apify
+            logger.warning(f"Apify error item for {platform}/{username}: {apify_error_items[0]}")
+            apify_msg = (apify_error_items[0].get('errorDescription') or apify_error_items[0].get('error') or '').strip()
+            friendly = f'Không thể lấy bài đăng từ @{username} trên {platform.upper()}.'
+            if apify_msg:
+                friendly += f' Lý do: {apify_msg}'
+            else:
+                friendly += ' Tài khoản có thể bị ẩn, đặt chế độ riêng tư, hoặc username không tồn tại.'
+            return Response({'success': False, 'error': friendly}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        normalized = [scraper.normalize_video_data(v) for v in raw_results]
         normalized = [p for p in normalized if p]
 
         # Filter by date range
@@ -153,9 +188,20 @@ def channel_metrics_generic(request):
                 if end_dt and pdt > end_dt:
                     continue
                 filtered.append(p)
-            normalized = filtered
+            normalized = filtered[:max_posts]
+        else:
+            normalized = normalized[:max_posts]
 
         scanned_count = len(normalized)
+
+        if scanned_count == 0:
+            date_hint = ''
+            if start_date_str or end_date_str:
+                date_hint = f' trong khoảng {start_date_str or ""} — {end_date_str or ""}'
+            return Response(
+                {'success': False, 'error': f'Không có bài đăng nào{date_hint} cho @{username}. Thử thu hẹp bộ lọc ngày hoặc tăng số lượng bài.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         enriched = []
         for p in normalized:
@@ -245,12 +291,15 @@ def channel_metrics_generic(request):
             'meta': {'posts_analyzed': len(enriched), 'scanned_count': scanned_count, 'ad_posts_found': 0},
         }
 
-        # Only cache if no date filter (cache is for full channel)
-        if not start_dt and not end_dt:
-            obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
-            obj.metrics = metrics_data
-            obj.max_posts = max_posts
-            obj.save(update_fields=['metrics', 'max_posts', 'updated_at'])
+        metrics_data['meta']['start_date'] = start_date_str
+        metrics_data['meta']['end_date'] = end_date_str
+        metrics_data['meta']['scanned_count'] = scanned_count
+
+        # Always cache the latest result for this platform+username
+        obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
+        obj.metrics = metrics_data
+        obj.max_posts = max_posts
+        obj.save(update_fields=['metrics', 'max_posts', 'updated_at'])
 
         return Response(
             {
@@ -296,18 +345,42 @@ def channel_insights_generic(request):
     if not platform or not username:
         return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not force_refresh and not start_dt and not end_dt:
+    if not force_refresh:
         try:
             cached = ChannelAnalysis.objects.get(platform=platform, username=username)
             if cached.insights:
-                return Response({'success': True, 'insights': cached.insights}, status=status.HTTP_200_OK)
+                meta = cached.insights.get('meta', {})
+                cached_start = meta.get('start_date') or ''
+                cached_end = meta.get('end_date') or ''
+                # Always return cached data if force_refresh is false
+                logger.info(f"Returning Db CACHED insights for {platform}:{username} (Stored dates: {cached_start} - {cached_end}, Requested: {start_date_str} - {end_date_str})")
+                return Response({
+                    'success': True,
+                    'insights': cached.insights,
+                    'scanned_count': meta.get('scanned_count', 0)
+                }, status=status.HTTP_200_OK)
         except ChannelAnalysis.DoesNotExist:
             pass
 
     try:
         scraper = create_scraper(platform)
-        raw_results = scraper.get_user_videos(username, max_results=max_posts)
-        normalized = [scraper.normalize_video_data(v) for v in (raw_results or [])]
+        # Pass until_date=None: let Apify fetch max_posts*3 raw items, Python date-filter below does the slicing.
+        raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
+
+        # Detect Apify-level errors (items with only error keys)
+        apify_error_items = [r for r in raw_results if set(r.keys()) <= {'error', 'errorDescription', 'requestedUrl'}]
+        raw_results = [r for r in raw_results if r not in apify_error_items]
+
+        if not raw_results and apify_error_items:
+            apify_msg = (apify_error_items[0].get('errorDescription') or apify_error_items[0].get('error') or '').strip()
+            friendly = f'Không thể lấy bài đăng từ @{username} trên {platform.upper()}.'
+            if apify_msg:
+                friendly += f' Lý do: {apify_msg}'
+            else:
+                friendly += ' Tài khoản có thể bị ẩn, đặt chế độ riêng tư, hoặc username không tồn tại.'
+            return Response({'success': False, 'error': friendly}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        normalized = [scraper.normalize_video_data(v) for v in raw_results]
         normalized = [p for p in normalized if p]
 
         # Filter by date range
@@ -329,9 +402,20 @@ def channel_insights_generic(request):
                 if end_dt and pdt > end_dt:
                     continue
                 filtered.append(p)
-            normalized = filtered
+            normalized = filtered[:max_posts]
+        else:
+            normalized = normalized[:max_posts]
 
         scanned_count = len(normalized)
+
+        if scanned_count == 0:
+            date_hint = ''
+            if start_date_str or end_date_str:
+                date_hint = f' trong khoảng {start_date_str or ""} — {end_date_str or ""}'
+            return Response(
+                {'success': False, 'error': f'Không có bài đăng nào{date_hint} cho @{username}. Thử thu hẹp bộ lọc ngày hoặc tăng số lượng bài.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         compact_posts = []
         for p in normalized[:30]:
@@ -418,6 +502,8 @@ YÊU CẦU ĐẦU RA:
 - Viết bằng tiếng {language}.
 - CHỈ trả về JSON hợp lệ (không markdown). Đúng keys:
 {json.dumps({k: "string" for k in section_keys}, ensure_ascii=False)}
+- Mỗi mục viết 3-5 gạch đầu dòng chi tiết (bắt đầu bằng dấu "- "). Mạch lạc, TRỌN VẸN CÂU, TUYỆT ĐỐI KHÔNG BỊ CẮT CHỮ GIỮA CHỪNG.
+- CỤ THỂ HOÁ: Bắt buộc lấy ví dụ và dẫn chứng từ dữ liệu JSON cung cấp.
 - Nếu thiếu dữ liệu thật sự: ghi "Chưa đủ dữ liệu để đánh giá".
 - Không bịa số.
 
@@ -433,6 +519,7 @@ DỮ LIỆU KÊnh (JSON):
                     temperature=temp,
                     top_p=0.9,
                     top_k=40,
+                    max_output_tokens=8192,
                     response_mime_type="application/json",
                     response_json_schema=insights_schema,
                 ),
@@ -462,12 +549,16 @@ DỮ LIỆU KÊnh (JSON):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        # Only cache if no date filter
-        if not start_dt and not end_dt:
-            obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
-            obj.insights = insights
-            obj.max_posts = max_posts
-            obj.save(update_fields=['insights', 'max_posts', 'updated_at'])
+        # Always cache the latest result for this platform+username
+        obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
+        insights['meta'] = {
+            'start_date': start_date_str,
+            'end_date': end_date_str,
+            'scanned_count': scanned_count
+        }
+        obj.insights = insights
+        obj.max_posts = max_posts
+        obj.save(update_fields=['insights', 'max_posts', 'updated_at'])
 
         return Response({'success': True, 'insights': insights, 'insights_text': text, 'scanned_count': scanned_count}, status=status.HTTP_200_OK)
 

@@ -5,6 +5,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 
 class APIRootView(APIView):
@@ -83,7 +84,8 @@ class APIRootView(APIView):
                     'description': 'Get system statistics and analytics'
                 }
             },
-            'documentation': 'See README.md for detailed API documentation',
+            'documentation': '/api/docs/',
+            'openapi_schema': '/api/schema/',
             'admin_panel': '/admin/'
         })
 
@@ -91,6 +93,8 @@ class APIRootView(APIView):
 urlpatterns = [
     path('', APIRootView.as_view(), name='api-root'),
     path('admin/', admin.site.urls),
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     # Trigger Reload Again for TikTok
     path('api/', include('video_management.urls')),
 ]

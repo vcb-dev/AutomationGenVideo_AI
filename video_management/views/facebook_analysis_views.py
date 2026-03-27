@@ -211,6 +211,10 @@ def analyze_facebook_competitor(request):
             try:
                 cached = ChannelAnalysis.objects.get(platform='facebook', username=username)
                 if cached.insights:
+                    meta = cached.insights.get('meta', {})
+                    cached_start = meta.get('start_date') or ''
+                    cached_end = meta.get('end_date') or ''
+                    logger.info(f"Returning Db CACHED insights for facebook:{username} (Stored: {cached_start} - {cached_end}, Req: {start_date_str} - {end_date_str})")
                     return Response({
                         'success': True,
                         'data': {},
@@ -221,10 +225,28 @@ def analyze_facebook_competitor(request):
                 pass
 
         service = get_facebook_hybrid_service()
-        raw = service.get_facebook_data(url=url, max_posts=max_posts, force_method=method)
+        raw = service.get_facebook_data(
+            url=url, 
+            max_posts=max_posts, 
+            force_method=method,
+            start_date=start_date_str,
+            end_date=end_date_str
+        )
 
-        # Filter posts by date range if provided
-        all_posts = raw.get('posts') or []
+        # 1. Deduplicate by URL or Text (sometimes scraper returns duplicates)
+        seen_urls = set()
+        unique_posts = []
+        for p in (raw.get('posts') or []):
+            p_url = p.get('url') or p.get('postUrl') or p.get('link') or ''
+            p_text = (p.get('text') or p.get('message') or '')[:200]
+            # Key is url if available, otherwise truncated text
+            p_key = p_url if p_url else p_text
+            if not p_key or p_key in seen_urls:
+                continue
+            seen_urls.add(p_key)
+            unique_posts.append(p)
+
+        # 2. Filter posts by date range if provided
         if start_dt or end_dt:
             def _get_post_dt(p):
                 ts = p.get('timestamp')
@@ -233,23 +255,28 @@ def analyze_facebook_competitor(request):
                 t = p.get('time') or p.get('created_time') or ''
                 if isinstance(t, str) and t:
                     try:
-                        return datetime.fromisoformat(t.replace('Z', '+00:00').replace('+00:00', ''))
-                    except Exception:
+                        # Improved iso parser for +/-XXXX formats
+                        import dateutil.parser
+                        return dateutil.parser.parse(t)
+                    except:
                         pass
                 return None
+
             filtered = []
-            for p in all_posts:
+            for p in unique_posts:
                 pdt = _get_post_dt(p)
                 if pdt is None:
+                    # If no date range specified, we keep it. 
+                    # If date range is specified, we must drop it because we can't verify.
                     continue
                 if start_dt and pdt < start_dt:
                     continue
                 if end_dt and pdt > end_dt:
                     continue
                 filtered.append(p)
-            posts = filtered
+            posts = filtered[:max_posts]
         else:
-            posts = all_posts
+            posts = unique_posts[:max_posts]
 
         scanned_count = len(posts)
 
@@ -364,9 +391,10 @@ YÊU CẦU ĐẦU RA:
   "Điểm yếu & Cơ hội": "Điểm yếu + gợi ý cải thiện cụ thể",
   "Đề xuất hành động": "Checklist hành động 7-14 ngày tới (cụ thể: nội dung, lịch đăng, CTA, quảng cáo, tối ưu)"
 }}
-- Mỗi giá trị: 3-6 gạch đầu dòng, CỤ THỂ, có ví dụ/số liệu khi có.
+- Mỗi giá trị: 3-6 gạch đầu dòng, CỤ THỂ, có ví dụ/số liệu khi có (Bắt đầu mỗi dòng bằng dấu "- ").
 - Nếu thiếu dữ liệu thực sự để đánh giá một mục: ghi "Chưa đủ dữ liệu để đánh giá".
-- TUYỆT ĐỐI KHÔNG bịa số, không viết chung chung. Mọi nhận định phải bắt nguồn từ JSON bên dưới.
+- KHÔNG CẮT CHỮ: Viết trọn vẹn từng câu, tuyệt đối không được viết nửa chừng hoặc bỏ lửng câu.
+- TUYỆT ĐỐI KHÔNG bịa số. Mọi nhận định phải bắt nguồn từ JSON.
 
 DỮ LIỆU KÊNH (JSON):
 {json.dumps(context, ensure_ascii=False)}
@@ -380,6 +408,7 @@ DỮ LIỆU KÊNH (JSON):
                     temperature=temp,
                     top_p=0.9,
                     top_k=40,
+                    max_output_tokens=8192,
                     response_mime_type="application/json",
                     response_json_schema=insights_schema,
                 ),
@@ -419,6 +448,11 @@ DỮ LIỆU KÊNH (JSON):
 
         if username:
             obj, _ = ChannelAnalysis.objects.get_or_create(platform='facebook', username=username)
+            insights['meta'] = {
+                'start_date': start_date_str,
+                'end_date': end_date_str,
+                'scanned_count': sum(1 for p in (raw.get('posts') or []) if p)
+            }
             obj.insights = insights
             obj.max_posts = max_posts
             obj.save(update_fields=['insights', 'max_posts', 'updated_at'])
@@ -524,6 +558,10 @@ def facebook_channel_metrics(request):
             try:
                 cached = ChannelAnalysis.objects.get(platform='facebook', username=username)
                 if cached.metrics:
+                    meta = cached.metrics.get('meta', {})
+                    cached_start = meta.get('start_date') or ''
+                    cached_end = meta.get('end_date') or ''
+                    logger.info(f"Returning Db CACHED metrics for facebook:{username} (Stored: {cached_start} - {cached_end}, Req: {start_date_str} - {end_date_str})")
                     return Response({
                         'success': True,
                         'data': {},
@@ -533,10 +571,28 @@ def facebook_channel_metrics(request):
                 pass
 
         service = get_facebook_hybrid_service()
-        raw = service.get_facebook_data(url=url, max_posts=max_posts, force_method=method)
+        raw = service.get_facebook_data(
+            url=url, 
+            max_posts=max_posts, 
+            force_method=method,
+            start_date=start_date_str,
+            end_date=end_date_str
+        )
         all_posts = raw.get('posts') or []
 
-        # Filter posts by date range if provided
+        # 1. Deduplicate
+        seen_urls = set()
+        unique_posts = []
+        for p in (raw.get('posts') or []):
+            p_url = p.get('url') or p.get('postUrl') or p.get('link') or ''
+            p_text = (p.get('text') or p.get('message') or '')[:200]
+            p_key = p_url if p_url else p_text
+            if not p_key or p_key in seen_urls:
+                continue
+            seen_urls.add(p_key)
+            unique_posts.append(p)
+
+        # 2. Filter posts by date range
         if start_dt or end_dt:
             def _get_post_dt_m(p):
                 ts = p.get('timestamp')
@@ -545,12 +601,13 @@ def facebook_channel_metrics(request):
                 t = p.get('time') or p.get('created_time') or ''
                 if isinstance(t, str) and t:
                     try:
-                        return datetime.fromisoformat(t.replace('Z', '+00:00').replace('+00:00', ''))
-                    except Exception:
+                        import dateutil.parser
+                        return dateutil.parser.parse(t)
+                    except:
                         pass
                 return None
             filtered = []
-            for p in all_posts:
+            for p in unique_posts:
                 pdt = _get_post_dt_m(p)
                 if pdt is None:
                     continue
@@ -559,9 +616,9 @@ def facebook_channel_metrics(request):
                 if end_dt and pdt > end_dt:
                     continue
                 filtered.append(p)
-            posts = filtered
+            posts = filtered[:max_posts]
         else:
-            posts = all_posts
+            posts = unique_posts[:max_posts]
 
         scanned_count = len(posts)
 
@@ -755,6 +812,8 @@ def facebook_channel_metrics(request):
         }
 
         if username:
+            metrics_data['meta']['start_date'] = start_date_str
+            metrics_data['meta']['end_date'] = end_date_str
             obj, _ = ChannelAnalysis.objects.get_or_create(platform='facebook', username=username)
             obj.metrics = metrics_data
             obj.max_posts = max_posts

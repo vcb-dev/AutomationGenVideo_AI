@@ -601,8 +601,12 @@ class UserVideosView(APIView):
         max_results = data.get('max_results')
         start_date = data.get('start_date') or data.get('until_date')  # Backward compatibility
         end_date = data.get('end_date')
+        # URL đầy đủ từ link_channel trong bảng Channel (VD: profile.php?id=...)
+        channel_url = request.data.get('channel_url', '').strip() or None
         
         logger.info(f"Processing request for {username} on {platform_str} (start={start_date}, end={end_date})")
+        if channel_url:
+            logger.info(f"🔗 channel_url provided: {channel_url}")
 
         try:
             # --- FACEBOOK: Try Graph API first, fallback to Apify (HYBRID) ---
@@ -825,7 +829,7 @@ class UserVideosView(APIView):
                 
                 def _fetch_posts_concurrent():
                     logger.info(f"📝 [Concurrent] Fetching posts for @{username}... (limit: {smart_limit})")
-                    return scraper.get_user_videos(username, max_results=smart_limit, until_date=start_date)
+                    return scraper.get_user_videos(channel_url or username, max_results=smart_limit, until_date=start_date)
                 
                 def _fetch_page_info_concurrent():
                     """Try DB cache first (instant), then Apify if cache miss."""
@@ -872,38 +876,42 @@ class UserVideosView(APIView):
                         error_msg = str(fetch_error)
                         logger.error(f"❌ External fetch failed: {error_msg}")
                         
-                        # Check if it's Apify limit error → fallback to DB cache
-                        if "Monthly usage hard limit exceeded" in error_msg or "limit exceeded" in error_msg.lower():
-                            logger.warning(f"⚠️ Apify limit exceeded. Falling back to DB cache...")
-                            if db_videos:
-                                logger.info(f"💾 Returning {len(db_videos)} cached videos (Apify limit fallback)")
-                                normalized = []
-                                for vid in db_videos:
-                                    normalized.append({
-                                        'video_id': vid.video_id, 'title': vid.title,
-                                        'description': vid.description, 'video_url': vid.video_url,
-                                        'thumbnail_url': vid.thumbnail_url, 'likes_count': vid.likes_count,
-                                        'comments_count': vid.comments_count, 'shares_count': vid.shares_count,
-                                        'views_count': vid.views_count, 'published_at': vid.published_at,
-                                        'timestamp': int(vid.published_at.timestamp()) if vid.published_at else 0,
-                                        'author_name': vid.author_name, 'author_username': vid.author_username,
-                                        'platform': platform_str.lower(), 'raw_data': vid.raw_data
-                                    })
-                                first_vid = db_videos[0]
-                                age_hours = round((timezone.now() - first_vid.created_at).total_seconds() / 3600, 1) if first_vid.created_at else 0
-                                return Response({
-                                    'results': normalized,
-                                    'profile': {'username': username, 'display_name': first_vid.author_name or username,
-                                                'avatar_url': first_vid.thumbnail_url, 'followers': 0, 'likes': 0},
-                                    'total': len(normalized),
-                                    'source': 'database_cache_fallback',
-                                    'warning': 'Apify monthly limit exceeded. Showing cached data.',
-                                    'cache_age_hours': age_hours
+                        # Fallback to DB cache on ANY external fetch error (Timeout, Limit, Blocked, etc.)
+                        if db_videos:
+                            logger.info(f"⚠️ External fetch failed. Falling back to DB cache ({len(db_videos)} videos)...")
+                            normalized = []
+                            for vid in db_videos:
+                                normalized.append({
+                                    'video_id': vid.video_id, 'title': vid.title,
+                                    'description': vid.description, 'video_url': vid.video_url,
+                                    'thumbnail_url': vid.thumbnail_url, 'likes_count': vid.likes_count,
+                                    'comments_count': vid.comments_count, 'shares_count': vid.shares_count,
+                                    'views_count': vid.views_count, 'published_at': vid.published_at,
+                                    'timestamp': int(vid.published_at.timestamp()) if vid.published_at else 0,
+                                    'author_name': vid.author_name, 'author_username': vid.author_username,
+                                    'platform': platform_str.lower(), 'raw_data': vid.raw_data
                                 })
-                            else:
-                                raise ScraperException("Apify limit exceeded and no cached data available.")
+                            first_vid = db_videos[0]
+                            age_hours = round((timezone.now() - first_vid.created_at).total_seconds() / 3600, 1) if first_vid.created_at else 0
+                            return Response({
+                                'results': normalized,
+                                'profile': {'username': username, 'display_name': first_vid.author_name or username,
+                                            'avatar_url': first_vid.thumbnail_url, 'followers': 0, 'likes': 0},
+                                'total': len(normalized),
+                                'source': 'database_cache_fallback',
+                                'warning': f'External fetch failed: {error_msg}. Showing cached data.',
+                                'cache_age_hours': age_hours
+                            })
                         else:
-                            raise  # Other errors: re-raise
+                            logger.warning(f"⚠️ External fetch failed and no cache available. Returning empty response.")
+                            return Response({
+                                'results': [],
+                                'profile': {'username': username, 'display_name': username,
+                                            'avatar_url': '', 'followers': 0, 'likes': 0},
+                                'total': 0,
+                                'source': 'empty_fallback',
+                                'warning': f'External fetch failed: {error_msg}.'
+                            })
                     
                     # Collect page info result (best-effort, don't block on it too long)
                     page_timeout = 55 if is_quick_scan else 90
@@ -931,6 +939,11 @@ class UserVideosView(APIView):
                     for v in raw_results:
                         norm = scraper.normalize_video_data(v)
                         if norm:
+                            # Quan trọng: Khi dùng channel_url (profile.php?id=...) để fetch,
+                            # author_username trong kết quả có thể là URL hoặc path,
+                            # ghi đè về username gốc (numeric ID) để DB lookup khớp.
+                            if channel_url and norm.get('author_username', '') != username:
+                                norm['author_username'] = username
                             normalized.append(norm)
                 
                 # Filter by date range if end_date is provided
@@ -1564,19 +1577,38 @@ class UserVideosView(APIView):
                     ordered_videos = normalized
                 else:
                     # Other platforms: Save to DB
+                    # BLOCK DETECTION: If Apify returns very few results compared to existing DB cache,
+                    # it likely got blocked. In this case, save the new posts (merge)
+                    # but return the FULL DB cache to avoid showing degraded data.
+                    is_likely_blocked = False
+                    if db_videos and len(normalized) < max(3, len(db_videos) * 0.3):
+                        is_likely_blocked = True
+                        logger.warning(
+                            f"⚠️ BLOCK DETECTED: Apify returned only {len(normalized)} posts "
+                            f"but DB has {len(db_videos)}. Saving new posts but returning full DB cache."
+                        )
+                    
                     saved_ok = False
                     try:
+                        # Always save what we got (merge new posts into DB)
                         saved_videos = scraper.save_videos(normalized)
+                        saved_ok = True
                         
-                        # Map back to preserve order
-                        video_id_to_video = {v.video_id: v for v in saved_videos}
-                        
-                        for norm in normalized:
-                            vid = norm.get('video_id')
-                            if vid in video_id_to_video:
-                                ordered_videos.append(video_id_to_video[vid])
-                        
-                        saved_ok = len(ordered_videos) > 0
+                        if is_likely_blocked:
+                            # Return full DB cache (re-query to get merged data)
+                            full_db_videos = list(ScrapedVideo.objects.filter(
+                                platform=Platform[platform_str.upper()],
+                                author_username=username
+                            ).order_by('-published_at')[:max_results])
+                            ordered_videos = full_db_videos
+                            logger.info(f"🔄 Block recovery: returning {len(ordered_videos)} videos from DB cache")
+                        else:
+                            # Normal path: map back to preserve order
+                            video_id_to_video = {v.video_id: v for v in saved_videos}
+                            for norm in normalized:
+                                vid = norm.get('video_id')
+                                if vid in video_id_to_video:
+                                    ordered_videos.append(video_id_to_video[vid])
                     
                     except Exception as e:
                         logger.error(f"Error saving videos: {e}")

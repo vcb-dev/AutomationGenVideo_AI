@@ -270,51 +270,42 @@ class ApifyScraperService(BaseScraperService):
         """Build input for Facebook Apify actor."""
         input_data = {}
         if username:
-            # Crawl a specific page/user
             # Clean username using robust normalizer
             clean_user = normalize_username(username)
-            
-            # SMART LIMIT: Based strictly on frontend calculation (8 * N days)
-            effective_limit = max_results 
-            
+
+            # Buffer logic: If date range is active, fetch 3x more to find enough posts within the range
+            limit_to_use = max_results
             if until_date:
-                from datetime import datetime
-                try:
-                    start_date = datetime.strptime(until_date, '%Y-%m-%d')
-                    days_back = (datetime.now() - start_date).days
-                    
-                    if days_back > 0:
-                         # Just log it, we trust the effective_limit from frontend calculation
-                         self.logger.info(f"📊 Date range: {days_back} days → Target {effective_limit} posts (Strict Limit)")
-                except:
-                    pass
+                limit_to_use = max(max_results * 3, 100)
+                limit_to_use = min(limit_to_use, 500)
+
+            # Dùng proxy VN cho tất cả kênh Facebook
+            proxy_config = {
+                "useApifyProxy": True,
+                "apifyProxyGroups": ["RESIDENTIAL"],
+                "apifyProxyCountry": "VN",
+            }
+            self.logger.info(f"🌎 Using VN Residential Proxy for '{clean_user}'")
+
+            # Nếu username/channel_url là URL đầy đủ (VD: profile.php?id=...), dùng trực tiếp
+            # Trường hợp này xảy ra khi channel_url được truyền từ NestJS (lấy từ Channel.link_channel)
+            if username.strip().lower().startswith('http'):
+                page_url = username.strip()
             else:
-                 effective_limit = max_results
-            
-            # If we have a date filter, trust the Frontend calculation.
-            # Strategy: Use strict limit provided by FS (No buffer needed per user request)
-            if until_date:
-                # effective_limit came from frontend (e.g. 24 for 3 days)
-                limit_to_use = min(effective_limit, 300) 
-            else:
-                limit_to_use = effective_limit
+                page_url = f"https://www.facebook.com/{clean_user}"
+            self.logger.info(f"🔗 Facebook startUrl: {page_url}")
 
             input_data = {
-                "startUrls": [{"url": f"https://www.facebook.com/{clean_user}"}],
+                "startUrls": [{"url": page_url}],
                 "resultsLimit": limit_to_use,
                 "maxPostCount": limit_to_use,
-                # Optimize: Focus ONLY on Timeline/Posts
-                "maxRequestRetries": 3,
+                "maxRequestRetries": 5,
                 "maxComments": 0,
                 "scrapeAbout": False,
                 "scrapeReviews": False,
                 "scrapePhotos": False,
                 "scrapeVideos": False,
-                # Proxy optimization: Ensure Apify Proxy is used effectively
-                "proxyConfiguration": {
-                    "useApifyProxy": True,
-                    "apifyProxyGroups": ["RESIDENTIAL"] # Prefer residential to avoid detection
-                },
+                "proxyConfiguration": proxy_config,
             } 
 
         else:
@@ -355,7 +346,11 @@ class ApifyScraperService(BaseScraperService):
         if self.platform == Platform.TIKTOK:
             if username:
                 clean_user = normalize_username(username)
-                limit = min(max_results, self.max_results_limit)
+                limit = max_results
+                if until_date:
+                    limit = max(max_results * 3, 100)
+                    limit = min(limit, 500)
+
                 if "clockworks/free-tiktok-scraper" in (self.actor_id or ""):
                     return {"profiles": [clean_user], "resultsPerPage": limit}
                 # apidojo (tiktok-scraper, tiktok-scraper-api)
@@ -366,11 +361,18 @@ class ApifyScraperService(BaseScraperService):
         
         elif self.platform == Platform.INSTAGRAM:
             if username:
-                # For Instagram profiles, use both resultsLimit and postsLimit
+                limit = max_results
+                if until_date:
+                    limit = max(max_results * 3, 100)
+                    limit = min(limit, 500)
+                # For Instagram profiles: use directUrls (full URL) instead of usernames.
+                # The 'usernames' field causes 0 requests for accounts with dots (e.g. nambling.jp).
+                # 'directUrls' is the reliable approach used by InstagramApifyService.
+                profile_url = f"https://www.instagram.com/{username}/"
                 return {
-                    "usernames": [username],
-                    "resultsLimit": min(max_results, self.max_results_limit),
-                    "postsLimit": min(max_results, self.max_results_limit),  # Alternative field
+                    "directUrls": [profile_url],
+                    "resultsType": "posts",
+                    "resultsLimit": limit,
                 }
             return self._build_instagram_input(keyword, max_results)
         
@@ -1106,35 +1108,82 @@ class ApifyScraperService(BaseScraperService):
             return {}
 
         try:
-             # fast checking using lightweight scrape if possible
-             actors = getattr(settings, 'APIFY_ACTORS', {})
-             page_actor_id = actors.get('facebook_page', 'apify/facebook-pages-scraper')
-             
-             self.logger.info(f"Fetching Page Info for {username} using {page_actor_id}")
-             
-             # Clean user using robust normalizer
-             clean_user = normalize_username(username)
+            # --- GRAPH API HOOK FOR PRIVATE/OWNED PAGES ---
+            if self.platform == Platform.FACEBOOK:
+                from django.conf import settings
+                token = getattr(settings, 'FACEBOOK_ACCESS_TOKEN', '')
+                if token and ('61580182263005' in username or 'profile.php' in username):
+                    self.logger.info("🔥 [GRAPH API] Bypassing Apify, fetching page info via Page Access Token!")
+                    try:
+                        import requests
+                        url = "https://graph.facebook.com/v20.0/me"
+                        params = {"fields": "id,name,fan_count,followers_count,picture.type(large)", "access_token": token}
+                        r = requests.get(url, params=params, timeout=10)
+                        if r.status_code == 200:
+                            data = r.json()
+                            avatar_url = data.get("picture", {}).get("data", {}).get("url", "")
+                            return {
+                                "title": data.get("name"),
+                                "url": f"https://www.facebook.com/profile.php?id={data.get('id', '61580182263005')}",
+                                "followers": data.get("followers_count") or data.get("fan_count", 0),
+                                "likes": data.get("fan_count", 0),
+                                "avatar_url": avatar_url,
+                                "profilePic": avatar_url,  # For compatibility check
+                            }
+                    except Exception as ge:
+                        self.logger.warning(f"Graph API page info failed: {ge}")
+            # --- END HOOK ---
 
-             run_input = {
+            # fast checking using lightweight scrape if possible
+            actors = getattr(settings, 'APIFY_ACTORS', {})
+            page_actor_id = actors.get('facebook_page', 'apify/facebook-pages-scraper')
+             
+            self.logger.info(f"Fetching Page Info for {username} using {page_actor_id}")
+             
+            # Clean user using robust normalizer
+            clean_user = normalize_username(username)
+
+            # VANITY URL LOOKUP for numeric IDs (same pattern as _build_facebook_input)
+            if clean_user.isdigit():
+                try:
+                    from django.db import connection
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT link_channel FROM huyk_channels WHERE channel_id = %s AND link_channel IS NOT NULL AND link_channel != '' LIMIT 1",
+                            [clean_user]
+                        )
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            import re
+                            vanity_match = re.search(r'facebook\.com/([^/?&#]+)', row[0].strip())
+                            if vanity_match:
+                                vanity = vanity_match.group(1)
+                                if vanity and not vanity.isdigit() and 'profile.php' not in vanity:
+                                    self.logger.info(f"🔗 page_info: using vanity '{vanity}' for '{clean_user}'")
+                                    clean_user = vanity
+                except Exception as ve:
+                    self.logger.warning(f"⚠️ Vanity lookup (page_info) failed: {ve}")
+
+            run_input = {
                 "startUrls": [{"url": f"https://www.facebook.com/{clean_user}"}],
                 "maxItems": 1
-             }
+            }
              
-             # Use the client to call specifically this actor, ignoring self.actor_id which is for posts
-             run = self.client.actor(page_actor_id).call(
+            # Use the client to call specifically this actor, ignoring self.actor_id which is for posts
+            run = self.client.actor(page_actor_id).call(
                 run_input=run_input,
                 timeout_secs=60, # Short timeout for metadata
                 memory_mbytes=1024
-             )
+            )
              
-             if run['status'] == 'SUCCEEDED':
-                 dataset_id = run.get('defaultDatasetId')
-                 if dataset_id:
-                     items = list(self.client.dataset(dataset_id).iterate_items())
-                     if items:
-                         return items[0]
+            if run['status'] == 'SUCCEEDED':
+                dataset_id = run.get('defaultDatasetId')
+                if dataset_id:
+                    items = list(self.client.dataset(dataset_id).iterate_items())
+                    if items:
+                        return items[0]
              
-             return {}
+            return {}
 
         except Exception as e:
             self.logger.warning(f"Failed to fetch page info: {e}")
@@ -1157,6 +1206,202 @@ class ApifyScraperService(BaseScraperService):
             List of raw video data
         """
         try:
+            # --- GRAPH API HOOK: dùng khi có FACEBOOK_ACCESS_TOKEN ---
+            # Tự động kích hoạt cho bất kỳ page nào có token hợp lệ
+            if self.platform == Platform.FACEBOOK:
+                from django.conf import settings
+                import requests as _req
+                token = getattr(settings, 'FACEBOOK_ACCESS_TOKEN', '')
+                if token:
+                    self.logger.info("🔥 [GRAPH API] Fetching via Page Access Token!")
+                    graph_base = "https://graph.facebook.com/v20.0"
+                    headers = {}
+
+                    # ── STEP 1: xác định page_id từ /me ──────────────────────────
+                    try:
+                        me_r = _req.get(f"{graph_base}/me",
+                                        params={"fields": "id,name", "access_token": token},
+                                        timeout=15)
+                        me_data = me_r.json()
+                        page_id = me_data.get("id", "")
+                        page_name = me_data.get("name", "")
+                        self.logger.info(f"Graph API page: {page_name} (id={page_id})")
+                    except Exception as e:
+                        self.logger.warning(f"Graph API /me failed: {e}")
+                        page_id = ""
+
+                    # ── STEP 2: lấy TẤT CẢ videos (có views field) ───────────────
+                    video_views_map = {}  # {video_id: views_count}
+                    video_posts_map = {}  # {video_id: full video dict}
+                    if page_id:
+                        try:
+                            vid_params = {
+                                "fields": "id,title,description,created_time,permalink_url,picture,likes.summary(true),comments.summary(true),views",
+                                "limit": min(max_results, 100),
+                                "access_token": token
+                            }
+                            vid_r = _req.get(f"{graph_base}/{page_id}/videos",
+                                             params=vid_params, timeout=20)
+                            if vid_r.status_code == 200:
+                                vid_data = vid_r.json()
+                                for v in vid_data.get("data", []):
+                                    vid_id = v.get("id", "")
+                                    views = v.get("views", 0) or 0
+                                    if vid_id:
+                                        video_views_map[vid_id] = views
+                                        video_posts_map[vid_id] = v
+                                self.logger.info(
+                                    f"✅ Fetched {len(video_views_map)} videos via /videos, "
+                                    f"total views sample: {list(video_views_map.values())[:5]}"
+                                )
+                            else:
+                                self.logger.warning(f"Graph /videos failed: {vid_r.status_code} {vid_r.text[:200]}")
+                        except Exception as e:
+                            self.logger.warning(f"Graph API /videos failed: {e}")
+
+                    # ── STEP 3: lấy bài đăng (posts) với engagement ──────────────
+                    posts_url = f"{graph_base}/me/posts"
+                    params_full = {
+                        "fields": "id,message,created_time,permalink_url,full_picture,"
+                                  "attachments{media,type,url,target},"
+                                  "likes.summary(true),comments.summary(true),shares",
+                        "limit": min(max_results, 100),
+                        "access_token": token
+                    }
+                    r = _req.get(posts_url, params=params_full, timeout=20)
+                    if r.status_code != 200:
+                        self.logger.warning(
+                            f"Graph API posts (full) failed ({r.status_code}), trying basic fields."
+                        )
+                        params_basic = {
+                            "fields": "id,message,created_time,permalink_url,full_picture,"
+                                      "attachments{media,type,url}",
+                            "limit": min(max_results, 100),
+                            "access_token": token
+                        }
+                        r = _req.get(posts_url, params=params_basic, timeout=20)
+
+                    r.raise_for_status()
+                    posts_data = r.json()
+
+                    # ── STEP 4: build unified raw list ───────────────────────────
+                    raw_data_list = []
+
+                    def _extract_post(post: dict, vid_obj: dict = None) -> dict:
+                        """Build normalized raw dict from Graph API post + optional video obj."""
+                        likes = 0
+                        if 'likes' in post and 'summary' in post['likes']:
+                            likes = post['likes']['summary'].get('total_count', 0)
+                        elif vid_obj and 'likes' in vid_obj and 'summary' in vid_obj['likes']:
+                            likes = vid_obj['likes']['summary'].get('total_count', 0)
+
+                        comments = 0
+                        if 'comments' in post and 'summary' in post['comments']:
+                            comments = post['comments']['summary'].get('total_count', 0)
+
+                        shares = post.get('shares', {}).get('count', 0)
+
+                        is_video = False
+                        video_url_val = ""
+                        thumbnail = post.get('full_picture', '')
+                        
+                        # use video picture if post picture missing
+                        if not thumbnail and vid_obj:
+                            thumbnail = vid_obj.get('picture', '')
+
+                        if post.get('type') == 'video':
+                            is_video = True
+
+                        if 'attachments' in post and 'data' in post['attachments']:
+                            for att in post['attachments']['data']:
+                                att_type = att.get('type', '')
+                                if att_type in ('video_inline', 'video_direct_response', 'native_templates'):
+                                    is_video = True
+                                    if 'media' in att and 'source' in att['media']:
+                                        video_url_val = att['media']['source']
+                                media_obj = att.get('media', {})
+                                if media_obj and 'image' in media_obj:
+                                    img = media_obj['image']
+                                    if 'src' in img:
+                                        thumbnail = thumbnail or img['src']
+
+                        # Try to match this post to a video for views
+                        post_id_raw = post.get("id", "")
+                        # Graph post ID = {page_id}_{post_id} — these don't match video IDs
+                        post_sub_id = post_id_raw.split("_")[-1] if "_" in post_id_raw else post_id_raw
+                        
+                        # Extract video ID from permalink URL (most reliable method)
+                        # e.g. /reel/1502322391328643/ or /videos/1502322391328643/
+                        permalink = post.get("permalink_url", "")
+                        url_video_id = ""
+                        if "/reel/" in permalink:
+                            url_video_id = permalink.rstrip("/").rsplit("/reel/", 1)[-1].split("/")[0]
+                        elif "/videos/" in permalink:
+                            url_video_id = permalink.rstrip("/").rsplit("/videos/", 1)[-1].split("/")[0]
+
+                        # Priority: URL-extracted ID > sub_id > full post_id
+                        views = 0
+                        if url_video_id and url_video_id.isdigit():
+                            views = video_views_map.get(url_video_id, 0)
+                        if not views:
+                            views = video_views_map.get(post_sub_id, 0) or video_views_map.get(post_id_raw, 0)
+
+                        # If it's a reel/video URL, mark as video
+                        if "/reel/" in permalink or "/videos/" in permalink:
+                            is_video = True
+
+                        return {
+                            "postId":       post_id_raw,
+                            "text":         post.get("message", "") or (vid_obj.get("description") if vid_obj else ""),
+                            "url":          permalink,
+                            "time":         post.get("created_time", ""),
+                            "likesCount":   likes,
+                            "commentsCount": comments,
+                            "shareCount":   shares,
+                            "views":        views,          # <-- KEY: view count từ /videos
+                            "isVideo":      is_video,
+                            "videoUrl":     video_url_val,
+                            "thumbnailUrl": thumbnail,
+                            "user":         {"name": page_name or "Page"},
+                        }
+
+                    # Add all regular posts
+                    post_sub_ids_seen = set()
+                    for post in posts_data.get("data", []):
+                        pid = post.get("id", "")
+                        sub_id = pid.split("_")[-1] if "_" in pid else pid
+                        post_sub_ids_seen.add(sub_id)
+                        raw_data_list.append(_extract_post(post))
+
+                    # Add videos that were NOT already in posts (standalone videos)
+                    for vid_id, vid_obj in video_posts_map.items():
+                        if vid_id not in post_sub_ids_seen:
+                            permalink = vid_obj.get("permalink_url", f"/reel/{vid_id}/")
+                            vid_likes = 0
+                            if 'likes' in vid_obj and 'summary' in vid_obj['likes']:
+                                vid_likes = vid_obj['likes']['summary'].get('total_count', 0)
+                            raw_data_list.append({
+                                "postId":       vid_id,
+                                "text":         vid_obj.get("title") or vid_obj.get("description") or "",
+                                "url":          permalink,
+                                "time":         vid_obj.get("created_time", ""),
+                                "likesCount":   vid_likes,
+                                "commentsCount": 0,
+                                "shareCount":   0,
+                                "views":        video_views_map.get(vid_id, 0),
+                                "isVideo":      True,
+                                "videoUrl":     "",
+                                "thumbnailUrl": vid_obj.get("picture", ""),
+                                "user":         {"name": page_name or "Page"},
+                            })
+
+                    self.logger.info(
+                        f"✅ Graph API: {len(raw_data_list)} total items "
+                        f"({len(video_views_map)} with views data)"
+                    )
+                    return raw_data_list
+            # --- END HOOK ---
+            
             actor_input = self._build_actor_input(
                 keyword="",  # Not used for user searches
                 max_results=max_results,
@@ -1574,16 +1819,39 @@ class ApifyScraperService(BaseScraperService):
             if not author_name:
                 author_name = owner_profile.get('name', '')
             if not author_username:
-                author_username = owner_profile.get('uri_token', '') or owner_profile.get('url', '').split('facebook.com/')[-1].split('/')[0] if owner_profile.get('url') else owner_profile.get('id', '')
+                owner_url = owner_profile.get('url', '')
+                if owner_url and 'facebook.com' in owner_url:
+                    try:
+                        from urllib.parse import urlparse, parse_qs as _pqs
+                        _parsed = urlparse(owner_url)
+                        if 'profile.php' in _parsed.path:
+                            _qs = _pqs(_parsed.query)
+                            _id = (_qs.get('id') or [''])[0]
+                            author_username = _id if _id else owner_profile.get('id', '')
+                        else:
+                            author_username = owner_profile.get('uri_token', '') or owner_url.split('facebook.com/')[-1].split('/')[0]
+                    except Exception:
+                        author_username = owner_profile.get('uri_token', '') or owner_profile.get('id', '')
+                else:
+                    author_username = owner_profile.get('uri_token', '') or owner_profile.get('id', '')
              
         # Extract from URL if still empty
         if not author_username:
             post_url = data.get('url') or data.get('postUrl', '')
-            if 'facebook.com/' in post_url:
+            if 'facebook.com/' in str(post_url):
                 try:
-                    parts = post_url.split('facebook.com/')[1].split('/')
-                    if parts:
-                        author_username = parts[0]
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(str(post_url))
+                    # Xử lý dạng profile.php?id=61580182263005
+                    if 'profile.php' in parsed.path:
+                        qs = parse_qs(parsed.query)
+                        fb_id = (qs.get('id') or [''])[0]
+                        if fb_id:
+                            author_username = fb_id
+                    else:
+                        parts = str(post_url).split('facebook.com/')[1].split('/')
+                        if parts:
+                            author_username = parts[0]
                 except:
                     pass
 
@@ -1824,7 +2092,17 @@ class ApifyScraperService(BaseScraperService):
             'author_username': str(author_username or ''),
             'author_name': str(author_name or ''),
             'likes_count': _safe_int(likes),
-            'views_count': _safe_int(data.get('views') or data.get('viewCount') or data.get('videoViewCount') or video_obj.get('view_count')),
+            'views_count': _safe_int(
+                data.get('views') or 
+                data.get('viewCount') or 
+                data.get('videoViewCount') or 
+                data.get('playCount') or 
+                data.get('video_play_count') or 
+                data.get('video_view_count') or 
+                video_obj.get('view_count') or 
+                video_obj.get('play_count') or
+                data.get('liveViewerCount')
+            ),
             'comments_count': _safe_int(comments),
             'shares_count': _safe_int(shares),
             'video_url': permalink, # Normalized Web URL
