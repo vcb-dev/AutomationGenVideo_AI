@@ -352,29 +352,39 @@ class ChecklistSubmitView(APIView):
             else:
                 current_datetime = now_vn
             
-            # Loại bỏ userEmail và userName khỏi payload checklist
-            checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName", "reportDate"]}
+            # Loại bỏ user metadata khỏi payload checklist
+            checklist_data = {k: v for k, v in payload.items() if k not in ["userEmail", "userName", "reportDate", "userTeam", "userRoles", "userRole"]}
             
             # 1 & 2. Lookup AppUser theo email (ưu tiên) rồi mới theo tên
             # Email là định danh duy nhất khi login Google – không dùng tên để tránh trùng/sai
-            user_role = None
-            user_team = None
+            user_role = payload.get("userRole") 
+            if not user_role and payload.get("userRoles"):
+                urs = payload.get("userRoles")
+                if isinstance(urs, list) and urs:
+                    user_role = urs[0]
+                elif isinstance(urs, str):
+                    user_role = urs
+
+            user_team = payload.get("userTeam")
             user_emp_data = None
+            
             try:
                 # Ưu tiên email (chính xác, không phụ thuộc cách nhập tên)
                 app_user = AppUser.objects.filter(email__iexact=user_email).first()
                 if not app_user and user_name:
                     # Fallback theo tên khi không tìm được qua email
                     app_user = AppUser.objects.filter(full_name__iexact=user_name.strip()).first()
+                
                 if app_user:
-                    if app_user.roles:
+                    if not user_role and app_user.roles:
                         # Parse first role (postgres array format: {role1,role2})
                         user_role = str(app_user.roles).replace("{", "").replace("}", "").split(",")[0].strip('"').strip("'")
-                    user_team = app_user.team
+                    if not user_team:
+                        user_team = app_user.team
                     user_emp_data = app_user.employee_data
                     logger.info("Tìm thấy AppUser cho %s: team=%s, role=%s", user_email, user_team, user_role)
                 else:
-                    logger.warning("Không tìm thấy AppUser cho email=%s name=%s", user_email, user_name)
+                    logger.warning("Không tìm thấy AppUser cho email=%s name=%s. Sử dụng thông tin từ payload: team=%s", user_email, user_name, user_team)
             except Exception as e:
                 logger.warning("Lỗi lookup AppUser: %s", e)
 

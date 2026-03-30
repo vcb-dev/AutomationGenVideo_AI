@@ -56,6 +56,7 @@ from .views.facebook_analysis_views import (
 from .views.channel_analysis_generic_views import (
     channel_insights_generic,
     channel_metrics_generic,
+    channel_analysis_unified_generic,
 )
 from .views.douyin_search_views import search_douyin_videos
 from .views.douyin_profile_views import fetch_douyin_channel_profile
@@ -167,6 +168,7 @@ urlpatterns = [
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
+    path('channel/analysis-unified/', channel_analysis_unified_generic, name='channel-analysis-unified'),
     
     # Douyin Search
     path('douyin/search/', search_douyin_videos, name='douyin-search'),

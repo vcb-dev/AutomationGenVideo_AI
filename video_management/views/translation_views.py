@@ -33,19 +33,18 @@ def translate_to_chinese(request):
     # ── Phase 1: Try Gemini (Smart, localized) ─────────────────────────────
     if api_key:
         try:
-            import google.genai as genai
-            from google.genai import types
+            import google.generativeai as genai
             
-            client = genai.Client(api_key=api_key)
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-2.5-flash')
             prompt = f"""Bạn là máy dịch thuật tốt nhất. Dịch cụm từ tìm kiếm sau từ tiếng Việt sang tiếng Trung Quốc Giản thể.
 Chỉ trả về bản dịch, không giải thích.
 Cụm từ: "{text}"
 Dịch:"""
 
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=50)
+            response = model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.0, "max_output_tokens": 50}
             )
             translated = response.text.strip().replace('"', '').replace("'", "")
             if translated and translated.lower() != text.lower():

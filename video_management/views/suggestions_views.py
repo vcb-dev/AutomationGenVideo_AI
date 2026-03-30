@@ -256,13 +256,13 @@ def generate_ai_suggestions(query: str, platform: str) -> list:
     Returns:
         List of suggestion strings (10-12 items)
     """
-    import google.genai as genai
-    from google.genai import types
+    import google.generativeai as genai
     from django.conf import settings
     
     try:
-        # Configure Gemini with new package
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        # Configure Gemini with old package
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Context-aware prompt
         context_map = {
@@ -307,15 +307,15 @@ trang sức mèo
 
 BÂY GIỜ hãy gợi ý 12 từ khóa cho "{query}" (CHỈ trả về 12 dòng, không giải thích):"""
         
-        # Generate with new API
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',  # Latest available model (2026)
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.9,
-                top_p=0.95,
-                top_k=40,
-            )
+        # Generate with old API
+        response = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.9,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 1024,
+            }
         )
         
         suggestions_text = response.text.strip()

@@ -25,7 +25,6 @@ services:
     # Giữ lại logic migrate và chạy server
     command: >
       sh -c "
-      python -c 'import drf_spectacular; print(\"drf ok web\")' &&
       python manage.py migrate --noinput &&
       python manage.py runserver 0.0.0.0:8000
       "
@@ -48,7 +47,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
     command: >
       sh -c "
-      python -c 'import drf_spectacular; print(\"drf ok celery\")' &&
       celery -A core worker --loglevel=info --pool=threads --concurrency=4
       "
     depends_on:
@@ -70,7 +68,6 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     command: >
       sh -c "
-      python -c 'import drf_spectacular; print(\"drf ok beat\")' &&
       celery -A core beat --loglevel=info
       "
     depends_on:
@@ -83,7 +80,7 @@ services:
     container_name: vcb_ai_tunnel
     env_file:
       - .env
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate --url http://vcb_ai_web:8000
     depends_on:
       - vcb_ai_web
     restart: always

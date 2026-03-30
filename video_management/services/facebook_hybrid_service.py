@@ -9,6 +9,7 @@ then uses the appropriate API:
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from urllib.parse import quote
@@ -271,66 +272,41 @@ class FacebookHybridService:
         from apify_client import ApifyClient
         client = ApifyClient(settings.APIFY_API_TOKEN)
         
-        # 1. Fetch Page Stats (Followers) if it's a page
-        followers_count = None
-        page_likes = None
-        
-        if fb_type == 'page':
-            try:
-                page_actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_page', 'apify/facebook-pages-scraper')
-                logger.info(f"📊 Fetching page stats via {page_actor_id}: {identifier}")
-                
-                page_run_input = {
-                    "startUrls": [{"url": fb_url}],
-                    "maxItems": 1
-                }
-                
-                page_run = client.actor(page_actor_id).call(run_input=page_run_input)
-                
-                if page_run and page_run.get('status') == 'SUCCEEDED':
-                    page_items = list(client.dataset(page_run['defaultDatasetId']).iterate_items())
-                    if page_items:
-                        page_data = page_items[0]
-                        followers_count = page_data.get('followers') or page_data.get('followersCount')
-                        page_likes = page_data.get('likes') or page_data.get('likesCount')
-                        logger.info(f"   found {followers_count} followers, {page_likes} likes")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to fetch page stats: {str(e)}")
+        # Parallelized fetch for Page Stats + Posts
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            def _get_page_stats():
+                if fb_type != 'page': return None, None
+                try:
+                    page_actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_page', 'apify/facebook-pages-scraper')
+                    logger.info(f"📊 FB Stats (Parallel): {identifier}")
+                    p_run = client.actor(page_actor_id).call(run_input={"startUrls": [{"url": fb_url}], "maxItems": 1}, timeout_secs=180)
+                    if p_run.get('status') == 'SUCCEEDED':
+                        items = list(client.dataset(p_run['defaultDatasetId']).iterate_items())
+                        if items:
+                            d = items[0]
+                            return d.get('followers') or d.get('followersCount'), d.get('likes') or d.get('likesCount')
+                except Exception as e:
+                    logger.warning(f"Stats fail: {e}")
+                return None, None
 
-        # 2. Fetch posts via Apify Actor (startUrls: array of {url} - format chuẩn Apify)
-        actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_posts', 'apify/facebook-posts-scraper')
-        
-        # Always fetch more than requested to allow for filtering/duplicates
-        # If max_posts=30, we fetch 50. If max_posts=100, we fetch 130.
-        fetch_limit = max_posts + 20
-        
-        if start_date:
-            fetch_limit = max(max_posts * 3, 100) # Fetch up to 3x more to find enough posts in range
-            fetch_limit = min(fetch_limit, 500)   # Cap at 500 total to avoid massive costs
+            def _get_posts():
+                actor_id = getattr(settings, 'APIFY_ACTORS', {}).get('facebook_posts', 'apify/facebook-posts-scraper')
+                fetch_limit = min(max(max_posts * 2, 50), 300)
+                logger.info(f"🚀 FB Posts (Parallel): {identifier} | limit={fetch_limit}")
+                p_run = client.actor(actor_id).call(run_input={
+                    "startUrls": [{"url": fb_url}], "resultsLimit": fetch_limit, "maxPostCount": fetch_limit,
+                    "scrapeComments": False, "scrapeAbout": False, "searchMode": "posts",
+                    **({"maxPostDate": start_date} if start_date else {})
+                }, timeout_secs=400)
+                if p_run.get('status') == 'SUCCEEDED':
+                    return list(client.dataset(p_run["defaultDatasetId"]).iterate_items())
+                return []
 
-        run_input = {
-            "startUrls": [{"url": fb_url}],
-            "resultsLimit": fetch_limit,
-            "maxPosts": fetch_limit, # Some actors use maxPosts
-            "maxPostCount": fetch_limit, # Some others use maxPostCount
-            "scrapeComments": False,
-            "scrapeAbout": False,
-            "searchMode": "posts",
-        }
-        
-        # Smart Stop: Tell scraper to stop at start_date
-        if start_date:
-            run_input["maxPostDate"] = start_date
-            logger.info(f"⏱️ Smart Stop enabled: Scraper will halt at {start_date}")
-        
-        logger.info(f"🚀 Starting Apify actor: {actor_id} | fb_url={fb_url}")
-        run = client.actor(actor_id).call(run_input=run_input)
-        
-        # Fetch results
-        items = []
-        if run and run.get('status') == 'SUCCEEDED':
-            for item in client.dataset(run["defaultDatasetId"]).iterate_items():
-                items.append(item)
+            future_stats = executor.submit(_get_page_stats)
+            future_posts = executor.submit(_get_posts)
+            
+            followers_count, page_likes = future_stats.result()
+            items = future_posts.result()
         
         logger.info(f"📦 Fetched {len(items)} items from Apify")
         

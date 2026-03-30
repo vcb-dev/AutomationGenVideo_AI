@@ -59,7 +59,7 @@ INSTALLED_APPS = [
     
     # Third party apps
     'rest_framework',
-    'drf_spectacular',
+    # 'drf_spectacular',
     'corsheaders',
     
     # Internal apps
@@ -201,7 +201,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # 'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ] if not DEBUG else [

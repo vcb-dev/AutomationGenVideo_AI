@@ -15,6 +15,24 @@ from ..models import ChannelAnalysis
 logger = logging.getLogger(__name__)
 
 
+def _get_body(request):
+    """
+    Safely get parsed request body.
+    Fallback to manually parsing request.body as JSON when Cloudflare Tunnel
+    or other proxies strip Content-Type, causing request.data to be empty.
+    """
+    if request.data and len(request.data) > 0:
+        return request.data
+    # Fallback: manually parse raw body
+    try:
+        raw = request.body
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return {}
+
+
 def _safe_int(v):
     try:
         return int(v or 0)
@@ -103,12 +121,14 @@ def channel_metrics_generic(request):
     POST /api/channel/metrics/
     Body: { platform, username?, url?, max_posts?, start_date?, end_date?, force_refresh? }
     """
-    platform = _coerce_platform(request.data.get('platform'))
-    max_posts = min(_safe_int(request.data.get('max_posts') or 30) or 30, 100)
+    body = _get_body(request)
+    logger.info(f"[channel_metrics_generic] parsed body keys: {list(body.keys()) if body else 'EMPTY'}")
+    platform = _coerce_platform(body.get('platform'))
+    max_posts = min(_safe_int(body.get('max_posts') or 30) or 30, 100)
     max_posts = min(max(max_posts, 10), 500)
-    force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
-    start_date_str = (request.data.get('start_date') or '').strip()
-    end_date_str = (request.data.get('end_date') or '').strip()
+    force_refresh = str(body.get('force_refresh', 'false')).lower() == 'true'
+    start_date_str = (body.get('start_date') or '').strip()
+    end_date_str = (body.get('end_date') or '').strip()
 
     # Parse date range
     start_dt = None
@@ -122,10 +142,13 @@ def channel_metrics_generic(request):
     except ValueError:
         pass
 
-    raw_user = request.data.get('username') or request.data.get('url') or ''
+    raw_user = body.get('username') or body.get('url') or ''
     username = _extract_username_from_url(platform, raw_user)
     if not platform or not username:
-        return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'success': False,
+            'error': f'platform and username/url are required. Received: platform="{platform}", raw_user="{raw_user}", extracted_username="{username}"'
+        }, status=status.HTTP_400_BAD_REQUEST)
 
     if not force_refresh:
         try:
@@ -134,9 +157,7 @@ def channel_metrics_generic(request):
                 meta = cached.metrics.get('meta', {})
                 cached_start = meta.get('start_date') or ''
                 cached_end = meta.get('end_date') or ''
-                # Always return cached data if force_refresh is false (when user clicks "Xem")
-                # Even if dates don't match perfectly, they want to view the old data.
-                logger.info(f"Returning Db CACHED metrics for {platform}:{username} (Stored dates: {cached_start} - {cached_end}, Requested: {start_date_str} - {end_date_str})")
+                logger.info(f"Returning Db CACHED metrics for {platform}:{username}")
                 return Response({
                     'success': True,
                     'metrics': cached.metrics,
@@ -145,11 +166,26 @@ def channel_metrics_generic(request):
         except ChannelAnalysis.DoesNotExist:
             pass
 
+    # --- SCRAPING CACHE (Avoid double scraping for Insights + Metrics parallel calls) ---
+    from django.core.cache import cache
+    cache_key = f"scrape_videos_{platform}_{username}_{max_posts}_{start_date_str}_{end_date_str}"
+    raw_results = cache.get(cache_key)
+    
+    if raw_results is not None:
+        logger.info(f"♻️  Using Scrape Cache for {platform}:{username} (saved ~60s)")
+    else:
+        try:
+            scraper = create_scraper(platform)
+            logger.info(f"🚀 Starting Scraper for {platform}:{username} (limit={max_posts*3})")
+            raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
+            # Cache the raw results for 5 minutes
+            cache.set(cache_key, raw_results, 300)
+        except Exception as e:
+            logger.error(f"Scraping failed: {e}")
+            return Response({'success': False, 'error': str(e)}, status=500)
+    # -----------------------------------------------------------------------------------
+
     try:
-        scraper = create_scraper(platform)
-        # Pass until_date=None: let Apify fetch max_posts*3 raw items, Python date-filter below does the slicing.
-        # Passing start_date_str as until_date incorrectly uses it as an API cutoff for platforms that support it.
-        raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
 
         # Detect Apify-level errors (items with only error keys)
         apify_error_items = [r for r in raw_results if set(r.keys()) <= {'error', 'errorDescription', 'requestedUrl'}]
@@ -320,13 +356,15 @@ def channel_insights_generic(request):
     POST /api/channel/insights/
     Body: { platform, username?, url?, max_posts?, start_date?, end_date?, language?, force_refresh? }
     """
-    platform = _coerce_platform(request.data.get('platform'))
-    language = (request.data.get('language') or 'vi').strip() or 'vi'
-    max_posts = min(_safe_int(request.data.get('max_posts') or 30) or 30, 100)
+    body = _get_body(request)
+    logger.info(f"[channel_insights_generic] parsed body keys: {list(body.keys()) if body else 'EMPTY'}")
+    platform = _coerce_platform(body.get('platform'))
+    language = (body.get('language') or 'vi').strip() or 'vi'
+    max_posts = min(_safe_int(body.get('max_posts') or 30) or 30, 100)
     max_posts = min(max(max_posts, 10), 500)
-    force_refresh = str(request.data.get('force_refresh', 'false')).lower() == 'true'
-    start_date_str = (request.data.get('start_date') or '').strip()
-    end_date_str = (request.data.get('end_date') or '').strip()
+    force_refresh = str(body.get('force_refresh', 'false')).lower() == 'true'
+    start_date_str = (body.get('start_date') or '').strip()
+    end_date_str = (body.get('end_date') or '').strip()
 
     # Parse date range
     start_dt = None
@@ -340,20 +378,14 @@ def channel_insights_generic(request):
     except ValueError:
         pass
 
-    raw_user = request.data.get('username') or request.data.get('url') or ''
+    raw_user = body.get('username') or body.get('url') or ''
     username = _extract_username_from_url(platform, raw_user)
-    if not platform or not username:
-        return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
-
     if not force_refresh:
         try:
             cached = ChannelAnalysis.objects.get(platform=platform, username=username)
             if cached.insights:
                 meta = cached.insights.get('meta', {})
-                cached_start = meta.get('start_date') or ''
-                cached_end = meta.get('end_date') or ''
-                # Always return cached data if force_refresh is false
-                logger.info(f"Returning Db CACHED insights for {platform}:{username} (Stored dates: {cached_start} - {cached_end}, Requested: {start_date_str} - {end_date_str})")
+                logger.info(f"Returning Db CACHED insights for {platform}:{username}")
                 return Response({
                     'success': True,
                     'insights': cached.insights,
@@ -362,10 +394,28 @@ def channel_insights_generic(request):
         except ChannelAnalysis.DoesNotExist:
             pass
 
+    # --- SCRAPING CACHE (Avoid double scraping for Insights + Metrics parallel calls) ---
+    from django.core.cache import cache
+    cache_key = f"scrape_videos_{platform}_{username}_{max_posts}_{start_date_str}_{end_date_str}"
+    raw_results = cache.get(cache_key)
+    
+    if raw_results is not None:
+        logger.info(f"♻️  Using Scrape Cache (Insights) for {platform}:{username}")
+    else:
+        try:
+            scraper = create_scraper(platform)
+            logger.info(f"🚀 Starting Scraper (Insights) for {platform}:{username}")
+            raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
+            cache.set(cache_key, raw_results, 300)
+        except Exception as e:
+            logger.error(f"Scraping failed: {e}")
+            return Response({'success': False, 'error': str(e)}, status=500)
+    # -----------------------------------------------------------------------------------
+
     try:
         scraper = create_scraper(platform)
         # Pass until_date=None: let Apify fetch max_posts*3 raw items, Python date-filter below does the slicing.
-        raw_results = list(scraper.get_user_videos(username, max_results=max_posts * 3, until_date=None) or [])
+        raw_results = list(raw_results)
 
         # Detect Apify-level errors (items with only error keys)
         apify_error_items = [r for r in raw_results if set(r.keys()) <= {'error', 'errorDescription', 'requestedUrl'}]
@@ -458,15 +508,15 @@ def channel_insights_generic(request):
             'posts': compact_posts,
         }
 
-        import google.genai as genai
-        from google.genai import types
+        import google.generativeai as genai
 
         api_key = getattr(settings, 'GEMINI_API_KEY', '')
         if not api_key:
             return Response({'success': False, 'error': 'GEMINI_API_KEY is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        client = genai.Client(api_key=api_key)
+        genai.configure(api_key=api_key)
         model_name = getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash')
+        model = genai.GenerativeModel(model_name)
 
         section_keys = [
             'Định vị Thương hiệu',
@@ -483,13 +533,6 @@ def channel_insights_generic(request):
             'Điểm yếu & Cơ hội',
             'Đề xuất hành động',
         ]
-
-        insights_schema = {
-            "type": "object",
-            "properties": {k: {"type": "string"} for k in section_keys},
-            "required": section_keys,
-            "additionalProperties": False,
-        }
 
         prompt = f"""
 Bạn là chuyên gia marketing phân tích kênh đối thủ trên nền tảng {platform.upper()}.
@@ -512,17 +555,15 @@ DỮ LIỆU KÊnh (JSON):
 """.strip()
 
         def _call(temp: float):
-            return client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=temp,
-                    top_p=0.9,
-                    top_k=40,
-                    max_output_tokens=8192,
-                    response_mime_type="application/json",
-                    response_json_schema=insights_schema,
-                ),
+            return model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": temp,
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "max_output_tokens": 8192,
+                    "response_mime_type": "application/json",
+                }
             )
 
         response = _call(0.6)
@@ -565,3 +606,162 @@ DỮ LIỆU KÊnh (JSON):
     except Exception as e:
         logger.error(f"❌ Generic channel insights failed: {str(e)}", exc_info=True)
         return Response({'success': False, 'error': f'Failed to generate insights: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+@csrf_exempt
+@api_view(['POST'])
+def channel_analysis_unified_generic(request):
+    """
+    POST /api/channel/analysis-unified/
+    Body: { platform, username?, url?, max_posts?, start_date?, end_date?, force_refresh?, language? }
+    
+    Unified endpoint that performs scraping ONCE and computes both Metrics + Insights.
+    Significant performance boost (halves the 'Scanning...' time).
+    """
+    body = _get_body(request)
+    platform = _coerce_platform(body.get('platform'))
+    language = (body.get('language') or 'vi').strip() or 'vi'
+    max_posts_input = _safe_int(body.get('max_posts') or 30) or 30
+    max_posts = min(max(max_posts_input, 10), 500)
+    force_refresh = str(body.get('force_refresh', 'false')).lower() == 'true'
+    start_date_str = (body.get('start_date') or '').strip()
+    end_date_str = (body.get('end_date') or '').strip()
+
+    raw_user = body.get('username') or body.get('url') or ''
+    username = _extract_username_from_url(platform, raw_user)
+    
+    if not platform or not username:
+        return Response({'success': False, 'error': 'platform and username/url are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 1. Check DB Cache
+    if not force_refresh:
+        try:
+            cached = ChannelAnalysis.objects.get(platform=platform, username=username)
+            if cached.metrics and cached.insights:
+                logger.info(f"Returning UNIFIED Cache for {platform}:{username}")
+                return Response({
+                    'success': True,
+                    'metrics': cached.metrics,
+                    'insights': cached.insights,
+                    'scanned_count': cached.metrics.get('meta', {}).get('scanned_count', 0)
+                })
+        except ChannelAnalysis.DoesNotExist:
+            pass
+
+    try:
+        # 2. Scrape ONCE
+        scraper = create_scraper(platform)
+        # Fetch up to 3x requested to find posts in range
+        fetch_limit = max_posts * 3 if (start_date_str or end_date_str) else max_posts + 10
+        fetch_limit = min(max(fetch_limit, 30), 500)
+        
+        logger.info(f"🚀 Unified Scrape: Start {platform}/{username} (limit={fetch_limit})")
+        raw_results = list(scraper.get_user_videos(username, max_results=fetch_limit, until_date=start_date_str or None) or [])
+        
+        # Filter errors
+        raw_results = [r for r in raw_results if not set(r.keys()) <= {'error', 'errorDescription', 'requestedUrl'}]
+        if not raw_results:
+            return Response({'success': False, 'error': f'Không tìm thấy bài đăng nào cho @{username}.'}, status=422)
+
+        normalized = [scraper.normalize_video_data(v) for v in raw_results]
+        normalized = [p for p in normalized if p]
+
+        # Date filter
+        start_dt = datetime.strptime(start_date_str, '%Y-%m-%d') if start_date_str else None
+        end_dt = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59) if end_date_str else None
+        
+        if start_dt or end_dt:
+            def _in_range(p):
+                dt = p.get('published_at')
+                if not dt: return False
+                try:
+                    pdt = dt.replace(tzinfo=None) if hasattr(dt, 'tzinfo') else datetime.fromisoformat(str(dt).replace('Z', ''))
+                    if start_dt and pdt < start_dt: return False
+                    if end_dt and pdt > end_dt: return False
+                    return True
+                except: return False
+            normalized = [p for p in normalized if _in_range(p)]
+
+        final_posts = normalized[:max_posts]
+        scanned_count = len(final_posts)
+        if scanned_count == 0:
+            return Response({'success': False, 'error': 'Không có bài đăng nào trong khoảng thời gian này.'}, status=422)
+
+        # 3. Compute Metrics (Chart data)
+        enriched = []
+        for p in final_posts:
+            ts = int(p.get('published_at').timestamp()) if p.get('published_at') else 0
+            enriched.append({
+                'id': str(p.get('video_id') or ''),
+                'url': p.get('video_url') or '',
+                'text': (p.get('description') or p.get('title') or '')[:1200],
+                'timestamp': ts,
+                'likes': _safe_int(p.get('likes_count')),
+                'comments': _safe_int(p.get('comments_count')),
+                'shares': _safe_int(p.get('shares_count')),
+                'views': _safe_int(p.get('views_count')),
+                'is_video': True,
+                'viral_score': _viral_score(p)
+            })
+        
+        top_viral = sorted(enriched, key=lambda x: x['viral_score'], reverse=True)[:10]
+        
+        by_date = {}
+        for p in enriched:
+            if not p['timestamp']: continue
+            d = datetime.fromtimestamp(p['timestamp']).strftime('%Y-%m-%d')
+            by_date.setdefault(d, []).append(p)
+            
+        metrics_data = {
+            'top_viral_posts': top_viral,
+            'charts': {
+                'avg_engagement_by_day': [{'date': d, 'posts': len(lst), 'avgLikes': sum(x['likes'] for x in lst)/max(1, len(lst))} for d, lst in sorted(by_date.items())],
+                'posting_frequency': [{'date': d, 'count': len(lst)} for d, lst in sorted(by_date.items())],
+                'format_distribution': [{'format': 'video', 'count': len(enriched)}]
+            },
+            'meta': {'posts_analyzed': len(enriched), 'scanned_count': scanned_count, 'start_date': start_date_str, 'end_date': end_date_str}
+        }
+
+        # 4. Generate Insights (Gemini)
+        compact_for_ai = [{
+            'text': p['text'][:500],
+            'likes': p['likes'],
+            'comments': p['comments'],
+            'views': p['views'],
+            'is_video': True
+        } for p in enriched[:30]]
+
+        context_ai = {
+            'platform': platform,
+            'username': username,
+            'channel_summary': metrics_data['meta'],
+            'posts': compact_for_ai
+        }
+
+        import google.generativeai as genai
+        genai.configure(api_key=getattr(settings, 'GEMINI_API_KEY', ''))
+        model = genai.GenerativeModel(getattr(settings, 'GEMINI_MODEL', 'gemini-1.5-flash'))
+        
+        section_keys = ['Định vị Thương hiệu', 'Giọng nói Thương hiệu', 'Khách hàng Mục tiêu', 'Tuyến Nội dung', 'Công thức Nội dung', 'Phân tích Reel', 'Chiến lược Quảng cáo', 'Phễu Marketing', 'Tương tác & Bình luận', 'Tóm tắt Chiến lược', 'Điểm mạnh', 'Điểm yếu & Cơ hội', 'Đề xuất hành động']
+        
+        prompt = f"Phân tích chuyên sâu marketing kênh {platform} @{username} dựa trên dữ liệu thật:\n{json.dumps(context_ai, ensure_ascii=False)}\nTrả về JSON với các keys: {section_keys}. Mỗi mục viết 3-5 gạch đầu dòng chi tiết."
+        
+        res_ai = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        insights = _parse_insights_json(res_ai.text, section_keys)
+        insights['meta'] = metrics_data['meta']
+
+        # 5. Save to DB
+        obj, _ = ChannelAnalysis.objects.get_or_create(platform=platform, username=username)
+        obj.metrics = metrics_data
+        obj.insights = insights
+        obj.max_posts = max_posts
+        obj.save()
+
+        return Response({
+            'success': True,
+            'metrics': metrics_data,
+            'insights': insights,
+            'scanned_count': scanned_count
+        })
+
+    except Exception as e:
+        logger.error(f"Unified analysis failed: {str(e)}", exc_info=True)
+        return Response({'success': False, 'error': f'Lỗi hệ thống: {str(e)}'}, status=500)
