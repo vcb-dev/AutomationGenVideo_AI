@@ -407,7 +407,30 @@ class ApifyScraperService(BaseScraperService):
                 "maxItems": max_results,
                 "proxyConfig": { "useApifyProxy": True }
             }
-        
+
+        elif self.platform == Platform.YOUTUBE:
+            # YouTube: scrape channel by URL or username
+            if username:
+                clean = username.strip().lstrip('@')
+                if clean.startswith('http'):
+                    channel_url = clean
+                elif clean.startswith('UC') and len(clean) > 20:
+                    channel_url = f"https://www.youtube.com/channel/{clean}"
+                else:
+                    channel_url = f"https://www.youtube.com/@{clean}"
+                return {
+                    "startUrls": [{"url": channel_url}],
+                    "maxResults": max_results,
+                    "maxResultsShorts": 0,
+                    "maxResultsStreams": 0,
+                }
+            # Keyword search
+            search_url = f"https://www.youtube.com/results?search_query={keyword}"
+            return {
+                "startUrls": [{"url": search_url}],
+                "maxResults": max_results,
+            }
+
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
     
@@ -1440,6 +1463,8 @@ class ApifyScraperService(BaseScraperService):
             return self._normalize_facebook_data(raw_data)
         elif self.platform == Platform.XIAOHONGSHU:
             return self._normalize_xiaohongshu_data(raw_data)
+        elif self.platform == Platform.YOUTUBE:
+            return self._normalize_youtube_data(raw_data)
         else:
             raise ScraperException(f"Unsupported platform: {self.platform}")
 
@@ -1500,6 +1525,73 @@ class ApifyScraperService(BaseScraperService):
             'raw_data': raw_data
         }
     
+    def _normalize_youtube_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize YouTube video data from apify/youtube-scraper."""
+        video_id = raw_data.get('id', '') or raw_data.get('videoId', '')
+        title = raw_data.get('title', '') or raw_data.get('name', '')
+        description = raw_data.get('description', '') or raw_data.get('text', '')
+
+        # Channel info
+        channel_name = (
+            raw_data.get('channelName', '')
+            or raw_data.get('channel', '')
+            or raw_data.get('author', '')
+            or ''
+        )
+        channel_id = raw_data.get('channelId', '') or raw_data.get('channelUrl', '')
+        channel_url = raw_data.get('channelUrl', '')
+        if channel_url and not channel_url.startswith('http'):
+            channel_url = f"https://www.youtube.com{channel_url}"
+
+        # Stats
+        views = raw_data.get('viewCount', 0) or raw_data.get('views', 0) or 0
+        likes = raw_data.get('likes', 0) or raw_data.get('likeCount', 0) or 0
+        comments = raw_data.get('commentsCount', 0) or raw_data.get('commentCount', 0) or 0
+
+        # Thumbnail
+        thumb_list = raw_data.get('thumbnails', [])
+        thumbnail_url = ''
+        if isinstance(thumb_list, list) and thumb_list:
+            last = thumb_list[-1]
+            thumbnail_url = last.get('url', '') if isinstance(last, dict) else str(last)
+        if not thumbnail_url and video_id:
+            thumbnail_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+
+        # Published at
+        published_at = None
+        for ts_key in ('publishedAt', 'date', 'uploadDate', 'published'):
+            ts_val = raw_data.get(ts_key)
+            if ts_val:
+                try:
+                    published_at = self._parse_timestamp(ts_val)
+                    break
+                except Exception:
+                    pass
+
+        video_url = raw_data.get('url', '')
+        if not video_url and video_id:
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        return {
+            'video_id': str(video_id),
+            'title': title,
+            'description': description,
+            'author_username': channel_id or channel_name,
+            'author_name': channel_name,
+            'author_avatar': raw_data.get('channelAvatarUrl', '') or raw_data.get('authorThumbnail', ''),
+            'likes_count': int(likes) if likes else 0,
+            'views_count': int(views) if views else 0,
+            'comments_count': int(comments) if comments else 0,
+            'shares_count': 0,
+            'video_url': video_url,
+            'download_url': '',
+            'thumbnail_url': thumbnail_url,
+            'published_at': published_at,
+            'hashtags': raw_data.get('hashtags', []),
+            'music_info': {},
+            'raw_data': raw_data,
+        }
+
     def _normalize_tiktok_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize TikTok/Douyin data.

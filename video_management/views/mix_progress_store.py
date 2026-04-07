@@ -13,7 +13,8 @@ Fallback: nếu Redis không kết nối được → dùng RAM dict như cũ
 import json
 import logging
 import threading
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,27 @@ def _get_redis():
     return _redis_client
 
 
-# ─── In-memory fallback ─────────────────────────────────────────────────────
-_mem_progress: Dict[str, Dict] = {}
+# ─── In-memory fallback (with TTL eviction) ─────────────────────────────────
+# Values stored as (data, expires_at) tuples to prevent unbounded memory growth
+_mem_progress: Dict[str, Tuple[Dict, float]] = {}
 _mem_lock = threading.Lock()
+
+
+def _mem_get(progress_id: str) -> Optional[Dict]:
+    """Read from mem fallback, evicting expired entry if found."""
+    entry = _mem_progress.get(progress_id)
+    if entry is None:
+        return None
+    data, expires_at = entry
+    if time.time() > expires_at:
+        _mem_progress.pop(progress_id, None)
+        return None
+    return data
+
+
+def _mem_set(progress_id: str, data: Dict) -> None:
+    """Write to mem fallback with TTL."""
+    _mem_progress[progress_id] = (data, time.time() + PROGRESS_TTL_SECONDS)
 
 
 # ─── Public API ─────────────────────────────────────────────────────────────
@@ -72,7 +91,7 @@ def progress_set(progress_id: str, data: Dict[str, Any]) -> None:
             logger.warning(f"Redis set failed ({e}), using memory fallback")
 
     with _mem_lock:
-        _mem_progress[progress_id] = data
+        _mem_set(progress_id, data)
 
 
 def progress_update(progress_id: str, updates: Dict[str, Any]) -> None:
@@ -90,10 +109,9 @@ def progress_update(progress_id: str, updates: Dict[str, Any]) -> None:
             logger.warning(f"Redis update failed ({e}), using memory fallback")
 
     with _mem_lock:
-        if progress_id in _mem_progress:
-            _mem_progress[progress_id].update(updates)
-        else:
-            _mem_progress[progress_id] = updates
+        current = _mem_get(progress_id) or {}
+        current.update(updates)
+        _mem_set(progress_id, current)
 
 
 def progress_get(progress_id: str) -> Optional[Dict[str, Any]]:
@@ -107,7 +125,7 @@ def progress_get(progress_id: str) -> Optional[Dict[str, Any]]:
             logger.warning(f"Redis get failed ({e}), using memory fallback")
 
     with _mem_lock:
-        return _mem_progress.get(progress_id)
+        return _mem_get(progress_id)
 
 
 def progress_exists(progress_id: str) -> bool:
@@ -126,7 +144,7 @@ def progress_delete(progress_id: str) -> None:
             logger.warning(f"Redis delete failed ({e}), using memory fallback")
 
     with _mem_lock:
-        _mem_progress.pop(progress_id, None)
+        _mem_progress.pop(progress_id, None)  # direct pop — no TTL concern on delete
 
 
 def progress_get_field(progress_id: str, field: str, default=None):

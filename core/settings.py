@@ -22,6 +22,8 @@ env = environ.Env(
     DEBUG=(bool, False),
     SECRET_KEY=(str, ''),
     ALLOWED_HOSTS=(list, []),
+    LOG_LEVEL=(str, 'INFO'),
+    APP_LOG_LEVEL=(str, ''),
 )
 
 # Read .env file if it exists
@@ -34,7 +36,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 SECRET_KEY = env('SECRET_KEY', default='django-insecure-)wz0wv9mj6oxld#%n4gm5x!cdl&d3*@yrvoh7#joy59ma&fksy')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env('DEBUG', default=True)
+DEBUG = env('DEBUG', default=False)
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '0.0.0.0'])
 
@@ -114,7 +116,7 @@ DATABASES = {
     'default': env.db('DATABASE_URL')
 }
 # Optimize for multiple concurrent users by keeping DB connections open
-DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=60)
+DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=300)
 DATABASES['default']['CONN_HEALTH_CHECKS'] = True
 
 
@@ -167,6 +169,10 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Logging levels (tunable by env in production)
+LOG_LEVEL = env('LOG_LEVEL', default='INFO').upper()
+APP_LOG_LEVEL = env('APP_LOG_LEVEL', default=('DEBUG' if DEBUG else 'INFO')).upper()
+
 # Logging configuration
 LOGGING = {
     'version': 1,
@@ -185,12 +191,12 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': LOG_LEVEL,
     },
     'loggers': {
         'video_management': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': APP_LOG_LEVEL,
             'propagate': False,
         },
     },
@@ -250,6 +256,10 @@ try:
             "LOCATION": _redis_url,
             "TIMEOUT": 300,       # 5 phút mặc định
             "KEY_PREFIX": "ai",
+            "OPTIONS": {
+                "socket_connect_timeout": env.float('REDIS_CONNECT_TIMEOUT', default=1.5),
+                "socket_timeout": env.float('REDIS_SOCKET_TIMEOUT', default=2.0),
+            },
         }
     }
 except Exception:
@@ -317,6 +327,9 @@ APIFY_ACTORS = {
     'facebook_video_search': env('APIFY_ACTOR_FACEBOOK_VIDEO_SEARCH', default='apify/facebook-video-search-scraper'),  # Reels + videos by keyword
     # Douyin
     'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
+    # YouTube
+    'youtube': env('APIFY_ACTOR_YOUTUBE', default='apify/youtube-scraper'),
+    'youtube_channel': env('APIFY_ACTOR_YOUTUBE_CHANNEL', default='apify/youtube-scraper'),
 }
 
 # Apify timeout settings (in seconds)

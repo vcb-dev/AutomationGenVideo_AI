@@ -1394,6 +1394,60 @@ class UserVideosView(APIView):
                             logger.info(f"   • {key:20s} = {value}")
                         logger.info("=" * 80)
                 
+                # --- YOUTUBE SPECIFIC EXTRACTION ---
+                elif platform_str.upper() == 'YOUTUBE':
+                    # apify/youtube-scraper returns channel info in each item
+                    channel_name = first_item.get('channelName', '') or first_item.get('channel', '') or username
+                    channel_id = first_item.get('channelId', '') or username
+                    avatar_url = first_item.get('channelAvatarUrl', '') or first_item.get('authorThumbnail', '')
+
+                    # Try to parse subscriber count (can be "1.2M subscribers" string)
+                    raw_subs = first_item.get('numberOfSubscribers', 0) or first_item.get('subscriberCount', 0) or 0
+                    if isinstance(raw_subs, str):
+                        clean_subs = raw_subs.lower().replace(',', '').replace(' subscribers', '').replace(' subscriber', '').strip()
+                        try:
+                            if 'm' in clean_subs:
+                                raw_subs = int(float(clean_subs.replace('m', '')) * 1_000_000)
+                            elif 'k' in clean_subs:
+                                raw_subs = int(float(clean_subs.replace('k', '')) * 1_000)
+                            else:
+                                raw_subs = int(float(clean_subs))
+                        except Exception:
+                            raw_subs = 0
+                    follower_count = int(raw_subs) if raw_subs else 0
+
+                    total_channel_videos = first_item.get('channelTotalVideos', 0) or len(normalized)
+                    total_channel_views = first_item.get('channelTotalViews', 0) or 0
+
+                    fetched_views = sum(v.get('views_count', 0) for v in normalized)
+                    fetched_likes = sum(v.get('likes_count', 0) for v in normalized)
+                    fetched_comments = sum(v.get('comments_count', 0) for v in normalized)
+
+                    engagement_rate = 0.0
+                    if follower_count > 0 and fetched_views > 0:
+                        engagement_rate = ((fetched_likes + fetched_comments) / fetched_views) * 100
+
+                    logger.info(f"📺 YouTube channel: {channel_name}, subs={follower_count:,}, videos={total_channel_videos}")
+
+                    profile_data = {
+                        'username': channel_id or username,
+                        'display_name': channel_name,
+                        'avatar_url': avatar_url,
+                        'follower_count': follower_count,
+                        'subscribers_count': follower_count,
+                        'total_likes': fetched_likes,
+                        'total_videos': total_channel_videos,
+                        'total_views': total_channel_views or fetched_views,
+                        'engagement_rate': round(engagement_rate, 2),
+                        'platform': platform_str,
+                        'metadata': {
+                            'video_count': len(normalized),
+                            'fetched_likes_sum': fetched_likes,
+                            'fetched_comments_sum': fetched_comments,
+                            'channel_url': first_item.get('channelUrl', ''),
+                        }
+                    }
+
                 # --- TIKTOK / DOUYIN SPECIFIC EXTRACTION ---
                 else: 
                     # With apidojo/tiktok-scraper, profile info lives under "channel".

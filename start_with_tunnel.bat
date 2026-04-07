@@ -85,7 +85,7 @@ REM Chạy tunnel, ghi log ra file tạm để detect URL
 set TUNNEL_LOG=%TEMP%\vcb_tunnel_%PORT%.log
 if exist "%TUNNEL_LOG%" del "%TUNNEL_LOG%"
 
-start "Cloudflare Tunnel - AI" cmd /k ""%CF_EXE%" tunnel --url http://localhost:%PORT% --no-autoupdate > "%TUNNEL_LOG%" 2>&1"
+start "Cloudflare Tunnel - AI" cmd /k ""%CF_EXE%" tunnel --protocol http2 --url http://localhost:%PORT% --no-autoupdate > "%TUNNEL_LOG%" 2>&1"
 
 REM Đợi tối đa 30 giây để URL xuất hiện trong log
 set TUNNEL_URL=

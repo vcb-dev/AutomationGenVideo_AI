@@ -526,6 +526,7 @@ class BaseScraperService(ABC):
         self,
         url: str,
         method: str = 'GET',
+        timeout: int = 30,
         **kwargs
     ) -> requests.Response:
         """
@@ -534,6 +535,7 @@ class BaseScraperService(ABC):
         Args:
             url: Request URL
             method: HTTP method
+            timeout: Request timeout in seconds (default 30)
             **kwargs: Additional arguments for requests
             
         Returns:
@@ -543,7 +545,7 @@ class BaseScraperService(ABC):
             ScraperException: If request fails after retries
         """
         try:
-            response = requests.request(method, url, **kwargs)
+            response = requests.request(method, url, timeout=timeout, **kwargs)
             response.raise_for_status()
             return response
         except requests.RequestException as e:

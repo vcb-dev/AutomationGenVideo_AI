@@ -18,7 +18,7 @@ class TelegramService:
             "parse_mode": "HTML"
         }
         
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()

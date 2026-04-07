@@ -62,9 +62,18 @@ class HeyGenClient:
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json"
         }
-        
+
+        # Shared session with timeout — reuse TCP connections across all calls
+        _timeout = aiohttp.ClientTimeout(total=60, connect=10)
+        self._session = aiohttp.ClientSession(timeout=_timeout)
+
         mode_str = "TEST (watermarked, FREE)" if self.test_mode else "PRODUCTION (costs credits)"
         logger.info(f"HeyGen client initialized - Mode: {mode_str}, API URL: {self.api_url}")
+
+    async def close(self):
+        """Close the shared HTTP session — call on app shutdown."""
+        if self._session and not self._session.closed:
+            await self._session.close()
     
     async def create_video(
         self,
@@ -123,9 +132,8 @@ class HeyGenClient:
             payload["title"] = request.title
         
         logger.info(f"Creating video with avatar: {request.avatar_id}")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
+
+        async with self._session.post(
                 endpoint,
                 headers=self.headers,
                 json=payload
@@ -195,20 +203,19 @@ class HeyGenClient:
             
         logger.info(f"Attempting Talking Photo generation for ID: {request.avatar_id}")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(endpoint, headers=self.headers, json=payload) as response:
-                resp_data = await response.json()
-                if response.status != 200:
-                    error_msg = resp_data.get("error", {}).get("message", "Unknown error")
-                    logger.error(f"Talking Photo API Error: {error_msg}")
-                    raise Exception(f"Talking Photo Error: {error_msg}")
-                
-                data = resp_data.get("data", {})
-                return VideoGenerationResponse(
-                    video_id=data.get("video_id"),
-                    status="pending",
-                    created_at=data.get("created_at", "")
-                )
+        async with self._session.post(endpoint, headers=self.headers, json=payload) as response:
+            resp_data = await response.json()
+            if response.status != 200:
+                error_msg = resp_data.get("error", {}).get("message", "Unknown error")
+                logger.error(f"Talking Photo API Error: {error_msg}")
+                raise Exception(f"Talking Photo Error: {error_msg}")
+
+            data = resp_data.get("data", {})
+            return VideoGenerationResponse(
+                video_id=data.get("video_id"),
+                status="pending",
+                created_at=data.get("created_at", "")
+            )
 
     async def get_video_status(self, video_id: str) -> VideoStatusResponse:
         """
@@ -225,30 +232,29 @@ class HeyGenClient:
         
         params = {"video_id": video_id}
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
+        async with self._session.get(
                 endpoint,
                 headers=self.headers,
                 params=params
             ) as response:
-                response_data = await response.json()
-                
-                if response.status != 200:
-                    error_msg = response_data.get("error", {}).get("message", "Unknown error")
-                    raise Exception(f"Failed to get video status: {error_msg}")
-                
-                data = response_data.get("data", {})
-                
-                return VideoStatusResponse(
-                    video_id=video_id,
-                    status=data.get("status", "unknown"),
-                    progress=data.get("progress"),
-                    video_url=data.get("video_url"),
-                    thumbnail_url=data.get("thumbnail_url"),
-                    duration=data.get("duration"),
-                    error=data.get("error"),
-                    estimated_time=data.get("estimated_time")
-                )
+            response_data = await response.json()
+
+            if response.status != 200:
+                error_msg = response_data.get("error", {}).get("message", "Unknown error")
+                raise Exception(f"Failed to get video status: {error_msg}")
+
+            data = response_data.get("data", {})
+
+            return VideoStatusResponse(
+                video_id=video_id,
+                status=data.get("status", "unknown"),
+                progress=data.get("progress"),
+                video_url=data.get("video_url"),
+                thumbnail_url=data.get("thumbnail_url"),
+                duration=data.get("duration"),
+                error=data.get("error"),
+                estimated_time=data.get("estimated_time")
+            )
     
     async def wait_for_completion(
         self,
@@ -346,11 +352,13 @@ class HeyGenClient:
         Returns:
             Path to downloaded file
         """
-        async with aiohttp.ClientSession() as session:
+        # Use a dedicated session with no total timeout for large file downloads
+        _dl_timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=300)
+        async with aiohttp.ClientSession(timeout=_dl_timeout) as session:
             async with session.get(video_url) as response:
                 if response.status != 200:
                     raise Exception(f"Failed to download video: HTTP {response.status}")
-                
+
                 with open(output_path, 'wb') as f:
                     while True:
                         chunk = await response.content.read(8192)
@@ -388,10 +396,10 @@ class HeyGenClient:
         try:
             form_data.add_field('audio_file', f, filename=os.path.basename(audio_path))
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    endpoint, 
-                    headers={"X-Api-Key": self.api_key}, # Content-Type is auto-set for multipart
+            # Multipart upload — use shared session (Content-Type auto-set for multipart)
+            async with self._session.post(
+                    endpoint,
+                    headers={"X-Api-Key": self.api_key},
                     data=form_data
                 ) as response:
                     response_data = await response.json()

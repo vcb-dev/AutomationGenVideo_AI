@@ -45,7 +45,7 @@ class TikTokOfficialAPIService:
             'grant_type': 'authorization_code'
         }
         
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=30)
         response.raise_for_status()
         
         return response.json()['data']['access_token']
@@ -86,7 +86,7 @@ class TikTokOfficialAPIService:
         
         logger.info(f"Fetching TikTok user info with fields: {fields}")
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
         
         data = response.json()

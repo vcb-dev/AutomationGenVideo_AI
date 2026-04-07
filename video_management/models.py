@@ -19,6 +19,7 @@ class Platform(models.TextChoices):
     INSTAGRAM = 'instagram', 'Instagram'
     FACEBOOK = 'facebook', 'Facebook'
     XIAOHONGSHU = 'xiaohongshu', 'Xiaohongshu'
+    YOUTUBE = 'youtube', 'YouTube'
 
 
 class SearchStatus(models.TextChoices):

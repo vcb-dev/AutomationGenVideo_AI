@@ -21,12 +21,18 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
-    # Đã tối ưu: pip install được thực hiện trong Dockerfile lúc build image
-    # Giữ lại logic migrate và chạy server
+    # Production server: gunicorn + gthread workers instead of single-threaded runserver
     command: >
       sh -c "
       python manage.py migrate --noinput &&
-      python manage.py runserver 0.0.0.0:8000
+      gunicorn core.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers 4
+        --worker-class gthread
+        --threads 4
+        --timeout 120
+        --keep-alive 5
+        --log-level info
       "
     depends_on:
       - redis
@@ -80,7 +86,7 @@ services:
     container_name: vcb_ai_tunnel
     env_file:
       - .env
-    command: tunnel --no-autoupdate --url http://vcb_ai_web:8000
+    command: tunnel --protocol http2 --no-autoupdate --url http://vcb_ai_web:8000
     depends_on:
       - vcb_ai_web
     restart: always

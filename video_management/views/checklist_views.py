@@ -125,65 +125,69 @@ def _mask(s: str, show_last: int = 4) -> str:
 
 
 def is_reporting_open(settings_obj, user_email=None):
-    # ⚠️ TẠM THỜI BỎ CHECK KHUNG GIỜ ĐỂ TEST - BẬT LẠI SAU
-    # Uncomment khối bên dưới khi muốn bật lại giới hạn giờ báo cáo
-    return True, ""
+    """
+    Cho phép gửi checklist theo lịch ngày trong tuần (nếu có) và one_report_per_day.
 
-    # --- ORIGINAL LOGIC (tạm comment) ---
-    # if not settings_obj:
-    #     return True, ""
-    #
-    # vn_tz = pytz.timezone(settings_obj.timezone)
-    # now = datetime.now(vn_tz)
-    # day_key = now.strftime('%A').lower()
-    #
-    # schedule = settings_obj.schedule.get(day_key)
-    # if not schedule or not schedule.get('enabled'):
-    #     return False, f"Hôm nay ({day_key.capitalize()}) không có lịch báo cáo."
-    #
-    # start_str = schedule.get('start', '00:00')
-    # end_str = schedule.get('end', '23:59')
-    #
-    # try:
-    #     start_time_obj = datetime.strptime(start_str, "%H:%M").time()
-    #     end_time_obj = datetime.strptime(end_str, "%H:%M").time()
-    # except Exception:
-    #     return True, ""
-    #
-    # current_time = now.time()
-    #
-    # if settings_obj.is_random:
-    #     import random
-    #     from django.conf import settings as django_settings
-    #     seed_str = f"{now.strftime('%Y-%m-%d')}_{django_settings.SECRET_KEY}"
-    #     random.seed(seed_str)
-    #     start_min = start_time_obj.hour * 60 + start_time_obj.minute
-    #     end_min = end_time_obj.hour * 60 + end_time_obj.minute
-    #     total_range = end_min - start_min
-    #     if total_range > settings_obj.random_minutes:
-    #         offset = random.randint(0, total_range - settings_obj.random_minutes)
-    #         actual_start_min = start_min + offset
-    #         actual_end_min = actual_start_min + settings_obj.random_minutes
-    #         curr_min = current_time.hour * 60 + current_time.minute
-    #         if curr_min < actual_start_min or curr_min > actual_end_min:
-    #             return False, "Ngoài khung giờ báo cáo ngẫu nhiên của ngày hôm nay."
-    #     else:
-    #         if current_time < start_time_obj or current_time > end_time_obj:
-    #             return False, f"Ngoài khung giờ báo cáo ({start_str} - {end_str})."
-    # else:
-    #     if current_time < start_time_obj or current_time > end_time_obj:
-    #         return False, f"Ngoài khung giờ báo cáo ({start_str} - {end_str})."
-    #
-    # if settings_obj.one_report_per_day and user_email:
-    #     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    #     already_reported = LarkReport.objects.filter(
-    #         email__iexact=user_email,
-    #         date__gte=today_start
-    #     ).exists()
-    #     if already_reported:
-    #         return False, "Bạn đã gửi báo cáo ngày hôm nay rồi."
-    #
-    # return True, ""
+    Không còn kiểm tra khung giờ trong ngày (vd. 08:00–10:00 hay random window).
+
+    Nếu schedule rỗng hoặc không có ngày nào bật enabled → không chặn theo lịch.
+    Nếu có ngày enabled → kiểm tra hôm nay có trong lịch không, trừ Chủ nhật (luôn cho phép).
+    """
+    if not settings_obj:
+        return True, ""
+
+    schedule = getattr(settings_obj, "schedule", None) or {}
+    if not isinstance(schedule, dict):
+        schedule = {}
+
+    def _schedule_has_any_enabled() -> bool:
+        for v in schedule.values():
+            if isinstance(v, dict) and v.get("enabled"):
+                return True
+        return False
+
+    tz_name = getattr(settings_obj, "timezone", None) or "Asia/Ho_Chi_Minh"
+    vn_tz = pytz.timezone(tz_name)
+
+    def _one_report_today_block():
+        if not settings_obj.one_report_per_day or not user_email:
+            return False, ""
+        now = datetime.now(vn_tz)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        already = LarkReport.objects.filter(
+            email__iexact=user_email,
+            date__gte=today_start,
+        ).exists()
+        if already:
+            return True, "Bạn đã gửi báo cáo ngày hôm nay rồi."
+        return False, ""
+
+    # Chưa bật khung giờ nào → không kiểm tra giờ; vẫn có thể giới hạn 1 báo cáo/ngày
+    if not _schedule_has_any_enabled():
+        blocked, msg = _one_report_today_block()
+        if blocked:
+            return False, msg
+        return True, ""
+
+    now = datetime.now(vn_tz)
+    # 0=Thứ Hai … 6=Chủ nhật — không phụ thuộc locale của strftime %A.
+    is_sunday = now.weekday() == 6
+    day_key = now.strftime("%A").lower()
+
+    # Chủ nhật luôn được báo cáo (tránh chặn khi lịch chỉ bật T2–T7).
+    if not is_sunday:
+        day_sched = schedule.get(day_key)
+        if not day_sched or not day_sched.get("enabled"):
+            return (
+                False,
+                "Hôm nay không nằm trong ngày được phép báo cáo theo lịch đã cấu hình.",
+            )
+
+    # Không validate start/end trong ngày — cho gửi bất kỳ giờ nào trong ngày được phép.
+    blocked, msg = _one_report_today_block()
+    if blocked:
+        return False, msg
+    return True, ""
 
 
 class ChecklistReportingStatusView(APIView):
