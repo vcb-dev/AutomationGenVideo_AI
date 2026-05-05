@@ -414,11 +414,16 @@ class ContentGenerationService:
             raise ValueError(f"Invalid content type: {content_type}")
 
         template = CONTENT_TEMPLATES[content_type]
-        source_insights = {"keywords": [], "win_angle": "", "winning_points": []}
-        if not translation_mode:
-            source_insights = self._analyze_source_insights(video_title, video_description)
-
         market_language = (target_market_language or output_language or 'vi').strip()
+
+        # Default source_insights (used by both translation and generation paths)
+        source_insights = {"keywords": [], "win_angle": "", "winning_points": []}
+
+        # SPEED OPTIMIZATION: Start Source Insight Analysis in parallel with content generation preparation
+        insights_future = None
+        if not translation_mode:
+            executor = ThreadPoolExecutor(max_workers=2)
+            insights_future = executor.submit(self._analyze_source_insights, video_title, video_description)
 
         # Translation-only mode: strict translation, no content rewriting/localization expansion.
         if translation_mode:
@@ -507,6 +512,14 @@ class ContentGenerationService:
         if output_language == 'th':
             video_description = self._shift_vi_pronouns(video_description)
             video_title = self._shift_vi_pronouns(video_title)
+
+        # Wait for insights if they were started in parallel
+        source_insights = {"keywords": [], "win_angle": "", "winning_points": []}
+        if insights_future:
+            try:
+                source_insights = insights_future.result(timeout=15)
+            except Exception as e:
+                self.logger.warning(f"Insights analysis timed out or failed: {e}")
 
         prompt = self._build_prompt(
             video_description=video_description,
@@ -1365,9 +1378,9 @@ Trả về CHỈ bài viết, bắt đầu ngay câu đầu tiên.
                     })
                 continue
 
-            phonetic = str(row.get('phonetic', '')).strip()
-            native = str(row.get('native', '')).strip()
-            vietnamese = str(row.get('vietnamese', '')).strip()
+            phonetic = str(row.get('phonetic', '')).strip().replace('\n', ' ')
+            native = str(row.get('native', '')).strip().replace('\n', ' ')
+            vietnamese = str(row.get('vietnamese', '')).strip().replace('\n', ' ')
 
             phonetic, native, vietnamese = self._unpack_triple_from_cells(phonetic, native, vietnamese)
 
@@ -2052,20 +2065,10 @@ NGỮ CẢNH NGUỒN TIẾNG VIỆT (để đối chiếu nghĩa):
         text = self._call_deepseek_raw(
             prompt=prompt,
             system_msg="Bạn là trợ lý kiểm duyệt subtitle đa ngôn ngữ. Trả về JSON đúng schema, không thêm text ngoài JSON.",
-            timeout=25 if fast_mode else 45,
+            timeout=30 if fast_mode else 50,
             log_prefix="Verification rows generation (DeepSeek)"
         )
-        if not text:
-            self.logger.info("DeepSeek failed for verification rows generation, falling back to Claude.")
-            text = self._call_claude_raw(
-                prompt=prompt,
-                system_msg="Bạn là trợ lý kiểm duyệt subtitle đa ngôn ngữ. Trả về JSON đúng schema, không thêm text ngoài JSON.",
-                models=['claude-haiku-4-5', 'claude-sonnet-4-6'],
-                temperature=0.1,
-                max_tokens=1024,
-                timeout=25 if fast_mode else 45,
-                log_prefix="Verification rows generation (Claude)"
-            )
+        # DeepSeek is faster and cheaper now, skipping Claude fallback for table rows to avoid balance issues
         if text:
             parsed = self._extract_json_array(text)
             if parsed and isinstance(parsed, list):
@@ -2438,10 +2441,37 @@ Trả về JSON ARRAY:
         source_lang_name = lang_name_map.get(source_lang, source_lang)
         
         # Split source into lines to help AI align
+        # CASE 1: Thai text with line breaks → each line = 1 row
+        # CASE 2: Thai text as single paragraph → AI will split into sentences
         source_lines = [line.strip() for line in source_text.strip().split('\n') if line.strip()]
+        is_single_paragraph = len(source_lines) <= 2
+        
         numbered_source = '\n'.join([f"{i+1}. {line}" for i, line in enumerate(source_lines)])
 
-        prompt = f"""
+        if is_single_paragraph:
+            # CASE 2: Single paragraph - instruct AI to split into natural sentences
+            prompt = f"""
+NHIỆM VỤ: Chia kịch bản {source_lang_name} thành các câu/đoạn ngắn tự nhiên, rồi dịch từng câu sang Tiếng Việt.
+
+KỊCH BẢN GỐC ({source_lang_name}):
+{source_text.strip()}
+
+YÊU CẦU:
+- Tự chia nội dung thành 8-20 câu ngắn tự nhiên (mỗi câu ~1-2 ý).
+- Dịch mượt mà (Huy Ca style), xưng hô Tôi - Bạn.
+- Mỗi câu = 1 đối tượng JSON.
+- Cột "native": câu gốc {source_lang_name} (chữ bản địa).
+- Cột "vietnamese": Bản dịch tiếng Việt mượt mà.
+- Cột "phonetic": Phiên âm Latin của native.
+
+TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
+[
+  {{"id": 1, "native": "...", "vietnamese": "...", "phonetic": "..."}}
+]
+""".strip()
+        else:
+            # CASE 1: Multiple lines - align 1-1 with original lines
+            prompt = f"""
 NHIỆM VỤ: Dịch kịch bản {source_lang_name} sang Tiếng Việt và khớp 1-1 từng dòng.
 
 KỊCH BẢN GỐC ({source_lang_name}):
@@ -2542,6 +2572,8 @@ TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
             'zh-TW': r'[\u4E00-\u9FFF]',
             'ko': r'[\uAC00-\uD7AF]',
         }.get(output_language)
+        # Vietnamese diacritics pattern to detect if phonetic column leaks Vietnamese
+        vi_pattern = r'[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]'
         if not script_pattern:
             return rows
 
@@ -2561,8 +2593,11 @@ TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
                 continue
             same_text = phonetic and phonetic == native
             has_native_script = bool(re.search(script_pattern, phonetic))
+            has_vi_script = bool(re.search(vi_pattern, phonetic))
             no_latin = not bool(re.search(r'[A-Za-z]', phonetic))
-            if not phonetic or same_text or has_native_script or no_latin:
+            
+            # If phonetic is same as native, or contains native script, or contains Vietnamese, or has NO latin chars -> repair
+            if not phonetic or same_text or has_native_script or has_vi_script or no_latin:
                 invalid_phonetic_targets.append((idx, native))
 
         if invalid_native_targets:
@@ -2623,8 +2658,9 @@ TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
                     continue
                 same_text = phonetic and phonetic == native
                 has_native_script = bool(re.search(script_pattern, phonetic))
+                has_vi_script = bool(re.search(vi_pattern, phonetic))
                 no_latin = not bool(re.search(r'[A-Za-z]', phonetic))
-                if not phonetic or same_text or has_native_script or no_latin:
+                if not phonetic or same_text or has_native_script or has_vi_script or no_latin:
                     invalid_phonetic_targets.append((idx, native))
 
         if not invalid_phonetic_targets:
@@ -2632,20 +2668,19 @@ TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
 
         payload = [{"idx": i, "native": t} for i, t in invalid_phonetic_targets[:60]]
         prompt = (
-            "Tạo phiên âm Latin cho từng câu native dưới đây. "
+            f"Tạo phiên âm Latin (Karaoke/Romanization) cho từng câu native ({output_language}) dưới đây. "
+            "BẮT BUỘC: Cột 'phonetic' CHỈ ĐƯỢC chứa ký tự Latin (A-Z). "
+            "TUYỆT ĐỐI KHÔNG ĐƯỢC dùng chữ bản địa, KHÔNG ĐƯỢC dùng tiếng Việt trong cột phonetic. "
             "Trả về JSON ARRAY dạng {\"idx\": number, \"phonetic\": string}. "
-            + ("Nếu native là tiếng Thái thì phiên âm theo giọng nam (tránh sắc thái giọng nữ). " if output_language == 'th' else "")
+            + ("Nếu native là tiếng Thái thì phiên âm theo giọng nam (dùng Phom, Khun, Phuean khon nan). " if output_language == 'th' else "")
             + "Không thêm giải thích.\n\n"
             f"DỮ LIỆU:\n{json.dumps(payload, ensure_ascii=False)}"
         )
-        ai_text = self._call_claude_raw(
+        ai_text = self._call_deepseek_raw(
             prompt=prompt,
             system_msg="Bạn là chuyên gia phiên âm. Chỉ trả JSON hợp lệ.",
-            models=['claude-haiku-4-5', 'claude-sonnet-4-6'],
-            temperature=0.1,
-            max_tokens=1200,
             timeout=30,
-            log_prefix="Repair phonetic rows"
+            log_prefix="Repair phonetic rows (DeepSeek)"
         )
         if not ai_text:
             return rows
