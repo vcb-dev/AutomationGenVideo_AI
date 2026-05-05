@@ -136,7 +136,8 @@ class DouyinScraper:
                             video_elements = await page.query_selector_all(selector)
                             if video_elements:
                                 break
-                        except:
+                        except Exception as e:
+                            logger.warning(f"Error querying selector {selector}: {e}")
                             continue
                     
                     for el in video_elements:

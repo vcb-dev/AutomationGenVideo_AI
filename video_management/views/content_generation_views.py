@@ -39,6 +39,9 @@ def generate_content(request):
         industry = request.data.get('industry', 'kim hoàn (trang sức vàng bạc)')
         additional_context = request.data.get('additional_context')
         output_language = request.data.get('output_language', 'vi')  # default tiếng Việt
+        target_market_language = request.data.get('target_market_language')
+        tm_val = request.data.get('translation_mode', False)
+        translation_mode = str(tm_val).lower() in ['true', '1', 't', 'yes'] if isinstance(tm_val, str) else bool(tm_val)
         custom_prompt = request.data.get('custom_prompt')
         if custom_prompt:
             additional_context = (additional_context or '') + ('\n\n' + custom_prompt if additional_context else custom_prompt)
@@ -150,6 +153,8 @@ def generate_content(request):
             additional_context=combined_context,
             product_info=product_info,
             output_language=output_language,
+            target_market_language=target_market_language,
+            translation_mode=translation_mode,
         )
         
         # Save to database (only if we have a source video)
@@ -188,6 +193,8 @@ def generate_content(request):
             'solution': result['solution'],
             'cta': result['cta'],
             'word_count': result['word_count'],
+            'verification_rows': result.get('verification_rows', []),
+            'source_insights': result.get('source_insights', {}),
             'content_type': content_type,
             'created_at': created_at
         }, status=status.HTTP_201_CREATED)

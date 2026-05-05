@@ -99,7 +99,10 @@ urlpatterns = [
     
     # Search endpoints
     path('search/', SearchView.as_view(), name='search'),
+    path('ai/search', SearchView.as_view(), name='ai-search-compat'),
+    path('ai/search/', SearchView.as_view(), name='ai-search-compat-slash'),
     path('search/status/<str:task_id>/', SearchStatusView.as_view(), name='search-status'),
+    path('ai/search/status/<str:task_id>/', SearchStatusView.as_view(), name='ai-search-status-compat'),
     path('search/history/', SearchHistoryView.as_view(), name='search-history'),
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),

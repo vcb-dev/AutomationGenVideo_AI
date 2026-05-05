@@ -1,6 +1,10 @@
 import requests as _req
+import os
+from dotenv import load_dotenv
 
-TOKEN = "EAASfB9OySdwBRN9lm5WpzpLMKoTG69JYdvZANXeWV5kAXVZBtJmBwycwZCRxNC0gglbW1XZBumAmFiUhJiQllv6eqiW8MDjOkyq60gvKJzYUrVqEmx15GQ936HxkAq7gdymIUMcUHNwislK0jmWbjcV1Qdou1oBxLzUZBlFlCiOL6KzDfzqVhITMAZBwdVRwZC4ZAhTPDp4YS3LTZAoQSm3PCDJrNZCR9dX3ReVDVBZBaieZCTMZD"
+load_dotenv()
+
+TOKEN = os.getenv('FACEBOOK_ACCESS_TOKEN')
 BASE = "https://graph.facebook.com/v20.0"
 
 me = _req.get(f"{BASE}/me", params={"fields":"id,name","access_token":TOKEN},timeout=15).json()

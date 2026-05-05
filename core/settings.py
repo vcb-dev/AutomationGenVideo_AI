@@ -33,7 +33,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = env('SECRET_KEY', default='django-insecure-)wz0wv9mj6oxld#%n4gm5x!cdl&d3*@yrvoh7#joy59ma&fksy')
+SECRET_KEY = env('SECRET_KEY', default='change-me-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG', default=False)
@@ -369,6 +369,7 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 # OPENAI API CONFIGURATION
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION

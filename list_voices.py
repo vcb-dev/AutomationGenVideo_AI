@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = "sk_V2_hgu_k4tdbzfKRK3_N3yyTe9xk9HvlWwuDe4eRs3auOxaEvov"
+API_KEY = os.getenv('HEYGEN_API_KEY')
 API_URL = "https://api.heygen.com/v2/voices"
 
 headers = {
