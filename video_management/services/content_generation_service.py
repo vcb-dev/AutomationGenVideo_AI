@@ -450,7 +450,8 @@ class ContentGenerationService:
                         output_language=source_lang, # Use source lang to drive table generation
                         source_vietnamese_text=translated_script, # The VI translation
                         fast_mode=True,
-                        translation_mode=True
+                        translation_mode=True,
+                        anchor_to_native=True # GLOBAL -> VI: Anchor to the foreign source
                     )
                 else:
                     # VI -> VI: Regular pass-through
@@ -565,7 +566,8 @@ class ContentGenerationService:
                     output_language=source_lang_for_table,
                     source_vietnamese_text=claude_result.get('script', '') if is_vi_output else (video_description or video_title),
                     fast_mode=translation_mode,
-                    translation_mode=translation_mode
+                    translation_mode=translation_mode,
+                    anchor_to_native=is_vi_output # If target is VI but source is Global, anchor to Global source
                 )
             return claude_result
 
@@ -1928,6 +1930,7 @@ QUY TẮC BẮT BUỘC TỪ SERVER (HUYK):
         source_vietnamese_text: str,
         fast_mode: bool = False,
         translation_mode: bool = False,
+        anchor_to_native: bool = False,
     ) -> List[Dict[str, str]]:
         # Shift pronouns for Thai market so table matches script
         if output_language == 'th':
@@ -1939,13 +1942,22 @@ QUY TẮC BẮT BUỘC TỪ SERVER (HUYK):
         if not script.strip():
             return []
 
-        # Translation-only mode: build rows from Vietnamese source anchors first to keep row-by-row accuracy.
+        # Translation-only mode:
         if translation_mode and source_vietnamese_text.strip():
-            rows = self._build_translation_mode_rows(
-                output_language=output_language,
-                source_vietnamese_text=source_vietnamese_text,
-                fast_mode=fast_mode
-            )
+            if anchor_to_native:
+                rows = self._build_global_to_vi_rows(
+                    source_script=script,
+                    source_lang=output_language,
+                    target_vi_text=source_vietnamese_text,
+                    fast_mode=fast_mode
+                )
+            else:
+                rows = self._build_translation_mode_rows(
+                    output_language=output_language,
+                    source_vietnamese_text=source_vietnamese_text,
+                    fast_mode=fast_mode
+                )
+            
             if rows:
                 rows = self._sanitize_verification_rows(rows)
                 rows = self._compact_verification_rows_for_display(rows, output_language)
@@ -2142,6 +2154,92 @@ DỮ LIỆU NGUỒN:
             return rows
         except Exception as e:
             self.logger.warning(f"translation_mode rows parse error: {e}")
+            return []
+
+    def _build_global_to_vi_rows(
+        self,
+        source_script: str,
+        source_lang: str,
+        target_vi_text: str,
+        fast_mode: bool = False
+    ) -> List[Dict[str, str]]:
+        """
+        Build verification rows for Global -> VI by asking AI to align both texts accurately.
+        """
+        prompt = f"""
+VAI TRÒ: Bạn là chuyên gia biên dịch và xử lý dữ liệu.
+NHIỆM VỤ: Chia kịch bản gốc ({source_lang}) và bản dịch (Tiếng Việt) thành các hàng đối chiếu 1-1 để kiểm duyệt video.
+
+KỊCH BẢN GỐC ({source_lang}):
+\"\"\"
+{source_script}
+\"\"\"
+
+BẢN DỊCH TIẾNG VIỆT:
+\"\"\"
+{target_vi_text}
+\"\"\"
+
+YÊU CẦU BẮT BUỘC:
+1. Trả về JSON ARRAY DUY NHẤT. Mỗi phần tử có: native, vietnamese, phonetic.
+2. Cột native: Phải dùng CHÍNH XÁC từ kịch bản gốc {source_lang}, không được sửa hay tóm tắt. Khi nối tất cả các cột native lại phải khôi phục được 100% kịch bản gốc.
+3. Cột vietnamese: Phải là bản dịch tương ứng CHÍNH XÁC của nội dung trong cột native đó. TUYỆT ĐỐI KHÔNG gộp nhiều câu dịch vào một hàng nếu kịch bản gốc chỉ có một câu ngắn.
+4. Cột phonetic: Phiên âm Latin dễ đọc của cột native.
+5. Chia thành khoảng 8-15 hàng (row) tùy độ dài, đừng để hàng quá dài.
+
+{THAI_PRONOUN_LOCK if source_lang == 'th' else ''}
+TRẢ VỀ JSON ARRAY, KHÔNG GIẢI THÍCH.
+""".strip()
+
+        text = self._call_deepseek_raw(
+            prompt=prompt,
+            system_msg="Bạn là trợ lý xử lý dữ liệu song ngữ. Trả về JSON đúng schema, đảm bảo đối chiếu 1-1 chính xác.",
+            timeout=40 if fast_mode else 60,
+            log_prefix="Global-to-VI alignment (DeepSeek)"
+        )
+        if not text:
+            text = self._call_claude_raw(
+                prompt=prompt,
+                system_msg="Bạn là trợ lý xử lý dữ liệu song ngữ. Trả về JSON đúng schema, đảm bảo đối chiếu 1-1 chính xác.",
+                models=['claude-sonnet-4-6', 'claude-haiku-4-5'],
+                temperature=0.1,
+                max_tokens=3000,
+                timeout=35 if fast_mode else 55,
+                log_prefix="Global-to-VI alignment (Claude Fallback)"
+            )
+        
+        if not text:
+            return []
+            
+        parsed = self._extract_json_array(text)
+        if not parsed or not isinstance(parsed, list):
+            return []
+
+        try:
+            rows: List[Dict[str, str]] = []
+            rows.append({
+                'row_type': 'section',
+                'section_title': 'Nội dung đối chiếu',
+                'phonetic': '',
+                'native': '',
+                'vietnamese': '',
+            })
+            for item in parsed:
+                if not isinstance(item, dict):
+                    continue
+                native = str(item.get('native', '')).strip()
+                vietnamese = str(item.get('vietnamese', '')).strip()
+                phonetic = str(item.get('phonetic', '')).strip()
+                if native and (vietnamese or phonetic):
+                    rows.append({
+                        'row_type': 'row',
+                        'phonetic': phonetic,
+                        'native': native,
+                        'vietnamese': vietnamese,
+                    })
+            return rows
+        except Exception as e:
+            self.logger.warning(f"global_to_vi alignment parse error: {e}")
             return []
 
     def _repair_invalid_phonetic_rows(self, rows: List[Dict[str, str]], output_language: str) -> List[Dict[str, str]]:
