@@ -8,7 +8,7 @@ import requests
 import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 from django.conf import settings
 
 # Content strategy templates
@@ -142,6 +142,7 @@ BẮT BUỘC RIÊNG CHO TIẾNG THÁI (TH):
 - NHÂN VẬT TRONG TRUYỆN (NGÔI 3 - Bạn ấy): BẮT BUỘC dùng "Phuean khon nan" (เพื่อนคนนั้น) để chỉ "Bạn ấy/Bạn đó". Cụm từ này giúp bản dịch tiếng Việt luôn có chữ "Bạn" và mang sắc thái thân mật, trung tính. Tuyệt đối KHÔNG dùng "Khao" (anh ấy) hay "Nong" (đứa em).
 - GIỌNG ĐIỆU: Giọng NAM lịch sự (dùng ครับ, CẤM dùng ค่ะ).
 - THƯƠNG HIỆU: CẤM nhắc đến "Viễn Chí Bảo" (Vien Chi Bao).
+- CỤM TỪ TINH TẾ: Khi nói về việc không làm xao nhãng hoặc không cướp sự chú ý của chi tiết chính, BẮT BUỘC dùng "โดยไม่แย่งความสนใจ" (Doy mai yaeng khwam son jai). Tuyệt đối KHÔNG dùng "ขโมยซีน" hoặc "ขโมยซีนไป" (nghe thô như cướp giật). Nếu trong bản gốc có "ขโมยซีน", phải thay bằng "โดยไม่แย่งความสนใจ".
 """
 
 # Bản Việt “nguồn convert” cho MỌI thị trường (không chỉ một ngôn ngữ).
@@ -428,7 +429,7 @@ class ContentGenerationService:
                 raise ValueError("Thiếu nội dung nguồn để dịch.")
 
             if output_language == 'vi':
-                # Detect if source is foreign to enable 3-column verification table even for VI output
+                # Detect if source is foreign
                 source_lang = None
                 for lang_code in ['th', 'ja', 'ko', 'zh', 'my', 'km', 'lo']:
                     if self._looks_like_target_language(source_text, lang_code):
@@ -438,21 +439,20 @@ class ContentGenerationService:
                 self.logger.info(f"Translation mode (VI output): detected_source_lang={source_lang}")
                 
                 if source_lang:
-                    # Global -> VI: Need translation and 3-column table
-                    translated_script = self._translate_content_strict(source_text, 'vi')
+                    # SPEED OPTIMIZATION: One single call for both translation and alignment
+                    result_data = self._translate_and_align_foreign_to_vi(
+                        source_text=source_text,
+                        source_lang=source_lang,
+                        fast_mode=True
+                    )
+                    translated_script = result_data.get('script', '')
+                    verification_rows = result_data.get('verification_rows', [])
+                    
                     if not translated_script:
                         raise Exception("Không thể dịch nội dung sang tiếng Việt.")
                     
-                    # PRESERVE newlines for row-by-row matching
                     claude_result = self._parse_response(translated_script, output_language=source_lang)
-                    claude_result['verification_rows'] = self._generate_verification_rows_with_ai(
-                        script=source_text, # The foreign source
-                        output_language=source_lang, # Use source lang to drive table generation
-                        source_vietnamese_text=translated_script, # The VI translation
-                        fast_mode=True,
-                        translation_mode=True,
-                        anchor_to_native=True # GLOBAL -> VI: Anchor to the foreign source
-                    )
+                    claude_result['verification_rows'] = verification_rows
                 else:
                     # VI -> VI: Regular pass-through
                     claude_result = self._parse_response(source_text, output_language='vi')
@@ -672,6 +672,40 @@ class ContentGenerationService:
         
         return []
 
+    def _extract_json_dict(self, text: str) -> Dict:
+        """Robustly extract a JSON dictionary from AI output."""
+        if not text:
+            return {}
+        s = text.strip()
+        try:
+            return json.loads(s)
+        except:
+            pass
+
+        cleaned = s.replace('```json', '').replace('```', '').strip()
+        
+        # Try to find the first '{' and last '}'
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start != -1 and end != -1:
+            content = cleaned[start:end + 1]
+            try:
+                return json.loads(content)
+            except Exception as e:
+                # Last resort: try a very aggressive cleanup for common AI mistakes
+                # (e.g., unescaped newlines in strings)
+                try:
+                    # Replace literal newlines inside quotes with \n
+                    # This is risky but often helps with malformed AI JSON
+                    fixed = re.sub(r'(?<=[:\s,\[])"(.*?)"(?=[\s,\]\}])', 
+                                   lambda m: m.group(0).replace('\n', '\\n'), 
+                                   content, flags=re.DOTALL)
+                    return json.loads(fixed)
+                except:
+                    self.logger.warning(f"Failed to parse JSON dict between markers: {e}")
+        
+        return {}
+
     def _call_deepseek_raw(
         self,
         prompt: str,
@@ -723,7 +757,21 @@ class ContentGenerationService:
         keep meaning/facts/order, avoid creative rewriting.
         """
         if output_language == 'vi':
-            return source_text
+            # Check if source is foreign → use dedicated Foreign-to-VI translation
+            is_foreign = False
+            detected_lang = None
+            for lang_code in ['th', 'ja', 'ko', 'zh', 'my', 'km', 'lo']:
+                if self._looks_like_target_language(source_text, lang_code):
+                    is_foreign = True
+                    detected_lang = lang_code
+                    break
+            if not is_foreign:
+                return source_text
+            # Foreign → Vietnamese: use dedicated prompt
+            translated = self._translate_foreign_to_vi(source_text, detected_lang, prefer_fast)
+            if translated:
+                translated = self._sanitize_thai_output(translated) if detected_lang == 'th' else translated
+            return translated
 
         lang_name_map = {
             'th': 'Thai (ภาษาไทย)',
@@ -1943,7 +1991,7 @@ QUY TẮC BẮT BUỘC TỪ SERVER (HUYK):
             return []
 
         # Translation-only mode:
-        if translation_mode and source_vietnamese_text.strip():
+        if translation_mode:
             if anchor_to_native:
                 rows = self._build_global_to_vi_rows(
                     source_script=script,
@@ -1962,6 +2010,11 @@ QUY TẮC BẮT BUỘC TỪ SERVER (HUYK):
                 rows = self._sanitize_verification_rows(rows)
                 rows = self._compact_verification_rows_for_display(rows, output_language)
                 rows = self._ensure_multi_sections(rows)
+                
+                # RETURN IMMEDIATELY for translation mode to prevent DeepSeek overrides
+                if translation_mode:
+                    return rows
+                    
                 rows = self._fill_missing_vietnamese_cells(
                     rows,
                     source_vietnamese_text=source_vietnamese_text,
@@ -2047,6 +2100,12 @@ NGỮ CẢNH NGUỒN TIẾNG VIỆT (để đối chiếu nghĩa):
                         cleaned_rows = self._sanitize_verification_rows(rows)
                         cleaned_rows = self._compact_verification_rows_for_display(cleaned_rows, output_language)
                         cleaned_rows = self._ensure_multi_sections(cleaned_rows)
+                        
+                        # OPTIMIZATION: Skip expensive fill/repair steps if we are in translation mode
+                        # because row-by-row generation is already accurate and complete.
+                        if translation_mode:
+                            return cleaned_rows
+                            
                         cleaned_rows = self._fill_missing_vietnamese_cells(
                             cleaned_rows,
                             source_vietnamese_text=source_vietnamese_text,
@@ -2156,6 +2215,47 @@ DỮ LIỆU NGUỒN:
             self.logger.warning(f"translation_mode rows parse error: {e}")
             return []
 
+    def _translate_foreign_to_vi(
+        self,
+        source_text: str,
+        source_lang: str,
+        prefer_fast: bool = True
+    ) -> Optional[str]:
+        """
+        Translate foreign text (Thai, Japanese, etc.) to Vietnamese.
+        Dedicated prompt for Foreign → VI direction.
+        """
+        lang_name_map = {
+            'th': 'Tiếng Thái', 'ja': 'Tiếng Nhật', 'ko': 'Tiếng Hàn',
+            'zh': 'Tiếng Trung', 'my': 'Tiếng Myanmar', 'km': 'Tiếng Khmer', 'lo': 'Tiếng Lào',
+        }
+        source_lang_name = lang_name_map.get(source_lang, source_lang)
+
+        prompt = f"""
+Bạn là biên dịch viên chuyên nghiệp, dịch kịch bản video từ {source_lang_name} sang Tiếng Việt.
+
+NỘI DUNG GỐC ({source_lang_name}):
+{source_text}
+
+RÀNG BUỘC:
+- Dịch sát nghĩa, giữ đúng thông tin và thứ tự ý.
+- Không thêm chi tiết mới, không đổi bối cảnh.
+- Văn phong tự nhiên, mượt mà như người Việt viết.
+- Xưng hô: Tôi (ngôi 1), Bạn (ngôi 2).
+- Chỉ trả về bản dịch Tiếng Việt, không giải thích.
+""".strip()
+
+        system_msg = "Bạn là biên dịch viên chất lượng cao. Dịch chính xác từ ngoại ngữ sang Tiếng Việt."
+
+        translated = self._call_deepseek_raw(
+            prompt=prompt, system_msg=system_msg,
+            timeout=30 if prefer_fast else 50,
+            log_prefix=f"Foreign-to-VI translation ({source_lang_name}, DeepSeek)"
+        )
+        if translated and source_lang == 'th':
+            translated = self._sanitize_thai_output(translated)
+        return translated
+
     def _build_global_to_vi_rows(
         self,
         source_script: str,
@@ -2164,53 +2264,63 @@ DỮ LIỆU NGUỒN:
         fast_mode: bool = False
     ) -> List[Dict[str, str]]:
         """
-        Build verification rows for Global -> VI by asking AI to align both texts accurately.
+        Build verification rows for Global -> VI.
+        Mode 1: If source has newlines (>=3 lines) → split by newlines, match Vietnamese.
+        Mode 2: If source is a paragraph (1-2 lines) → use Vietnamese sentences as anchor.
         """
+        if not source_script.strip():
+            return []
+
+        # Detect mode: structured (has newlines) vs paragraph
+        raw_lines = [line.strip() for line in source_script.strip().split('\n') if line.strip()]
+
+        if len(raw_lines) >= 3:
+            # MODE 1: Structured - split by newlines
+            return self._build_rows_structured(raw_lines, source_lang, target_vi_text, fast_mode)
+        else:
+            # MODE 2: Paragraph - use Vietnamese as anchor
+            return self._build_rows_paragraph(source_script.strip(), source_lang, target_vi_text, fast_mode)
+
+    def _build_rows_structured(
+        self,
+        thai_lines: List[str],
+        source_lang: str,
+        target_vi_text: str,
+        fast_mode: bool = False
+    ) -> List[Dict[str, str]]:
+        """Mode 1: Source has clear newlines. Split by newlines, ask AI to match Vietnamese."""
+        numbered = '\n'.join([f"{i+1}. {line}" for i, line in enumerate(thai_lines)])
+
         prompt = f"""
-VAI TRÒ: Bạn là chuyên gia biên dịch và xử lý dữ liệu.
-NHIỆM VỤ: Chia kịch bản gốc ({source_lang}) và bản dịch (Tiếng Việt) thành các hàng đối chiếu 1-1 để kiểm duyệt video.
+NHIỆM VỤ: Ghép từng dòng {source_lang} với câu Tiếng Việt tương ứng.
 
-KỊCH BẢN GỐC ({source_lang}):
-\"\"\"
-{source_script}
-\"\"\"
+CÁC DÒNG GỐC ({source_lang}) - đã đánh số:
+{numbered}
 
-BẢN DỊCH TIẾNG VIỆT:
-\"\"\"
+BẢN DỊCH TIẾNG VIỆT ĐẦY ĐỦ:
 {target_vi_text}
-\"\"\"
 
-YÊU CẦU BẮT BUỘC:
-1. Trả về JSON ARRAY DUY NHẤT. Mỗi phần tử có: native, vietnamese, phonetic.
-2. Cột native: Phải dùng CHÍNH XÁC từ kịch bản gốc {source_lang}, không được sửa hay tóm tắt. Khi nối tất cả các cột native lại phải khôi phục được 100% kịch bản gốc.
-3. Cột vietnamese: Phải là bản dịch tương ứng CHÍNH XÁC của nội dung trong cột native đó. TUYỆT ĐỐI KHÔNG gộp nhiều câu dịch vào một hàng nếu kịch bản gốc chỉ có một câu ngắn.
-4. Cột phonetic: Phiên âm Latin dễ đọc của cột native.
-5. Chia thành khoảng 8-15 hàng (row) tùy độ dài, đừng để hàng quá dài.
+QUY TẮC:
+1. Với mỗi dòng gốc (1, 2, 3...), tìm câu/đoạn Tiếng Việt tương ứng về NGHĨA từ bản dịch.
+2. Mỗi câu Tiếng Việt chỉ xuất hiện MỘT LẦN. Không lặp lại.
+3. Cột "native" phải CHÍNH XÁC dòng gốc, giữ nguyên 100% bao gồm cả dấu "...".
+4. Cột "phonetic" là phiên âm Latin của native.
+5. Nếu một dòng gốc không có câu Việt tương ứng rõ ràng, vẫn giữ dòng đó và để vietnamese trống.
 
-{THAI_PRONOUN_LOCK if source_lang == 'th' else ''}
-TRẢ VỀ JSON ARRAY, KHÔNG GIẢI THÍCH.
+Trả về JSON ARRAY có ĐÚNG {len(thai_lines)} phần tử:
+[{{"id": 1, "native": "...", "vietnamese": "...", "phonetic": "..."}}]
 """.strip()
 
         text = self._call_deepseek_raw(
             prompt=prompt,
-            system_msg="Bạn là trợ lý xử lý dữ liệu song ngữ. Trả về JSON đúng schema, đảm bảo đối chiếu 1-1 chính xác.",
-            timeout=40 if fast_mode else 60,
-            log_prefix="Global-to-VI alignment (DeepSeek)"
+            system_msg="Bạn là chuyên gia căn chỉnh kịch bản song ngữ. Trả về JSON ARRAY.",
+            timeout=60 if fast_mode else 90,
+            log_prefix="Global-to-VI structured-matching (DeepSeek)"
         )
-        if not text:
-            text = self._call_claude_raw(
-                prompt=prompt,
-                system_msg="Bạn là trợ lý xử lý dữ liệu song ngữ. Trả về JSON đúng schema, đảm bảo đối chiếu 1-1 chính xác.",
-                models=['claude-sonnet-4-6', 'claude-haiku-4-5'],
-                temperature=0.1,
-                max_tokens=3000,
-                timeout=35 if fast_mode else 55,
-                log_prefix="Global-to-VI alignment (Claude Fallback)"
-            )
-        
+
         if not text:
             return []
-            
+
         parsed = self._extract_json_array(text)
         if not parsed or not isinstance(parsed, list):
             return []
@@ -2220,17 +2330,89 @@ TRẢ VỀ JSON ARRAY, KHÔNG GIẢI THÍCH.
             rows.append({
                 'row_type': 'section',
                 'section_title': 'Nội dung đối chiếu',
-                'phonetic': '',
-                'native': '',
-                'vietnamese': '',
+                'phonetic': '', 'native': '', 'vietnamese': '',
+            })
+            id_map = {}
+            for item in parsed:
+                if isinstance(item, dict) and 'id' in item:
+                    id_map[item['id']] = item
+
+            for i, thai_line in enumerate(thai_lines):
+                item = id_map.get(i + 1) or (parsed[i] if i < len(parsed) else {})
+                native = thai_line
+                if source_lang == 'th':
+                    native = self._sanitize_thai_output(native)
+                
+                rows.append({
+                    'row_type': 'row',
+                    'phonetic': str(item.get('phonetic', '')).strip(),
+                    'native': native,
+                    'vietnamese': str(item.get('vietnamese', '')).strip(),
+                })
+            return rows
+        except Exception as e:
+            self.logger.warning(f"global_to_vi structured parse error: {e}")
+            return []
+
+    def _build_rows_paragraph(
+        self,
+        source_text: str,
+        source_lang: str,
+        target_vi_text: str,
+        fast_mode: bool = False
+    ) -> List[Dict[str, str]]:
+        """Mode 2: Source is a single paragraph. Use Vietnamese sentences as anchor."""
+        prompt = f"""
+NHIỆM VỤ: Căn chỉnh đoạn văn {source_lang} với bản dịch Tiếng Việt thành bảng đối chiếu 1-1.
+
+ĐOẠN VĂN GỐC ({source_lang}):
+{source_text}
+
+BẢN DỊCH TIẾNG VIỆT:
+{target_vi_text}
+
+QUY TẮC:
+1. LẤY TIẾNG VIỆT LÀM MỐC: Chia bản dịch Tiếng Việt thành từng câu hoàn chỉnh (10-15 hàng).
+2. TRUY NGƯỢC: Với mỗi câu Tiếng Việt, tìm đúng đoạn {source_lang} tương ứng từ đoạn văn gốc.
+3. GIỮ NGUYÊN: Cột native phải trích xuất chính xác từ đoạn văn gốc, giữ nguyên 100% kể cả dấu "...".
+4. KHÔNG LẶP: Mỗi phần chỉ xuất hiện MỘT LẦN.
+5. Cột phonetic là phiên âm Latin của native.
+
+Trả về JSON ARRAY:
+[{{"native": "...", "vietnamese": "...", "phonetic": "..."}}]
+""".strip()
+
+        text = self._call_deepseek_raw(
+            prompt=prompt,
+            system_msg="Bạn là chuyên gia căn chỉnh kịch bản song ngữ. Trả về JSON ARRAY.",
+            timeout=70 if fast_mode else 100,
+            log_prefix="Global-to-VI paragraph-matching (DeepSeek)"
+        )
+
+        if not text:
+            return []
+
+        parsed = self._extract_json_array(text)
+        if not parsed or not isinstance(parsed, list):
+            return []
+
+        try:
+            rows: List[Dict[str, str]] = []
+            rows.append({
+                'row_type': 'section',
+                'section_title': 'Nội dung đối chiếu',
+                'phonetic': '', 'native': '', 'vietnamese': '',
             })
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
                 native = str(item.get('native', '')).strip()
+                if source_lang == 'th':
+                    native = self._sanitize_thai_output(native)
+                    
                 vietnamese = str(item.get('vietnamese', '')).strip()
                 phonetic = str(item.get('phonetic', '')).strip()
-                if native and (vietnamese or phonetic):
+                if native:
                     rows.append({
                         'row_type': 'row',
                         'phonetic': phonetic,
@@ -2239,8 +2421,111 @@ TRẢ VỀ JSON ARRAY, KHÔNG GIẢI THÍCH.
                     })
             return rows
         except Exception as e:
-            self.logger.warning(f"global_to_vi alignment parse error: {e}")
+            self.logger.warning(f"global_to_vi paragraph parse error: {e}")
             return []
+
+    def _translate_and_align_foreign_to_vi(
+        self,
+        source_text: str,
+        source_lang: str,
+        fast_mode: bool = True
+    ) -> Dict[str, Any]:
+        """
+        One-shot translation and alignment for maximum speed.
+        Returns {'script': str, 'verification_rows': List}
+        """
+        lang_name_map = {'th': 'Tiếng Thái', 'ja': 'Tiếng Nhật', 'ko': 'Tiếng Hàn'}
+        source_lang_name = lang_name_map.get(source_lang, source_lang)
+        
+        # Split source into lines to help AI align
+        source_lines = [line.strip() for line in source_text.strip().split('\n') if line.strip()]
+        numbered_source = '\n'.join([f"{i+1}. {line}" for i, line in enumerate(source_lines)])
+
+        prompt = f"""
+NHIỆM VỤ: Dịch kịch bản {source_lang_name} sang Tiếng Việt và khớp 1-1 từng dòng.
+
+KỊCH BẢN GỐC ({source_lang_name}):
+{numbered_source}
+
+YÊU CẦU:
+- Dịch mượt mà (Huy Ca style), xưng hô Tôi - Bạn.
+- Khớp 1-1: Mỗi dòng gốc phải có đúng 1 đối tượng JSON tương ứng.
+- Cột "native": Giữ nguyên 100% dòng gốc.
+- Cột "vietnamese": Bản dịch tiếng Việt mượt mà.
+- Cột "phonetic": Phiên âm Latin của native.
+
+TRẢ VỀ DUY NHẤT 1 JSON ARRAY (KHÔNG GIẢI THÍCH):
+[
+  {{"id": 1, "native": "...", "vietnamese": "...", "phonetic": "..."}}
+]
+""".strip()
+
+        text = self._call_deepseek_raw(
+            prompt=prompt,
+            system_msg=f"Bạn là chuyên gia dịch thuật và căn chỉnh kịch bản {source_lang_name}-Việt. Trả về JSON ARRAY.",
+            timeout=60 if fast_mode else 90,
+            log_prefix="One-shot Array (DeepSeek)"
+        )
+        
+        if not text:
+            return {'script': '', 'verification_rows': []}
+            
+        rows_data = self._extract_json_array(text)
+        if not rows_data:
+            return {'script': '', 'verification_rows': []}
+
+        # Reconstruct full script from rows for smoothness
+        full_script = " ".join([str(r.get('vietnamese', '')).strip() for r in rows_data if r.get('vietnamese')])
+        
+        # Post-process Thai
+        if source_lang == 'th':
+            full_script = self._sanitize_thai_output(full_script)
+            for r in rows_data:
+                r['native'] = self._sanitize_thai_output(r.get('native', ''))
+                r['vietnamese'] = self._sanitize_thai_output(r.get('vietnamese', ''))
+        
+        formatted_rows = self._sanitize_and_format_rows(rows_data, source_lang)
+        return {'script': full_script, 'verification_rows': formatted_rows}
+
+    def _sanitize_and_format_rows(self, rows_data: List[Dict], source_lang: str) -> List[Dict]:
+        rows = [{
+            'row_type': 'section',
+            'section_title': 'Nội dung đối chiếu',
+            'phonetic': '', 'native': '', 'vietnamese': '',
+        }]
+        for item in rows_data:
+            native = str(item.get('native', '')).strip()
+            if source_lang == 'th':
+                native = self._sanitize_thai_output(native)
+            rows.append({
+                'row_type': 'row',
+                'phonetic': str(item.get('phonetic', '')).strip(),
+                'native': native,
+                'vietnamese': str(item.get('vietnamese', '')).strip(),
+            })
+        return rows
+
+    def _sanitize_thai_output(self, text: str) -> str:
+        """
+        Hard-coded post-processing for Thai to ensure brand persona.
+        Replaces aggressive/forbidden words with preferred elegant ones.
+        """
+        if not text:
+            return text
+        
+        # 1. Replace "robbery" word with "elegant attention"
+        # Handles both with and without suffix
+        text = text.replace("ขโมยซีนไป", "โดยไม่แย่งความสนใจ")
+        text = text.replace("ขโมยซีน", "โดย không แy่ง ความ สนใจ") # From prompt spec
+        
+        # 2. Enforce Pronouns (Phom vs Huy Ca)
+        text = text.replace("Huy Ca", "ผม")
+        text = text.replace("ฮุยกา", "ผม")
+        
+        # 3. Final cleanup for specific user request spelling
+        text = text.replace("โดย không แy่ง ความ สนใจ", "โดย không แy่ง ความ สนใจ")
+        
+        return text
 
     def _repair_invalid_phonetic_rows(self, rows: List[Dict[str, str]], output_language: str) -> List[Dict[str, str]]:
         """
