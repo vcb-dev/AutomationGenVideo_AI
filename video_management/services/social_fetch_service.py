@@ -123,6 +123,152 @@ def _fb_token() -> str:
     return _env('FACEBOOK_ACCESS_TOKEN')
 
 
+# ─── Facebook Ads Manager ────────────────────────────────────────────────────
+
+def get_fb_ad_accounts() -> list:
+    """Lấy danh sách ad account của user."""
+    try:
+        r = requests.get(f"{FB_BASE}/me/adaccounts", params={
+            "access_token": _fb_token(),
+            "fields": "id,name,account_status,currency,spend_cap,amount_spent",
+        }, timeout=15)
+        r.raise_for_status()
+        return r.json().get("data", [])
+    except Exception as e:
+        logger.error(f"FB ad accounts error: {e}")
+        return []
+
+
+def get_fb_ads_report(date_preset: str = "this_month", account_id: str = None) -> list:
+    """
+    Fetch campaign insights từ Facebook Ads Manager.
+    date_preset: today, yesterday, this_week_mon_today, last_7d, last_30d, this_month, last_month
+    """
+    try:
+        # Dùng account Ads.Vienchibao Official nếu không chỉ định
+        if not account_id:
+            account_id = "act_721012660672250"
+
+        # Query trực tiếp insights ở account level — nhanh và đầy đủ hơn
+        insights_r = requests.get(f"{FB_BASE}/{account_id}/insights", params={
+            "access_token": _fb_token(),
+            "fields": "campaign_name,campaign_id,spend,impressions,reach,clicks,actions,cost_per_action_type,date_start,date_stop",
+            "date_preset": date_preset,
+            "level": "campaign",
+            "limit": 100,
+        }, timeout=30)
+        insights_r.raise_for_status()
+        rows = insights_r.json().get("data", [])
+
+        results = [_parse_camp_insight(r) for r in rows]
+        results.sort(key=lambda x: float(x.get("spend", 0)), reverse=True)
+        return results
+    except Exception as e:
+        logger.error(f"FB ads report error: {e}")
+        return []
+
+
+def _parse_camp_insight(row: dict) -> dict:
+    """Parse 1 dòng insights thành format chuẩn. Spend đã là VND (tài khoản VN)."""
+    actions = {a["action_type"]: int(float(a["value"])) for a in row.get("actions", [])}
+    cost_per = {a["action_type"]: float(a["value"]) for a in row.get("cost_per_action_type", [])}
+
+    # Mess = cuộc hội thoại bắt đầu qua Messenger
+    mess = actions.get("onsite_conversion.messaging_conversation_started_7d", 0)
+    cost_mess = cost_per.get("onsite_conversion.messaging_conversation_started_7d", 0)
+
+    # Like page
+    like_page = actions.get("like", 0)
+    cost_like = cost_per.get("like", 0)
+
+    # Tương tác
+    engagements = actions.get("post_engagement", 0)
+    cost_engage = cost_per.get("post_engagement", 0)
+
+    spend_vnd = float(row.get("spend", 0))  # Tài khoản VN → đã là VND
+
+    # Tính cost/mess từ spend nếu API không trả về
+    if mess > 0 and cost_mess == 0:
+        cost_mess = spend_vnd / mess
+
+    name = row.get("campaign_name", "N/A")
+    # Parse camp_type và content_type từ tên campaign (format: ... - Mess/Like page/Tương tác - A1/A2/A3/A4/A5)
+    name_lower = name.lower()
+    if "mess" in name_lower:
+        camp_type = "mess"
+    elif "like page" in name_lower or "like_page" in name_lower:
+        camp_type = "like_page"
+    elif "tương tác" in name_lower or "tuong tac" in name_lower:
+        camp_type = "tuong_tac"
+    else:
+        camp_type = "other"
+
+    content_type = "unknown"
+    for ct in ["A5", "A4", "A3", "A2", "A1"]:
+        if f"- {ct}" in name or f"- {ct} -" in name or name.endswith(ct):
+            content_type = ct
+            break
+
+    return {
+        "campaign_name": name,
+        "camp_type": camp_type,
+        "content_type": content_type,
+        "spend": spend_vnd,
+        "impressions": int(row.get("impressions", 0)),
+        "reach": int(row.get("reach", 0)),
+        "clicks": int(row.get("clicks", 0)),
+        "mess": mess,
+        "cost_per_mess": round(cost_mess),
+        "like_page": like_page,
+        "cost_per_like": round(cost_like),
+        "engagements": engagements,
+        "cost_per_engagement": round(cost_engage),
+        "period": f"{row.get('date_start','')} → {row.get('date_stop','')}",
+    }
+
+
+def get_fb_ads_summary(date_preset: str = "this_month") -> dict:
+    """Tổng hợp toàn bộ ads account: tổng chi, camp tốt/xấu theo rule VCB."""
+    camps = get_fb_ads_report(date_preset)
+    if not camps:
+        return {"error": "Không lấy được dữ liệu ads. Kiểm tra lại access token."}
+
+    total_spend = sum(c["spend"] for c in camps)
+    total_mess = sum(c["mess"] for c in camps)
+    total_likes = sum(c["like_page"] for c in camps)
+
+    good, warning, bad = [], [], []
+    for c in camps:
+        if c["camp_type"] == "mess" and c["mess"] > 0:
+            cpm = c["cost_per_mess"]
+            if cpm <= 10000:
+                good.append(c["campaign_name"])
+            elif cpm <= 15000:
+                warning.append(c["campaign_name"])
+            else:
+                bad.append(c["campaign_name"])
+        elif c["camp_type"] == "like_page" and c["like_page"] > 0:
+            cpl = c["cost_per_like"]
+            if cpl <= 1000:
+                good.append(c["campaign_name"])
+            elif cpl <= 1500:
+                warning.append(c["campaign_name"])
+            else:
+                bad.append(c["campaign_name"])
+
+    return {
+        "period": date_preset,
+        "total_campaigns": len(camps),
+        "total_spend_vnd": total_spend,
+        "total_mess": total_mess,
+        "total_likes": total_likes,
+        "good_camps": good,
+        "warning_camps": warning,
+        "bad_camps": bad,
+        "campaigns": camps,
+    }
+
+
 def get_facebook_pages() -> list:
     """Lấy danh sách page FB đang quản lý."""
     try:
@@ -475,6 +621,31 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_fb_ads_summary",
+        "description": "Lấy báo cáo tổng hợp quảng cáo Facebook Ads Manager: tổng chi tiêu, số mess, like page, danh sách camp GOOD/WARNING/BAD theo rule VCB. Dùng khi hỏi báo cáo ads, chi tiêu quảng cáo, camp nào đang chạy tốt.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_preset": {
+                    "type": "string",
+                    "description": "Khoảng thời gian: today, yesterday, last_7d, last_30d, this_month, last_month",
+                    "default": "this_month",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_fb_ads_report",
+        "description": "Lấy danh sách chi tiết từng campaign quảng cáo Facebook: spend, mess, like, engagement và chi phí từng loại.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_preset": {"type": "string", "default": "this_month"},
+                "account_id": {"type": "string", "description": "Ad account ID (tuỳ chọn, tự động lấy nếu bỏ trống)"},
+            },
+        },
+    },
+    {
         "name": "analyze_ads_camp",
         "description": "Phân tích hiệu quả camp quảng cáo Facebook theo rule nội bộ VCB. Trả về: verdict (GOOD/WARNING/BAD), action (SCALE/KEEP/TEST/STOP), lý do, cảnh báo và insight chiến lược.",
         "parameters": {
@@ -505,6 +676,8 @@ def call_tool(name: str, args: dict):
         "get_instagram_accounts": lambda a: get_instagram_accounts(),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
+        "get_fb_ads_summary": lambda a: get_fb_ads_summary(a.get("date_preset", "this_month")),
+        "get_fb_ads_report": lambda a: get_fb_ads_report(a.get("date_preset", "this_month"), a.get("account_id")),
         "analyze_ads_camp": lambda a: analyze_ads_camp(
             content_type=a["content_type"],
             camp_type=a["camp_type"],

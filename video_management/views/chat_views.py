@@ -114,6 +114,18 @@ def _get_deepseek_key() -> str:
     return key or os.getenv('DEEPSEEK_API_KEY', '').strip()
 
 
+def _extract_json(text: str) -> dict:
+    """Parse JSON từ response — xử lý cả trường hợp DeepSeek bọc trong markdown code block."""
+    text = text.strip()
+    # Strip markdown code block: ```json ... ``` hoặc ``` ... ```
+    if text.startswith("```"):
+        lines = text.split("\n")
+        # Bỏ dòng đầu (```json) và dòng cuối (```)
+        inner = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        text = inner.strip()
+    return json.loads(text)
+
+
 def _call_deepseek_with_tools(messages: list) -> dict | None:
     """Gọi DeepSeek với function calling, tự động gọi tools nếu cần."""
     key = _get_deepseek_key()
@@ -142,16 +154,15 @@ def _call_deepseek_with_tools(messages: list) -> dict | None:
         choice = result["choices"][0]
         msg = choice["message"]
 
-        # Nếu AI không gọi tool → trả về trực tiếp (câu hỏi hội thoại)
+        # Nếu AI không gọi tool → trả về trực tiếp
         if choice.get("finish_reason") != "tool_calls" or not msg.get("tool_calls"):
-            # Thử parse JSON response
             content = msg.get("content", "")
             try:
-                return json.loads(content)
+                return _extract_json(content)
             except Exception:
                 return {"message": content}
 
-        # Bước 2: Thực thi các tool calls
+        # Bước 2: Thực thi tool calls
         tool_calls = msg["tool_calls"]
         messages_with_tools = messages + [msg]
 
@@ -165,13 +176,23 @@ def _call_deepseek_with_tools(messages: list) -> dict | None:
             logger.info(f"Calling tool: {fn_name} args={fn_args}")
             tool_result = call_tool(fn_name, fn_args)
 
+            # Giới hạn data trả về để tránh context quá lớn
+            tool_json = json.dumps(tool_result, ensure_ascii=False, default=str)
+            if len(tool_json) > 8000:
+                # Cắt bớt nếu quá dài (giữ các items đầu)
+                if isinstance(tool_result, list):
+                    tool_result = tool_result[:20]
+                elif isinstance(tool_result, dict) and "campaigns" in tool_result:
+                    tool_result["campaigns"] = tool_result["campaigns"][:20]
+                tool_json = json.dumps(tool_result, ensure_ascii=False, default=str)
+
             messages_with_tools.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": json.dumps(tool_result, ensure_ascii=False, default=str),
+                "content": tool_json,
             })
 
-        # Bước 3: Gọi lại DeepSeek với kết quả tool, yêu cầu trả JSON dashboard
+        # Bước 3: Gọi lại DeepSeek với kết quả tool
         final_payload = {
             "model": "deepseek-chat",
             "messages": messages_with_tools,
@@ -182,10 +203,15 @@ def _call_deepseek_with_tools(messages: list) -> dict | None:
         final_resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=final_payload, timeout=60)
         final_resp.raise_for_status()
         content = final_resp.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
+        try:
+            return _extract_json(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"DeepSeek JSON parse error: {e} | content[:200]: {content[:200]}")
+            # Fallback: trả về message text thay vì crash
+            return {"message": content[:500] if content else "Không thể xử lý phản hồi từ AI."}
 
     except json.JSONDecodeError as e:
-        logger.error(f"DeepSeek JSON parse error: {e}")
+        logger.error(f"DeepSeek outer JSON parse error: {e}")
         return None
     except Exception as e:
         logger.error(f"DeepSeek API error: {e}")
