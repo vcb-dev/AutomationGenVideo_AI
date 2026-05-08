@@ -99,6 +99,13 @@ urlpatterns = [
     path('api/', include('video_management.urls')),
 ]
 
+# VCB Assistant Chat
+from video_management.views import chat_views
+
+urlpatterns += [
+    path('api/chat/', chat_views.chat, name='vcb-chat'),
+]
+
 # Cached audio serving endpoint
 from video_management.views.smart_mix_video_views import serve_cached_audio
 
