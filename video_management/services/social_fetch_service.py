@@ -40,24 +40,21 @@ def _db_query(sql: str, params=None) -> list:
 # ─── DB Tools ───────────────────────────────────────────────────────────────
 
 def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
-    """Danh sách kênh + thông tin chủ sở hữu/team từ DB."""
-    where = "WHERE tc.is_active = true"
+    """Danh sách kênh + thông tin chủ sở hữu/team từ bảng huyk_channels."""
+    where = "WHERE status = 'Đang hoạt động'"
     params = []
     if platform:
-        where += " AND LOWER(tc.platform::text) = LOWER(%s)"
-        params.append(platform)
+        where += " AND LOWER(platform) LIKE LOWER(%s)"
+        params.append(f"%{platform}%")
 
     sql = f"""
         SELECT
-            tc.id, tc.platform::text AS platform, tc.username, tc.display_name,
-            tc.total_followers, tc.total_views, tc.total_likes, tc.total_videos,
-            tc.engagement_rate, tc.last_synced_at,
-            u.full_name AS owner_name, u.email AS owner_email,
-            u.team, u.employee_position, u.roles
-        FROM tracked_channels tc
-        LEFT JOIN users u ON u.id = tc.user_id
+            id, name AS display_name, platform, channel_id AS username,
+            link_channel, team_traffic AS team, owner AS owner_name,
+            email AS owner_email, status
+        FROM huyk_channels
         {where}
-        ORDER BY tc.total_followers DESC NULLS LAST
+        ORDER BY name
         LIMIT %s
     """
     params.append(limit)
@@ -65,51 +62,43 @@ def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
 
 
 def get_team_channel_summary() -> list:
-    """Tổng hợp số kênh + follower theo team."""
+    """Tổng hợp số kênh theo team từ huyk_channels."""
     sql = """
         SELECT
-            COALESCE(u.team, 'Chưa phân team') AS team,
-            COUNT(tc.id) AS total_channels,
-            COUNT(DISTINCT tc.platform) AS platforms,
-            SUM(tc.total_followers) AS total_followers,
-            SUM(tc.total_views) AS total_views,
-            AVG(tc.engagement_rate) AS avg_engagement
-        FROM tracked_channels tc
-        LEFT JOIN users u ON u.id = tc.user_id
-        WHERE tc.is_active = true
-        GROUP BY u.team
-        ORDER BY total_followers DESC NULLS LAST
+            COALESCE(NULLIF(team_traffic, ''), 'Chưa phân team') AS team,
+            COUNT(*) AS total_channels,
+            COUNT(DISTINCT platform) AS platforms,
+            STRING_AGG(DISTINCT platform, ', ' ORDER BY platform) AS platform_list
+        FROM huyk_channels
+        WHERE status = 'Đang hoạt động'
+        GROUP BY team_traffic
+        ORDER BY total_channels DESC
     """
     return _db_query(sql)
 
 
 def get_top_channels(limit: int = 10, metric: str = 'total_followers') -> list:
-    allowed = {'total_followers', 'total_views', 'total_likes', 'engagement_rate'}
-    col = metric if metric in allowed else 'total_followers'
-    sql = f"""
-        SELECT
-            tc.platform::text, tc.username, tc.display_name,
-            tc.total_followers, tc.total_views, tc.engagement_rate,
-            u.full_name AS owner, u.team
-        FROM tracked_channels tc
-        LEFT JOIN users u ON u.id = tc.user_id
-        WHERE tc.is_active = true AND tc.{col} IS NOT NULL
-        ORDER BY tc.{col} DESC NULLS LAST
+    """Top kênh từ huyk_channels (sorted by name vì chưa có metrics)."""
+    sql = """
+        SELECT name AS display_name, platform, channel_id AS username,
+               team_traffic AS team, owner AS owner_name, link_channel
+        FROM huyk_channels
+        WHERE status = 'Đang hoạt động'
+        ORDER BY name
         LIMIT %s
     """
     return _db_query(sql, [limit])
 
 
 def get_user_channels(user_name: str) -> list:
-    """Kênh của một nhân viên cụ thể."""
+    """Kênh của một nhân viên cụ thể từ huyk_channels."""
     sql = """
-        SELECT tc.platform::text, tc.username, tc.display_name,
-               tc.total_followers, tc.total_views, tc.engagement_rate
-        FROM tracked_channels tc
-        JOIN users u ON u.id = tc.user_id
-        WHERE tc.is_active = true
-          AND (LOWER(u.full_name) LIKE LOWER(%s) OR LOWER(u.email) LIKE LOWER(%s))
-        ORDER BY tc.total_followers DESC NULLS LAST
+        SELECT name AS display_name, platform, channel_id AS username,
+               team_traffic AS team, link_channel
+        FROM huyk_channels
+        WHERE status = 'Đang hoạt động'
+          AND (LOWER(owner) LIKE LOWER(%s) OR LOWER(email) LIKE LOWER(%s))
+        ORDER BY platform, name
     """
     pattern = f"%{user_name}%"
     return _db_query(sql, [pattern, pattern])
@@ -287,25 +276,41 @@ def get_youtube_monthly_views(channel_identifier: str, year: int, month: int) ->
     channel_identifier: channel ID (UCxxx) hoặc handle (@handle) hoặc username.
     """
     key = _yt_key()
+    # Làm sạch identifier — trim newline, space
+    channel_identifier = channel_identifier.strip().strip("\n").strip()
+    if not channel_identifier:
+        return {"error": "channel_identifier trống"}
+
     date_from, date_to = _month_range(year, month)
 
     try:
-        # Resolve channel ID nếu là handle/username
         channel_id = channel_identifier
-        if not channel_identifier.startswith("UC"):
-            handle = channel_identifier.lstrip("@")
+        channel_stats = {}
+
+        if channel_identifier.startswith("UC"):
+            # Đã là channel ID
+            r0 = requests.get(f"{YT_BASE}/channels", params={
+                "key": key, "id": channel_identifier, "part": "id,snippet,statistics",
+            }, timeout=10)
+            if r0.ok:
+                items0 = r0.json().get("items", [])
+                if items0:
+                    channel_stats = items0[0].get("statistics", {})
+        else:
+            handle = channel_identifier.lstrip("@").strip()
+            if not handle:
+                return {"error": "handle trống"}
+            # Thử forHandle trước
             r = requests.get(f"{YT_BASE}/channels", params={
                 "key": key, "forHandle": f"@{handle}", "part": "id,snippet,statistics",
             }, timeout=10)
-            r.raise_for_status()
-            items = r.json().get("items", [])
+            items = r.json().get("items", []) if r.ok else []
             if not items:
-                # Thử forUsername
+                # Fallback forUsername
                 r2 = requests.get(f"{YT_BASE}/channels", params={
                     "key": key, "forUsername": handle, "part": "id,snippet,statistics",
                 }, timeout=10)
-                r2.raise_for_status()
-                items = r2.json().get("items", [])
+                items = r2.json().get("items", []) if r2.ok else []
             if items:
                 channel_id = items[0]["id"]
                 channel_stats = items[0].get("statistics", {})
@@ -374,8 +379,11 @@ def get_facebook_page_monthly_views(page_identifier: str, year: int, month: int)
             "access_token": token,
             "fields": "id,name,access_token,fan_count",
         }, timeout=10)
-        page_r.raise_for_status()
+        if not page_r.ok:
+            return {"error": f"Không có quyền truy cập page: {page_identifier}", "total_views": 0}
         page_data = page_r.json()
+        if "error" in page_data:
+            return {"error": page_data["error"].get("message", "FB API error"), "total_views": 0}
         page_token = page_data.get("access_token", token)
         page_id = page_data.get("id", page_identifier)
 
@@ -445,19 +453,40 @@ def get_facebook_page_monthly_views(page_identifier: str, year: int, month: int)
         return {"error": str(e), "page": page_identifier}
 
 
+def _normalize_platform(raw: str) -> str:
+    p = (raw or "").lower().strip()
+    if "tiktok" in p: return "tiktok"
+    if "instagram" in p or p == "ig": return "instagram"
+    if "facebook" in p: return "facebook"
+    if "youtube" in p: return "youtube"
+    return p
+
+
 def get_channels_monthly_views(year: int, month: int, platform: str = None) -> list:
     """
-    Tổng hợp lượt xem tháng cho TẤT CẢ kênh trong DB.
-    Tự động gọi đúng API theo platform của từng kênh.
+    Tổng hợp lượt xem tháng cho các kênh — giới hạn 15 kênh/lần để tránh timeout.
     """
-    channels = get_channels_with_owners(platform=platform, limit=50)
+    channels = get_channels_with_owners(platform=platform, limit=100)
     if not channels:
         return []
 
-    results = []
+    # Lọc và chuẩn hóa — bỏ kênh không có channel_id
+    valid = []
     for ch in channels:
-        plat = (ch.get("platform") or "").lower()
-        username = ch.get("username", "")
+        uid = (ch.get("username") or "").strip().strip("\n").strip()
+        if not uid:
+            continue
+        ch["username"] = uid
+        ch["_platform"] = _normalize_platform(ch.get("platform", ""))
+        valid.append(ch)
+
+    # Giới hạn 15 kênh để tránh timeout
+    valid = valid[:15]
+
+    results = []
+    for ch in valid:
+        plat = ch["_platform"]
+        username = ch["username"]
         display = ch.get("display_name") or username
 
         if plat == "youtube":
