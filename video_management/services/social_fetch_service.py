@@ -269,6 +269,239 @@ def get_fb_ads_summary(date_preset: str = "this_month") -> dict:
     }
 
 
+# ─── Monthly Views by Platform ───────────────────────────────────────────────
+
+import calendar
+from datetime import date, datetime as dt
+
+
+def _month_range(year: int, month: int):
+    """Trả về (date_from, date_to) dạng string YYYY-MM-DD."""
+    last_day = calendar.monthrange(year, month)[1]
+    return f"{year}-{month:02d}-01", f"{year}-{month:02d}-{last_day}"
+
+
+def get_youtube_monthly_views(channel_identifier: str, year: int, month: int) -> dict:
+    """
+    Lấy tổng views của các video đăng trong tháng từ YouTube channel.
+    channel_identifier: channel ID (UCxxx) hoặc handle (@handle) hoặc username.
+    """
+    key = _yt_key()
+    date_from, date_to = _month_range(year, month)
+
+    try:
+        # Resolve channel ID nếu là handle/username
+        channel_id = channel_identifier
+        if not channel_identifier.startswith("UC"):
+            handle = channel_identifier.lstrip("@")
+            r = requests.get(f"{YT_BASE}/channels", params={
+                "key": key, "forHandle": f"@{handle}", "part": "id,snippet,statistics",
+            }, timeout=10)
+            r.raise_for_status()
+            items = r.json().get("items", [])
+            if not items:
+                # Thử forUsername
+                r2 = requests.get(f"{YT_BASE}/channels", params={
+                    "key": key, "forUsername": handle, "part": "id,snippet,statistics",
+                }, timeout=10)
+                r2.raise_for_status()
+                items = r2.json().get("items", [])
+            if items:
+                channel_id = items[0]["id"]
+                channel_stats = items[0].get("statistics", {})
+            else:
+                return {"error": f"Không tìm thấy channel: {channel_identifier}"}
+
+        # Search videos trong tháng
+        search_r = requests.get(f"{YT_BASE}/search", params={
+            "key": key, "channelId": channel_id, "part": "id",
+            "type": "video", "order": "date",
+            "publishedAfter": f"{date_from}T00:00:00Z",
+            "publishedBefore": f"{date_to}T23:59:59Z",
+            "maxResults": 50,
+        }, timeout=15)
+        search_r.raise_for_status()
+        video_ids = [i["id"]["videoId"] for i in search_r.json().get("items", [])]
+
+        if not video_ids:
+            return {"channel": channel_identifier, "year": year, "month": month,
+                    "video_count": 0, "total_views": 0, "total_likes": 0, "videos": []}
+
+        # Lấy stats từng video
+        stats_r = requests.get(f"{YT_BASE}/videos", params={
+            "key": key, "id": ",".join(video_ids), "part": "snippet,statistics",
+        }, timeout=15)
+        stats_r.raise_for_status()
+
+        videos = []
+        for item in stats_r.json().get("items", []):
+            s = item.get("statistics", {})
+            videos.append({
+                "title": item["snippet"]["title"][:60],
+                "published_at": item["snippet"]["publishedAt"][:10],
+                "views": int(s.get("viewCount", 0)),
+                "likes": int(s.get("likeCount", 0)),
+            })
+
+        videos.sort(key=lambda x: x["views"], reverse=True)
+        return {
+            "channel": channel_identifier,
+            "channel_id": channel_id,
+            "year": year, "month": month,
+            "video_count": len(videos),
+            "total_views": sum(v["views"] for v in videos),
+            "total_likes": sum(v["likes"] for v in videos),
+            "videos": videos[:10],
+        }
+    except Exception as e:
+        logger.error(f"YT monthly views error: {e}")
+        return {"error": str(e), "channel": channel_identifier}
+
+
+def get_facebook_page_monthly_views(page_identifier: str, year: int, month: int) -> dict:
+    """
+    Lấy tổng views video của Facebook page trong tháng.
+    page_identifier: page username hoặc page ID.
+    """
+    token = _fb_token()
+    date_from, date_to = _month_range(year, month)
+    since = int(dt.strptime(date_from, "%Y-%m-%d").timestamp())
+    until = int(dt.strptime(date_to, "%Y-%m-%d").timestamp()) + 86399
+
+    try:
+        # Lấy page access token
+        page_r = requests.get(f"{FB_BASE}/{page_identifier}", params={
+            "access_token": token,
+            "fields": "id,name,access_token,fan_count",
+        }, timeout=10)
+        page_r.raise_for_status()
+        page_data = page_r.json()
+        page_token = page_data.get("access_token", token)
+        page_id = page_data.get("id", page_identifier)
+
+        # Lấy posts trong tháng
+        posts_r = requests.get(f"{FB_BASE}/{page_id}/posts", params={
+            "access_token": page_token,
+            "fields": "id,message,created_time,attachments{type}",
+            "since": since, "until": until,
+            "limit": 50,
+        }, timeout=15)
+        posts_r.raise_for_status()
+        posts = posts_r.json().get("data", [])
+
+        total_views = 0
+        total_likes = 0
+        video_count = 0
+        post_details = []
+
+        for post in posts:
+            post_id = post["id"]
+            try:
+                ins_r = requests.get(f"{FB_BASE}/{post_id}/insights", params={
+                    "access_token": page_token,
+                    "metric": "post_impressions,post_video_views,post_reactions_like_total",
+                }, timeout=10)
+                ins_r.raise_for_status()
+                ins_data = {d["name"]: d.get("values", [{}])[0].get("value", 0)
+                            for d in ins_r.json().get("data", [])}
+
+                video_views = ins_data.get("post_video_views", 0)
+                impressions = ins_data.get("post_impressions", 0)
+                likes = ins_data.get("post_reactions_like_total", 0)
+                if isinstance(video_views, dict): video_views = sum(video_views.values())
+                if isinstance(impressions, dict): impressions = sum(impressions.values())
+                if isinstance(likes, dict): likes = sum(likes.values())
+
+                # Ưu tiên video_views nếu có, fallback sang impressions
+                views = video_views if video_views > 0 else impressions
+                total_views += views
+                total_likes += likes
+                if views > 0:
+                    video_count += 1
+                    post_details.append({
+                        "post_id": post_id,
+                        "created_time": post.get("created_time", "")[:10],
+                        "message": post.get("message", "")[:50],
+                        "views": views,
+                        "type": "video" if video_views > 0 else "post",
+                        "likes": likes,
+                    })
+            except Exception:
+                pass
+
+        post_details.sort(key=lambda x: x["views"], reverse=True)
+        return {
+            "page": page_data.get("name", page_identifier),
+            "page_id": page_id,
+            "year": year, "month": month,
+            "post_count": len(posts),
+            "video_count": video_count,
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "top_posts": post_details[:10],
+        }
+    except Exception as e:
+        logger.error(f"FB monthly views error: {e}")
+        return {"error": str(e), "page": page_identifier}
+
+
+def get_channels_monthly_views(year: int, month: int, platform: str = None) -> list:
+    """
+    Tổng hợp lượt xem tháng cho TẤT CẢ kênh trong DB.
+    Tự động gọi đúng API theo platform của từng kênh.
+    """
+    channels = get_channels_with_owners(platform=platform, limit=50)
+    if not channels:
+        return []
+
+    results = []
+    for ch in channels:
+        plat = (ch.get("platform") or "").lower()
+        username = ch.get("username", "")
+        display = ch.get("display_name") or username
+
+        if plat == "youtube":
+            data = get_youtube_monthly_views(username, year, month)
+        elif plat == "facebook":
+            data = get_facebook_page_monthly_views(username, year, month)
+        elif plat == "tiktok":
+            data = get_tiktok_monthly_views(username, year, month)
+        else:
+            # Instagram: query DB scrapedvideo (nếu có) hoặc trả 0
+            sql = """
+                SELECT COUNT(*) as video_count,
+                       COALESCE(SUM(views_count), 0) as total_views,
+                       COALESCE(SUM(likes_count), 0) as total_likes
+                FROM video_management_scrapedvideo
+                WHERE LOWER(author_username) = LOWER(%s)
+                  AND LOWER(platform) = LOWER(%s)
+                  AND published_at >= %s AND published_at <= %s
+            """
+            rows = _db_query(sql, [username, plat, f"{year}-{month:02d}-01",
+                                   f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]}"])
+            row = rows[0] if rows else {}
+            data = {
+                "channel": display, "year": year, "month": month,
+                "video_count": int(row.get("video_count", 0)),
+                "total_views": int(row.get("total_views", 0)),
+                "total_likes": int(row.get("total_likes", 0)),
+            }
+
+        results.append({
+            "channel": display,
+            "platform": plat,
+            "owner": ch.get("owner_name", ""),
+            "team": ch.get("team", ""),
+            "video_count": data.get("video_count", 0),
+            "total_views": data.get("total_views", 0),
+            "total_likes": data.get("total_likes", 0),
+            "error": data.get("error"),
+        })
+
+    results.sort(key=lambda x: x["total_views"], reverse=True)
+    return results
+
+
 def get_facebook_pages() -> list:
     """Lấy danh sách page FB đang quản lý."""
     try:
@@ -436,6 +669,58 @@ def get_youtube_top_videos(channel_id: str, limit: int = 10) -> list:
 
 
 # ─── TikTok (via existing Apify/scraper) ────────────────────────────────────
+
+def get_tiktok_monthly_views(username: str, year: int, month: int) -> dict:
+    """Lấy views TikTok trong tháng qua Apify scraper."""
+    apify_token = _env('APIFY_API_TOKEN')
+    if not apify_token:
+        return {"channel": username, "year": year, "month": month,
+                "video_count": 0, "total_views": 0, "total_likes": 0,
+                "note": "Cần APIFY_API_TOKEN"}
+
+    date_from, date_to = _month_range(year, month)
+
+    try:
+        # Gọi Apify TikTok profile scraper
+        run_r = requests.post(
+            f"https://api.apify.com/v2/acts/clockworks~free-tiktok-scraper/run-sync-get-dataset-items",
+            params={"token": apify_token, "timeout": 60},
+            json={
+                "profiles": [username],
+                "resultsPerPage": 50,
+                "publishDateRange": {"since": date_from, "until": date_to},
+            },
+            timeout=90,
+        )
+        run_r.raise_for_status()
+        items = run_r.json()
+
+        videos = []
+        for item in items:
+            pub = (item.get("createTime") or item.get("createTimeISO") or "")[:10]
+            if pub < date_from or pub > date_to:
+                continue
+            videos.append({
+                "title": (item.get("text") or "")[:60],
+                "published_at": pub,
+                "views": int(item.get("playCount", 0)),
+                "likes": int(item.get("diggCount", 0)),
+            })
+
+        videos.sort(key=lambda x: x["views"], reverse=True)
+        return {
+            "channel": username, "year": year, "month": month,
+            "video_count": len(videos),
+            "total_views": sum(v["views"] for v in videos),
+            "total_likes": sum(v["likes"] for v in videos),
+            "videos": videos[:10],
+        }
+    except Exception as e:
+        logger.error(f"TikTok monthly views error for {username}: {e}")
+        return {"channel": username, "year": year, "month": month,
+                "video_count": 0, "total_views": 0, "total_likes": 0,
+                "error": str(e)}
+
 
 def get_tiktok_profile_from_db(username: str) -> dict:
     """Lấy TikTok profile từ DB (đã được sync bởi Apify)."""
@@ -621,6 +906,32 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_channels_monthly_views",
+        "description": "Lấy lượt xem thực tế của các kênh trong 1 tháng cụ thể bằng cách fetch video đăng trong tháng đó từ YouTube/Facebook API và DB. Dùng khi hỏi top kênh theo views tháng X, hiệu suất kênh tháng X.",
+        "parameters": {
+            "type": "object",
+            "required": ["year", "month"],
+            "properties": {
+                "year":  {"type": "integer", "description": "Năm, ví dụ: 2026"},
+                "month": {"type": "integer", "description": "Tháng (1-12), ví dụ: 5"},
+                "platform": {"type": "string", "description": "Lọc theo platform: youtube, facebook, tiktok, instagram. Bỏ trống = tất cả."},
+            },
+        },
+    },
+    {
+        "name": "get_youtube_monthly_views",
+        "description": "Lấy views YouTube của 1 kênh cụ thể trong tháng: tổng views, danh sách video, likes.",
+        "parameters": {
+            "type": "object",
+            "required": ["channel_identifier", "year", "month"],
+            "properties": {
+                "channel_identifier": {"type": "string", "description": "Channel ID (UCxxx), handle (@handle), hoặc username"},
+                "year":  {"type": "integer"},
+                "month": {"type": "integer"},
+            },
+        },
+    },
+    {
         "name": "get_fb_ads_summary",
         "description": "Lấy báo cáo tổng hợp quảng cáo Facebook Ads Manager: tổng chi tiêu, số mess, like page, danh sách camp GOOD/WARNING/BAD theo rule VCB. Dùng khi hỏi báo cáo ads, chi tiêu quảng cáo, camp nào đang chạy tốt.",
         "parameters": {
@@ -676,6 +987,10 @@ def call_tool(name: str, args: dict):
         "get_instagram_accounts": lambda a: get_instagram_accounts(),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
+        "get_channels_monthly_views": lambda a: get_channels_monthly_views(
+            int(a["year"]), int(a["month"]), a.get("platform")),
+        "get_youtube_monthly_views": lambda a: get_youtube_monthly_views(
+            a["channel_identifier"], int(a["year"]), int(a["month"])),
         "get_fb_ads_summary": lambda a: get_fb_ads_summary(a.get("date_preset", "this_month")),
         "get_fb_ads_report": lambda a: get_fb_ads_report(a.get("date_preset", "this_month"), a.get("account_id")),
         "analyze_ads_camp": lambda a: analyze_ads_camp(
