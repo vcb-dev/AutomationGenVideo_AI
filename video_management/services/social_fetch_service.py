@@ -2,6 +2,7 @@
 Fetch real-time data from social platforms + internal DB for VCB Assistant.
 """
 import os
+import re
 import logging
 import requests
 import psycopg2
@@ -57,6 +58,7 @@ def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
         ORDER BY name
         LIMIT %s
     """
+
     params.append(limit)
     return _db_query(sql, params)
 
@@ -374,23 +376,26 @@ def get_facebook_page_monthly_views(page_identifier: str, year: int, month: int)
     until = int(dt.strptime(date_to, "%Y-%m-%d").timestamp()) + 86399
 
     try:
-        # Lấy page access token
+        # Lấy thông tin page + page token (nếu là admin)
         page_r = requests.get(f"{FB_BASE}/{page_identifier}", params={
             "access_token": token,
-            "fields": "id,name,access_token,fan_count",
+            "fields": "id,name,access_token,fan_count,followers_count,talking_about_count",
         }, timeout=10)
         if not page_r.ok:
-            return {"error": f"Không có quyền truy cập page: {page_identifier}", "total_views": 0}
+            return {"error": f"Không tìm thấy page: {page_identifier}", "total_views": 0}
         page_data = page_r.json()
         if "error" in page_data:
             return {"error": page_data["error"].get("message", "FB API error"), "total_views": 0}
-        page_token = page_data.get("access_token", token)
+
         page_id = page_data.get("id", page_identifier)
+        page_token = page_data.get("access_token")  # None nếu không phải admin
+        is_admin = bool(page_token)
+        use_token = page_token or token  # dùng user token nếu không có page token
 
         # Lấy posts trong tháng
         posts_r = requests.get(f"{FB_BASE}/{page_id}/posts", params={
-            "access_token": page_token,
-            "fields": "id,message,created_time,attachments{type}",
+            "access_token": use_token,
+            "fields": "id,message,created_time,likes.summary(true),comments.summary(true),shares",
             "since": since, "until": until,
             "limit": 50,
         }, timeout=15)
@@ -399,58 +404,118 @@ def get_facebook_page_monthly_views(page_identifier: str, year: int, month: int)
 
         total_views = 0
         total_likes = 0
-        video_count = 0
+        total_comments = 0
+        total_shares = 0
         post_details = []
 
         for post in posts:
             post_id = post["id"]
-            try:
-                ins_r = requests.get(f"{FB_BASE}/{post_id}/insights", params={
-                    "access_token": page_token,
-                    "metric": "post_impressions,post_video_views,post_reactions_like_total",
-                }, timeout=10)
-                ins_r.raise_for_status()
-                ins_data = {d["name"]: d.get("values", [{}])[0].get("value", 0)
-                            for d in ins_r.json().get("data", [])}
+            likes = post.get("likes", {}).get("summary", {}).get("total_count", 0)
+            comments = post.get("comments", {}).get("summary", {}).get("total_count", 0)
+            shares = post.get("shares", {}).get("count", 0)
+            total_likes += likes
+            total_comments += comments
+            total_shares += shares
 
-                video_views = ins_data.get("post_video_views", 0)
-                impressions = ins_data.get("post_impressions", 0)
-                likes = ins_data.get("post_reactions_like_total", 0)
-                if isinstance(video_views, dict): video_views = sum(video_views.values())
-                if isinstance(impressions, dict): impressions = sum(impressions.values())
-                if isinstance(likes, dict): likes = sum(likes.values())
+            views = 0
+            if is_admin:
+                try:
+                    ins_r = requests.get(f"{FB_BASE}/{post_id}/insights", params={
+                        "access_token": page_token,
+                        "metric": "post_impressions,post_video_views",
+                    }, timeout=8)
+                    if ins_r.ok:
+                        ins_data = {d["name"]: d.get("values", [{}])[0].get("value", 0)
+                                    for d in ins_r.json().get("data", [])}
+                        video_views = ins_data.get("post_video_views", 0)
+                        impressions = ins_data.get("post_impressions", 0)
+                        if isinstance(video_views, dict): video_views = sum(video_views.values())
+                        if isinstance(impressions, dict): impressions = sum(impressions.values())
+                        views = video_views if video_views > 0 else impressions
+                except Exception:
+                    pass
 
-                # Ưu tiên video_views nếu có, fallback sang impressions
-                views = video_views if video_views > 0 else impressions
-                total_views += views
-                total_likes += likes
-                if views > 0:
-                    video_count += 1
-                    post_details.append({
-                        "post_id": post_id,
-                        "created_time": post.get("created_time", "")[:10],
-                        "message": post.get("message", "")[:50],
-                        "views": views,
-                        "type": "video" if video_views > 0 else "post",
-                        "likes": likes,
-                    })
-            except Exception:
-                pass
+            total_views += views
+            post_details.append({
+                "created_time": post.get("created_time", "")[:10],
+                "message": (post.get("message") or "")[:60],
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "shares": shares,
+            })
 
-        post_details.sort(key=lambda x: x["views"], reverse=True)
+        post_details.sort(key=lambda x: x["likes"] + x["comments"], reverse=True)
         return {
             "page": page_data.get("name", page_identifier),
             "page_id": page_id,
+            "followers": page_data.get("followers_count", 0),
+            "talking_about": page_data.get("talking_about_count", 0),
+            "is_admin": is_admin,
             "year": year, "month": month,
             "post_count": len(posts),
-            "video_count": video_count,
-            "total_views": total_views,
-            "total_likes": total_likes,
+            "total_views": total_views,        # chỉ có khi là admin
+            "total_likes": total_likes,         # luôn có
+            "total_comments": total_comments,   # luôn có
+            "total_shares": total_shares,       # luôn có
             "top_posts": post_details[:10],
+            "note": None if is_admin else "Không phải admin page → chỉ có engagement (likes/comments/shares), không có views/impressions",
         }
     except Exception as e:
         logger.error(f"FB monthly views error: {e}")
         return {"error": str(e), "page": page_identifier}
+
+
+def _extract_fb_identifier(channel_id: str, link_channel: str) -> str:
+    """
+    Lấy Facebook page identifier từ channel_id hoặc link_channel.
+    Ưu tiên channel_id, fallback sang parse link_channel.
+    """
+    cid = (channel_id or "").strip().strip("\n")
+    if cid:
+        return cid
+
+    url = (link_channel or "").strip()
+    if not url:
+        return ""
+
+    # profile.php?id=XXXXXXX
+    m = re.search(r'profile\.php\?id=(\d+)', url)
+    if m:
+        return m.group(1)
+
+    # /people/Name/XXXXXXX/
+    m = re.search(r'/people/[^/]+/(\d+)', url)
+    if m:
+        return m.group(1)
+
+    # facebook.com/username/ hoặc facebook.com/username
+    m = re.search(r'facebook\.com/([^/?#\s]+)', url)
+    if m:
+        slug = m.group(1).rstrip('/')
+        # Bỏ các slug không hợp lệ
+        if slug not in ('share', 'pages', 'groups', 'watch', 'video'):
+            return slug
+
+    return ""
+
+
+def _extract_yt_identifier(channel_id: str, link_channel: str) -> str:
+    """Lấy YouTube channel identifier từ channel_id hoặc link_channel."""
+    cid = (channel_id or "").strip().strip("\n")
+    if cid:
+        return cid
+
+    url = (link_channel or "").strip()
+    if not url:
+        return ""
+
+    # youtube.com/@handle hoặc youtube.com/channel/UCxxx hoặc youtube.com/c/name
+    m = re.search(r'youtube\.com/(@[^/?#\s]+|channel/([^/?#\s]+)|c/([^/?#\s]+))', url)
+    if m:
+        return m.group(1)  # trả về @handle hoặc channel/UCxxx
+
+    return ""
 
 
 def _normalize_platform(raw: str) -> str:
@@ -486,8 +551,26 @@ def get_channels_monthly_views(year: int, month: int, platform: str = None) -> l
     results = []
     for ch in valid:
         plat = ch["_platform"]
-        username = ch["username"]
-        display = ch.get("display_name") or username
+        raw_uid = ch.get("username", "")
+        link = ch.get("link_channel", "")
+        display = ch.get("display_name") or raw_uid
+
+        # Resolve identifier từ channel_id hoặc link_channel
+        if plat == "youtube":
+            username = _extract_yt_identifier(raw_uid, link)
+        elif plat == "facebook":
+            username = _extract_fb_identifier(raw_uid, link)
+        else:
+            username = raw_uid.strip().strip("\n")
+
+        if not username:
+            results.append({
+                "channel": display, "platform": plat,
+                "owner": ch.get("owner_name", ""), "team": ch.get("team", ""),
+                "video_count": 0, "total_views": 0, "total_likes": 0,
+                "error": "Thiếu channel_id và link_channel",
+            })
+            continue
 
         if plat == "youtube":
             data = get_youtube_monthly_views(username, year, month)
