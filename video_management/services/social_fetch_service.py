@@ -306,6 +306,112 @@ def get_tiktok_profile_from_db(username: str) -> dict:
     return rows[0] if rows else {}
 
 
+# ─── Ads Analysis Tool (rule-based, no API needed) ──────────────────────────
+
+def analyze_ads_camp(
+    content_type: str,      # A1/A2/A3/A4/A5
+    camp_type: str,         # like_page / tuong_tac / mess
+    cost_per_result: float,
+    results: int,
+    spend: float,
+    days_running: int,
+    views: int = 0,
+    page_size: int = 0,
+) -> dict:
+    """Phân tích camp ads theo rule nội bộ VCB."""
+    ct = content_type.upper().strip()
+    camp = camp_type.lower().strip()
+
+    verdict = "GOOD"
+    action = "KEEP"
+    reasons = []
+    insights = []
+    warnings = []
+
+    # ── Rule: A4 mới được chạy mess ─────────────────────────────────────────
+    if camp == "mess" and ct not in ("A4", "A5"):
+        warnings.append(f"⚠️ SAI CHIẾN LƯỢC: {ct} không được chạy mess — chỉ A4/A5 mới chạy mess")
+        verdict = "BAD"
+        action = "STOP"
+
+    # ── Rule đánh giá theo loại camp ────────────────────────────────────────
+    if camp == "mess":
+        if cost_per_result <= 10000:
+            reasons.append(f"✅ Cost/mess {cost_per_result:,.0f}đ ≤ 10.000đ → TỐT")
+            verdict = max(verdict, "GOOD") if verdict != "BAD" else verdict
+            if results > 30 and cost_per_result < 8000:
+                action = "SCALE"
+                insights.append("🚀 SCALE MẠNH: mess > 30 và cost < 8.000đ")
+        else:
+            reasons.append(f"❌ Cost/mess {cost_per_result:,.0f}đ > 10.000đ → KÉM")
+            verdict = "BAD"
+            action = "STOP"
+
+        if days_running > 3:
+            if results < 20:
+                warnings.append(f"⛔ Chạy {days_running} ngày nhưng chỉ {results} mess < 20 → STOP")
+                verdict = "BAD"
+                action = "STOP"
+            if cost_per_result > 15000:
+                warnings.append(f"⛔ Chạy {days_running} ngày, cost {cost_per_result:,.0f}đ > 15.000đ → STOP")
+                verdict = "BAD"
+                action = "STOP"
+
+    elif camp == "like_page":
+        if cost_per_result <= 1000:
+            reasons.append(f"✅ Cost/follow {cost_per_result:,.0f}đ ≤ 1.000đ → TỐT → SCALE")
+            action = "SCALE"
+        elif cost_per_result <= 1500:
+            reasons.append(f"⚡ Cost/follow {cost_per_result:,.0f}đ (1.000–1.500đ) → TRUNG BÌNH → TEST")
+            verdict = "WARNING"
+            action = "TEST"
+        else:
+            reasons.append(f"❌ Cost/follow {cost_per_result:,.0f}đ > 1.500đ → KÉM → STOP")
+            verdict = "BAD"
+            action = "STOP"
+
+    elif camp == "tuong_tac":
+        if cost_per_result <= 12:
+            reasons.append(f"✅ Cost/tương tác {cost_per_result:,.0f}đ ≈ 12đ → TỐT")
+        elif cost_per_result <= 20:
+            reasons.append(f"⚡ Cost/tương tác {cost_per_result:,.0f}đ (12–20đ) → TRUNG BÌNH")
+            verdict = "WARNING"
+        else:
+            reasons.append(f"❌ Cost/tương tác {cost_per_result:,.0f}đ > 20đ → STOP")
+            verdict = "BAD"
+            action = "STOP"
+        insights.append("ℹ️ Camp tương tác: không cần scale mạnh")
+
+    # ── Rule tắt ads theo content type ──────────────────────────────────────
+    tuat_threshold = {"A1": 20, "A2": 30, "A3": 30, "A4": 40, "A5": 40}.get(ct)
+    if tuat_threshold and cost_per_result > tuat_threshold and days_running > 3:
+        warnings.append(f"⛔ {ct} chạy {days_running} ngày, cost {cost_per_result:,.0f}đ > {tuat_threshold}đ → STOP")
+        verdict = "BAD"
+        action = "STOP"
+
+    # ── Insight content strategy ─────────────────────────────────────────────
+    if ct in ("A1", "A2", "A3") and camp == "mess":
+        insights.append("💡 Cân nhắc chuyển sang A4 để tối ưu mess campaign")
+    if ct == "A4" and camp == "mess" and action == "SCALE":
+        insights.append("🎯 Content A4 đang WIN — nhân nhóm ngay!")
+    if spend > 500000 and verdict == "BAD":
+        insights.append(f"🔥 Đang đốt {spend:,.0f}đ — dừng ngay để tránh lãng phí")
+
+    return {
+        "verdict": verdict,
+        "action": action,
+        "content_type": ct,
+        "camp_type": camp,
+        "cost_per_result": cost_per_result,
+        "results": results,
+        "spend": spend,
+        "days_running": days_running,
+        "reasons": reasons,
+        "warnings": warnings,
+        "insights": insights,
+    }
+
+
 # ─── Router: chọn đúng tool theo intent ─────────────────────────────────────
 
 TOOL_DEFINITIONS = [
@@ -368,6 +474,24 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "name": "analyze_ads_camp",
+        "description": "Phân tích hiệu quả camp quảng cáo Facebook theo rule nội bộ VCB. Trả về: verdict (GOOD/WARNING/BAD), action (SCALE/KEEP/TEST/STOP), lý do, cảnh báo và insight chiến lược.",
+        "parameters": {
+            "type": "object",
+            "required": ["content_type", "camp_type", "cost_per_result", "results", "spend", "days_running"],
+            "properties": {
+                "content_type": {"type": "string", "description": "Loại content: A1, A2, A3, A4, A5"},
+                "camp_type": {"type": "string", "description": "Loại camp: like_page, tuong_tac, mess"},
+                "cost_per_result": {"type": "number", "description": "Chi phí mỗi kết quả (đồng)"},
+                "results": {"type": "integer", "description": "Số kết quả đạt được"},
+                "spend": {"type": "number", "description": "Tổng chi tiêu (đồng)"},
+                "days_running": {"type": "integer", "description": "Số ngày đã chạy"},
+                "views": {"type": "integer", "description": "Số lượt xem (tuỳ chọn)", "default": 0},
+                "page_size": {"type": "integer", "description": "Kích thước page (tuỳ chọn)", "default": 0},
+            },
+        },
+    },
 ]
 
 
@@ -381,6 +505,16 @@ def call_tool(name: str, args: dict):
         "get_instagram_accounts": lambda a: get_instagram_accounts(),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
+        "analyze_ads_camp": lambda a: analyze_ads_camp(
+            content_type=a["content_type"],
+            camp_type=a["camp_type"],
+            cost_per_result=float(a["cost_per_result"]),
+            results=int(a["results"]),
+            spend=float(a["spend"]),
+            days_running=int(a["days_running"]),
+            views=int(a.get("views", 0)),
+            page_size=int(a.get("page_size", 0)),
+        ),
     }
     fn = fn_map.get(name)
     if fn:
