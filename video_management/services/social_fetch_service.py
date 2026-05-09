@@ -936,56 +936,196 @@ def get_youtube_top_videos(channel_id: str, limit: int = 10) -> list:
 
 # ─── TikTok (via existing Apify/scraper) ────────────────────────────────────
 
-def get_tiktok_monthly_views(username: str, year: int, month: int) -> dict:
-    """Lấy views TikTok trong tháng qua Apify scraper."""
+def _apify_fetch_tiktok(username: str, max_videos: int = 30) -> list:
+    """
+    Fetch TikTok videos qua Apify. Trả về list video raw.
+    Cache vào DB để tránh fetch lại.
+    """
     apify_token = _env('APIFY_API_TOKEN')
-    if not apify_token:
+    if not apify_token or apify_token == 'your_apify_api_token_here':
+        return []
+
+    username = username.lstrip('@').strip()
+
+    try:
+        r = requests.post(
+            "https://api.apify.com/v2/acts/clockworks~free-tiktok-scraper/run-sync-get-dataset-items",
+            params={"token": apify_token, "timeout": 120},
+            json={"profiles": [username], "resultsPerPage": max_videos},
+            timeout=150,
+        )
+        r.raise_for_status()
+        return r.json() or []
+    except Exception as e:
+        logger.error(f"Apify TikTok fetch error for {username}: {e}")
+        return []
+
+
+def _parse_tiktok_video(item: dict, channel_name: str = "", owner: str = "", team: str = "") -> dict:
+    """Parse 1 video TikTok từ Apify response."""
+    # Lấy timestamp
+    create_iso = item.get("createTimeISO") or ""
+    create_ts = item.get("createTime", 0)
+    if create_iso:
+        pub_date = create_iso[:10]
+    elif create_ts:
+        from datetime import datetime as _dt
+        pub_date = _dt.utcfromtimestamp(int(create_ts)).strftime("%Y-%m-%d")
+    else:
+        pub_date = ""
+
+    return {
+        "video_id": item.get("id", ""),
+        "title": (item.get("text") or "")[:80],
+        "url": item.get("webVideoUrl") or item.get("videoUrl", ""),
+        "published_at": pub_date,
+        "views": int(item.get("playCount", 0)),
+        "likes": int(item.get("diggCount", 0)),
+        "comments": int(item.get("commentCount", 0)),
+        "shares": int(item.get("shareCount", 0)),
+        "username": item.get("authorMeta", {}).get("name") or item.get("author", {}).get("uniqueId", ""),
+        "channel_name": channel_name,
+        "owner": owner,
+        "team": team,
+    }
+
+
+def get_tiktok_monthly_views(username: str, year: int, month: int) -> dict:
+    """Lấy views TikTok 1 kênh trong tháng (dùng cho get_channels_monthly_views)."""
+    date_from, date_to = _month_range(year, month)
+    items = _apify_fetch_tiktok(username, 30)
+
+    if not items:
         return {"channel": username, "year": year, "month": month,
                 "video_count": 0, "total_views": 0, "total_likes": 0,
-                "note": "Cần APIFY_API_TOKEN"}
+                "note": "Cần APIFY_API_TOKEN hợp lệ"}
+
+    videos = [_parse_tiktok_video(i) for i in items
+              if date_from <= _parse_tiktok_video(i)["published_at"] <= date_to]
+    return {
+        "channel": username, "year": year, "month": month,
+        "video_count": len(videos),
+        "total_views": sum(v["views"] for v in videos),
+        "total_likes": sum(v["likes"] for v in videos),
+        "videos": sorted(videos, key=lambda x: x["views"], reverse=True)[:10],
+    }
+
+
+def get_tiktok_monthly_report(year: int, month: int, team: str = None, owner: str = None) -> dict:
+    """
+    Báo cáo traffic TikTok toàn bộ kênh đang hoạt động trong tháng.
+    Trả về: tổng views/likes/comments, top 10 theo từng chỉ số, breakdown theo team/người.
+    """
+    apify_token = _env('APIFY_API_TOKEN')
+    if not apify_token or apify_token == 'your_apify_api_token_here':
+        return {"error": "Chưa cấu hình APIFY_API_TOKEN. Vui lòng điền token vào file .env"}
 
     date_from, date_to = _month_range(year, month)
 
-    try:
-        # Gọi Apify TikTok profile scraper
-        run_r = requests.post(
-            f"https://api.apify.com/v2/acts/clockworks~free-tiktok-scraper/run-sync-get-dataset-items",
-            params={"token": apify_token, "timeout": 60},
-            json={
-                "profiles": [username],
-                "resultsPerPage": 50,
-                "publishDateRange": {"since": date_from, "until": date_to},
-            },
-            timeout=90,
-        )
-        run_r.raise_for_status()
-        items = run_r.json()
+    # Lấy danh sách kênh TikTok từ huyk_channels
+    params = ["%%tiktok%%"]
+    extra_where = ""
+    if team:
+        extra_where += " AND LOWER(team_traffic) LIKE LOWER(%s)"
+        params.append(f"%{team}%")
+    if owner:
+        extra_where += " AND LOWER(owner) LIKE LOWER(%s)"
+        params.append(f"%{owner}%")
 
-        videos = []
+    channels = _db_query(f"""
+        SELECT name, channel_id, link_channel, team_traffic AS team, owner
+        FROM huyk_channels
+        WHERE LOWER(platform) LIKE %s AND status = 'Đang hoạt động'
+        {extra_where}
+        ORDER BY name
+    """, params)
+
+    if not channels:
+        return {"error": "Không tìm thấy kênh TikTok nào"}
+
+    logger.info(f"TikTok report: fetching {len(channels)} channels for {year}-{month:02d}")
+
+    all_videos = []
+    channel_summaries = []
+
+    for ch in channels:
+        raw_uid = (ch.get("channel_id") or "").strip().strip("\n")
+        link = ch.get("link_channel") or ""
+        # Extract username từ link nếu channel_id trống
+        if not raw_uid and "tiktok.com/@" in link:
+            raw_uid = link.split("tiktok.com/@")[-1].split("?")[0].strip()
+        if not raw_uid:
+            continue
+
+        channel_name = ch.get("name", raw_uid)
+        owner_name = ch.get("owner", "")
+        team_name = ch.get("team", "")
+
+        items = _apify_fetch_tiktok(raw_uid, 30)
+        month_videos = []
         for item in items:
-            pub = (item.get("createTime") or item.get("createTimeISO") or "")[:10]
-            if pub < date_from or pub > date_to:
-                continue
-            videos.append({
-                "title": (item.get("text") or "")[:60],
-                "published_at": pub,
-                "views": int(item.get("playCount", 0)),
-                "likes": int(item.get("diggCount", 0)),
-            })
+            v = _parse_tiktok_video(item, channel_name, owner_name, team_name)
+            if date_from <= v["published_at"] <= date_to:
+                month_videos.append(v)
 
-        videos.sort(key=lambda x: x["views"], reverse=True)
-        return {
-            "channel": username, "year": year, "month": month,
-            "video_count": len(videos),
-            "total_views": sum(v["views"] for v in videos),
-            "total_likes": sum(v["likes"] for v in videos),
-            "videos": videos[:10],
-        }
-    except Exception as e:
-        logger.error(f"TikTok monthly views error for {username}: {e}")
-        return {"channel": username, "year": year, "month": month,
-                "video_count": 0, "total_views": 0, "total_likes": 0,
-                "error": str(e)}
+        total_views = sum(v["views"] for v in month_videos)
+        total_likes = sum(v["likes"] for v in month_videos)
+        total_comments = sum(v["comments"] for v in month_videos)
+        total_shares = sum(v["shares"] for v in month_videos)
+
+        channel_summaries.append({
+            "channel": channel_name,
+            "username": raw_uid,
+            "owner": owner_name,
+            "team": team_name,
+            "video_count": len(month_videos),
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "total_shares": total_shares,
+        })
+        all_videos.extend(month_videos)
+
+    # Tổng hợp
+    grand_views    = sum(c["total_views"] for c in channel_summaries)
+    grand_likes    = sum(c["total_likes"] for c in channel_summaries)
+    grand_comments = sum(c["total_comments"] for c in channel_summaries)
+    grand_shares   = sum(c["total_shares"] for c in channel_summaries)
+    grand_videos   = sum(c["video_count"] for c in channel_summaries)
+
+    # Top 10 theo từng chỉ số
+    top_views    = sorted(all_videos, key=lambda x: x["views"],    reverse=True)[:10]
+    top_likes    = sorted(all_videos, key=lambda x: x["likes"],    reverse=True)[:10]
+    top_comments = sorted(all_videos, key=lambda x: x["comments"], reverse=True)[:10]
+
+    # Breakdown theo team
+    team_stats: dict = {}
+    for c in channel_summaries:
+        t = c["team"] or "Chưa phân team"
+        if t not in team_stats:
+            team_stats[t] = {"team": t, "channels": 0, "total_views": 0, "total_likes": 0, "total_comments": 0}
+        team_stats[t]["channels"] += 1
+        team_stats[t]["total_views"] += c["total_views"]
+        team_stats[t]["total_likes"] += c["total_likes"]
+        team_stats[t]["total_comments"] += c["total_comments"]
+
+    return {
+        "period": f"Tháng {month}/{year}",
+        "platform": "TikTok",
+        "channels_fetched": len(channel_summaries),
+        "summary": {
+            "total_videos": grand_videos,
+            "total_views": grand_views,
+            "total_likes": grand_likes,
+            "total_comments": grand_comments,
+            "total_shares": grand_shares,
+        },
+        "top_10_views":    [{"title": v["title"][:50], "channel": v["channel_name"], "owner": v["owner"], "team": v["team"], "views": v["views"], "url": v["url"]} for v in top_views],
+        "top_10_likes":    [{"title": v["title"][:50], "channel": v["channel_name"], "owner": v["owner"], "team": v["team"], "likes": v["likes"], "url": v["url"]} for v in top_likes],
+        "top_10_comments": [{"title": v["title"][:50], "channel": v["channel_name"], "owner": v["owner"], "team": v["team"], "comments": v["comments"], "url": v["url"]} for v in top_comments],
+        "by_team": sorted(team_stats.values(), key=lambda x: x["total_views"], reverse=True),
+        "by_channel": sorted(channel_summaries, key=lambda x: x["total_views"], reverse=True),
+    }
 
 
 def get_tiktok_profile_from_db(username: str) -> dict:
@@ -1197,6 +1337,20 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_tiktok_monthly_report",
+        "description": "Báo cáo traffic TikTok toàn bộ kênh đang hoạt động trong tháng. Trả về: tổng views/likes/comments/shares, top 10 video theo views/likes/comments, breakdown theo team và từng người. Dùng khi hỏi báo cáo traffic TikTok, thống kê kênh TikTok tháng X.",
+        "parameters": {
+            "type": "object",
+            "required": ["year", "month"],
+            "properties": {
+                "year":  {"type": "integer", "description": "Năm, ví dụ: 2026"},
+                "month": {"type": "integer", "description": "Tháng 1-12"},
+                "team":  {"type": "string",  "description": "Lọc theo team (tuỳ chọn), ví dụ: Team K1"},
+                "owner": {"type": "string",  "description": "Lọc theo tên người quản lý (tuỳ chọn)"},
+            },
+        },
+    },
+    {
         "name": "get_channels_monthly_views",
         "description": "Lấy lượt xem thực tế của các kênh trong 1 tháng cụ thể bằng cách fetch video đăng trong tháng đó từ YouTube/Facebook API và DB. Dùng khi hỏi top kênh theo views tháng X, hiệu suất kênh tháng X.",
         "parameters": {
@@ -1280,6 +1434,8 @@ def call_tool(name: str, args: dict):
         "get_instagram_monthly_views": lambda a: get_instagram_monthly_views(a["ig_username"], int(a["year"]), int(a["month"])),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
+        "get_tiktok_monthly_report": lambda a: get_tiktok_monthly_report(
+            int(a["year"]), int(a["month"]), a.get("team"), a.get("owner")),
         "get_channels_monthly_views": lambda a: get_channels_monthly_views(
             int(a["year"]), int(a["month"]), a.get("platform")),
         "get_youtube_monthly_views": lambda a: get_youtube_monthly_views(

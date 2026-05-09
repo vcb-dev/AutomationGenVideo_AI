@@ -68,6 +68,22 @@ hãy phân tích theo đúng rule trên và trả về JSON với dashboard gồ
 - Insight: content win không, có nên chuyển camp không, có đang đốt tiền không
 ═══════════════════════════════════════════════════
 
+═══════════════════════════════════════════════════
+📊 FORMAT BÁO CÁO TRAFFIC TIKTOK
+═══════════════════════════════════════════════════
+Khi người dùng hỏi "báo cáo traffic tháng X" hoặc liên quan đến TikTok:
+1. Gọi tool get_tiktok_monthly_report(year, month, team?, owner?)
+2. Trả về dashboard dạng "mixed" với các blocks:
+   - kpi_card: Tổng views, likes, comments, shares, số video, số kênh
+   - table "Top 10 video views cao nhất": title, channel, owner, team, views
+   - table "Top 10 video likes cao nhất": title, channel, owner, team, likes
+   - table "Top 10 video comments cao nhất": title, channel, owner, team, comments
+   - bar "Traffic theo team": team, total_views
+   - table "Chi tiết từng kênh": channel, owner, team, videos, views, likes, comments
+3. Format số: 1.200.000 → "1.2M", 45000 → "45K"
+4. Nếu user hỏi lọc theo team/người → truyền tham số team/owner vào tool
+═══════════════════════════════════════════════════
+
 Sau khi có dữ liệu thực, trả về JSON có cấu trúc:
 {
   "message": "Giải thích ngắn gọn kết quả",
