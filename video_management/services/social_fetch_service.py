@@ -660,41 +660,195 @@ def get_facebook_page_insights(page_id: str, days: int = 30) -> dict:
         return {}
 
 
-# ─── Instagram Graph API ─────────────────────────────────────────────────────
-
-def _ig_token() -> str:
-    return _env('INSTAGRAM_ACCESS_TOKEN')
-
+# ─── Instagram Graph API (dùng Facebook token) ───────────────────────────────
 
 def get_instagram_accounts() -> list:
-    """Lấy IG business accounts."""
+    """Lấy tất cả IG Business accounts liên kết với FB pages đang admin."""
+    token = _fb_token()
     try:
-        r = requests.get(f"{FB_BASE}/me/accounts", params={
-            "access_token": _ig_token(),
-            "fields": "id,name,instagram_business_account{id,username,followers_count,media_count,profile_picture_url}",
-        }, timeout=15)
-        r.raise_for_status()
-        pages = r.json().get("data", [])
         accounts = []
-        for p in pages:
-            ig = p.get("instagram_business_account")
-            if ig:
-                accounts.append({**ig, "page_name": p.get("name")})
-        return accounts
+        url = f"{FB_BASE}/me/accounts"
+        while url:
+            r = requests.get(url, params={
+                "access_token": token,
+                "fields": "id,name,instagram_business_account{id,username,followers_count,media_count}",
+                "limit": 50,
+            }, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            for p in data.get("data", []):
+                ig = p.get("instagram_business_account")
+                if ig:
+                    accounts.append({
+                        "ig_id": ig["id"],
+                        "username": ig.get("username", ""),
+                        "followers_count": ig.get("followers_count", 0),
+                        "media_count": ig.get("media_count", 0),
+                        "page_name": p.get("name", ""),
+                        "page_id": p.get("id", ""),
+                    })
+            url = data.get("paging", {}).get("next")
+        return sorted(accounts, key=lambda x: x["followers_count"], reverse=True)
     except Exception as e:
         logger.error(f"IG accounts error: {e}")
         return []
 
 
+def get_instagram_monthly_views(ig_username: str, year: int, month: int) -> dict:
+    """
+    Lấy views/impressions của IG Business account trong tháng.
+    Dùng Facebook token — chỉ hoạt động với IG Business liên kết FB page.
+    """
+    token = _fb_token()
+    date_from, date_to = _month_range(year, month)
+
+    try:
+        # Tìm ig_id từ username
+        accounts = get_instagram_accounts()
+        account = next((a for a in accounts if a["username"].lower() == ig_username.lower()), None)
+        if not account:
+            return {"error": f"Không tìm thấy IG account: {ig_username}", "total_views": 0}
+
+        ig_id = account["ig_id"]
+
+        # Lấy media trong tháng
+        since_ts = int(dt.strptime(date_from, "%Y-%m-%d").timestamp())
+        until_ts = int(dt.strptime(date_to, "%Y-%m-%d").timestamp()) + 86399
+
+        media_r = requests.get(f"{FB_BASE}/{ig_id}/media", params={
+            "access_token": token,
+            "fields": "id,caption,media_type,timestamp,like_count,comments_count",
+            "since": since_ts, "until": until_ts,
+            "limit": 50,
+        }, timeout=15)
+        media_r.raise_for_status()
+        media_items = media_r.json().get("data", [])
+
+        total_impressions = 0
+        total_reach = 0
+        total_likes = 0
+        total_comments = 0
+        posts = []
+
+        for item in media_items:
+            mid = item["id"]
+            likes = item.get("like_count", 0)
+            comments = item.get("comments_count", 0)
+            total_likes += likes
+            total_comments += comments
+
+            # Lấy insights từng post
+            try:
+                ins_r = requests.get(f"{FB_BASE}/{mid}/insights", params={
+                    "access_token": token,
+                    "metric": "impressions,reach",
+                }, timeout=8)
+                if ins_r.ok:
+                    for d_item in ins_r.json().get("data", []):
+                        val = d_item.get("values", [{}])[0].get("value", 0)
+                        if d_item["name"] == "impressions":
+                            total_impressions += int(val)
+                        elif d_item["name"] == "reach":
+                            total_reach += int(val)
+            except Exception:
+                pass
+
+            posts.append({
+                "timestamp": item.get("timestamp", "")[:10],
+                "caption": (item.get("caption") or "")[:60],
+                "media_type": item.get("media_type", ""),
+                "likes": likes,
+                "comments": comments,
+            })
+
+        posts.sort(key=lambda x: x["likes"], reverse=True)
+
+        # Account-level insights (follower growth)
+        try:
+            acc_r = requests.get(f"{FB_BASE}/{ig_id}/insights", params={
+                "access_token": token,
+                "metric": "follower_count,impressions,reach,profile_views",
+                "period": "day",
+                "since": since_ts, "until": until_ts,
+            }, timeout=10)
+            if acc_r.ok:
+                for d_item in acc_r.json().get("data", []):
+                    if d_item["name"] == "impressions" and total_impressions == 0:
+                        total_impressions = sum(
+                            v.get("value", 0) for v in d_item.get("values", [])
+                            if isinstance(v.get("value"), (int, float))
+                        )
+        except Exception:
+            pass
+
+        return {
+            "username": ig_username,
+            "ig_id": ig_id,
+            "page_name": account["page_name"],
+            "followers": account["followers_count"],
+            "year": year, "month": month,
+            "post_count": len(posts),
+            "total_impressions": total_impressions,
+            "total_reach": total_reach,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "top_posts": posts[:10],
+        }
+    except Exception as e:
+        logger.error(f"IG monthly views error for {ig_username}: {e}")
+        return {"error": str(e), "username": ig_username, "total_views": 0}
+
+
+def get_all_instagram_monthly_summary(year: int, month: int) -> list:
+    """Tổng hợp tất cả IG accounts trong tháng — impressions, likes, posts."""
+    token = _fb_token()
+    date_from, date_to = _month_range(year, month)
+    since_ts = int(dt.strptime(date_from, "%Y-%m-%d").timestamp())
+    until_ts = int(dt.strptime(date_to, "%Y-%m-%d").timestamp()) + 86399
+
+    accounts = get_instagram_accounts()
+    results = []
+
+    for acc in accounts[:20]:  # Giới hạn 20 để tránh timeout
+        ig_id = acc["ig_id"]
+        try:
+            # Đếm posts trong tháng
+            media_r = requests.get(f"{FB_BASE}/{ig_id}/media", params={
+                "access_token": token,
+                "fields": "id,like_count,comments_count,timestamp",
+                "since": since_ts, "until": until_ts,
+                "limit": 50,
+            }, timeout=10)
+            media_r.raise_for_status()
+            items = media_r.json().get("data", [])
+
+            total_likes = sum(i.get("like_count", 0) for i in items)
+            total_comments = sum(i.get("comments_count", 0) for i in items)
+
+            results.append({
+                "username": acc["username"],
+                "page_name": acc["page_name"],
+                "followers": acc["followers_count"],
+                "post_count": len(items),
+                "total_likes": total_likes,
+                "total_comments": total_comments,
+                "engagement": total_likes + total_comments,
+            })
+        except Exception as e:
+            logger.error(f"IG summary error for {acc['username']}: {e}")
+
+    results.sort(key=lambda x: x["engagement"], reverse=True)
+    return results
+
+
 def get_instagram_insights(ig_user_id: str, days: int = 30) -> dict:
-    """Insights của 1 IG business account."""
+    """Legacy — giữ lại để tương thích."""
+    token = _fb_token()
     try:
         r = requests.get(f"{FB_BASE}/{ig_user_id}/insights", params={
-            "access_token": _ig_token(),
-            "metric": "impressions,reach,profile_views,follower_count",
+            "access_token": token,
+            "metric": "impressions,reach,profile_views",
             "period": "day",
-            "since": __import__('datetime').date.today() - __import__('datetime').timedelta(days=days),
-            "until": __import__('datetime').date.today(),
         }, timeout=15)
         r.raise_for_status()
         raw = r.json().get("data", [])
@@ -992,8 +1146,33 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "get_instagram_accounts",
-        "description": "Lấy danh sách Instagram Business Account (followers, media count).",
+        "description": "Lấy danh sách tất cả Instagram Business Account liên kết với Facebook pages đang admin (followers, media count, page liên kết).",
         "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_all_instagram_monthly_summary",
+        "description": "Tổng hợp hiệu suất tất cả Instagram accounts trong tháng: posts, likes, comments, engagement. Dùng khi hỏi báo cáo Instagram tháng X, so sánh kênh Instagram.",
+        "parameters": {
+            "type": "object",
+            "required": ["year", "month"],
+            "properties": {
+                "year":  {"type": "integer"},
+                "month": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "get_instagram_monthly_views",
+        "description": "Lấy chi tiết impressions, reach, likes, comments của 1 kênh Instagram cụ thể trong tháng.",
+        "parameters": {
+            "type": "object",
+            "required": ["ig_username", "year", "month"],
+            "properties": {
+                "ig_username": {"type": "string", "description": "Username Instagram (không có @)"},
+                "year":  {"type": "integer"},
+                "month": {"type": "integer"},
+            },
+        },
     },
     {
         "name": "get_youtube_channel_stats",
@@ -1097,6 +1276,8 @@ def call_tool(name: str, args: dict):
         "get_top_channels": lambda a: get_top_channels(a.get("limit", 10), a.get("metric", "total_followers")),
         "get_facebook_pages": lambda a: get_facebook_pages(),
         "get_instagram_accounts": lambda a: get_instagram_accounts(),
+        "get_all_instagram_monthly_summary": lambda a: get_all_instagram_monthly_summary(int(a["year"]), int(a["month"])),
+        "get_instagram_monthly_views": lambda a: get_instagram_monthly_views(a["ig_username"], int(a["year"]), int(a["month"])),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
         "get_channels_monthly_views": lambda a: get_channels_monthly_views(
