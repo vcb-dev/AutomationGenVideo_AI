@@ -936,10 +936,23 @@ def get_youtube_top_videos(channel_id: str, limit: int = 10) -> list:
 
 # ─── TikTok (via existing Apify/scraper) ────────────────────────────────────
 
-def _apify_fetch_tiktok(username: str, max_videos: int = 30) -> list:
+def _get_video_date(item: dict) -> str:
+    """Lấy ngày đăng video từ Apify response."""
+    iso = item.get("createTimeISO") or ""
+    ts  = item.get("createTime", 0)
+    if iso:
+        return iso[:10]
+    if ts:
+        return datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d")
+    return ""
+
+
+def _apify_fetch_tiktok(username: str, max_videos: int = 30,
+                        date_from: str = None, date_to: str = None) -> list:
     """
-    Fetch TikTok videos qua Apify. Trả về list video raw.
-    Cache vào DB để tránh fetch lại.
+    Fetch TikTok videos qua Apify.
+    Nếu truyền date_from/date_to, chỉ trả về videos trong khoảng đó
+    và dừng sớm khi gặp video cũ hơn → tiết kiệm Apify credits.
     """
     apify_token = _env('APIFY_API_TOKEN')
     if not apify_token or apify_token == 'your_apify_api_token_here':
@@ -955,7 +968,27 @@ def _apify_fetch_tiktok(username: str, max_videos: int = 30) -> list:
             timeout=150,
         )
         r.raise_for_status()
-        return r.json() or []
+        items = r.json() or []
+
+        if not date_from:
+            return items
+
+        # Smart filter: chỉ giữ video trong khoảng tháng cần
+        # Apify trả mới → cũ, dừng khi gặp video trước date_from
+        result = []
+        for item in items:
+            pub = _get_video_date(item)
+            if not pub:
+                continue
+            if pub < date_from:
+                # Gặp video cũ hơn tháng cần → dừng (các video sau còn cũ hơn)
+                break
+            if date_to and pub > date_to:
+                # Video mới hơn date_to → bỏ qua (chưa đến kỳ)
+                continue
+            result.append(item)
+        return result
+
     except Exception as e:
         logger.error(f"Apify TikTok fetch error for {username}: {e}")
         return []
@@ -993,7 +1026,7 @@ def _parse_tiktok_video(item: dict, channel_name: str = "", owner: str = "", tea
 def get_tiktok_monthly_views(username: str, year: int, month: int) -> dict:
     """Lấy views TikTok 1 kênh trong tháng (dùng cho get_channels_monthly_views)."""
     date_from, date_to = _month_range(year, month)
-    items = _apify_fetch_tiktok(username, 30)
+    items = _apify_fetch_tiktok(username, 30, date_from, date_to)
 
     if not items:
         return {"channel": username, "year": year, "month": month,
@@ -1061,12 +1094,10 @@ def get_tiktok_monthly_report(year: int, month: int, team: str = None, owner: st
         owner_name = ch.get("owner", "")
         team_name = ch.get("team", "")
 
-        items = _apify_fetch_tiktok(raw_uid, 30)
-        month_videos = []
-        for item in items:
-            v = _parse_tiktok_video(item, channel_name, owner_name, team_name)
-            if date_from <= v["published_at"] <= date_to:
-                month_videos.append(v)
+        # Truyền date_from/date_to để smart-stop sớm
+        items = _apify_fetch_tiktok(raw_uid, 30, date_from, date_to)
+        month_videos = [_parse_tiktok_video(i, channel_name, owner_name, team_name)
+                        for i in items]
 
         total_views = sum(v["views"] for v in month_videos)
         total_likes = sum(v["likes"] for v in month_videos)
