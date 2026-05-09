@@ -42,7 +42,7 @@ def _db_query(sql: str, params=None) -> list:
 
 def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
     """Danh sách kênh + thông tin chủ sở hữu/team từ bảng huyk_channels."""
-    where = "WHERE status = 'Đang hoạt động'"
+    where = "WHERE status IN ('Đang hoạt động', 'ON')"
     params = []
     if platform:
         where += " AND LOWER(platform) LIKE LOWER(%s)"
@@ -63,6 +63,127 @@ def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
     return _db_query(sql, params)
 
 
+def get_traffic_report_from_db(year: int, month: int, platform: str = None,
+                               team: str = None, owner: str = None) -> dict:
+    """
+    Đọc báo cáo traffic từ DB (channel_monthly_stats + channel_post_stats).
+    Nhanh, không tốn API. Chỉ có data nếu cronjob đã chạy.
+    """
+    where = ["year = %s", "month = %s"]
+    params = [year, month]
+    if platform:
+        where.append("LOWER(platform) LIKE LOWER(%s)"); params.append(f"%{platform}%")
+    if team:
+        where.append("LOWER(team) LIKE LOWER(%s)"); params.append(f"%{team}%")
+    if owner:
+        where.append("LOWER(owner) LIKE LOWER(%s)"); params.append(f"%{owner}%")
+
+    w = " AND ".join(where)
+
+    monthly = _db_query(f"""
+        SELECT platform, channel_name, username, team, owner,
+               total_views, total_likes, total_comments, total_shares,
+               total_followers, post_count
+        FROM channel_monthly_stats WHERE {w}
+        ORDER BY total_views DESC
+    """, params)
+
+    if not monthly:
+        return {"has_data": False, "message": f"Chưa có dữ liệu tháng {month}/{year} trong DB. Cronjob chưa chạy hoặc chưa sync."}
+
+    grand = {"views":0,"likes":0,"comments":0,"shares":0,"posts":0,"channels":len(monthly)}
+    for r in monthly:
+        grand["views"]    += int(r["total_views"] or 0)
+        grand["likes"]    += int(r["total_likes"] or 0)
+        grand["comments"] += int(r["total_comments"] or 0)
+        grand["shares"]   += int(r["total_shares"] or 0)
+        grand["posts"]    += int(r["post_count"] or 0)
+
+    # Top 10 posts
+    top_posts = _db_query(f"""
+        SELECT platform, channel_name, username, team, owner,
+               title, url, published_at::text, views, likes, comments
+        FROM channel_post_stats WHERE {w}
+        ORDER BY views DESC LIMIT 10
+    """, params)
+
+    top_likes = _db_query(f"""
+        SELECT platform, channel_name, title, url, likes, comments
+        FROM channel_post_stats WHERE {w}
+        ORDER BY likes DESC LIMIT 10
+    """, params)
+
+    top_comments = _db_query(f"""
+        SELECT platform, channel_name, title, url, likes, comments
+        FROM channel_post_stats WHERE {w}
+        ORDER BY comments DESC LIMIT 10
+    """, params)
+
+    # By team
+    team_stats = _db_query(f"""
+        SELECT team, COUNT(*) AS channels,
+               SUM(total_views) AS views, SUM(total_likes) AS likes,
+               SUM(total_comments) AS comments, SUM(post_count) AS posts
+        FROM channel_monthly_stats WHERE {w}
+        GROUP BY team ORDER BY views DESC
+    """, params)
+
+    return {
+        "has_data": True,
+        "period": f"Tháng {month}/{year}",
+        "summary": grand,
+        "by_channel": monthly[:20],
+        "by_team": team_stats,
+        "top_10_views":    [dict(r) for r in top_posts],
+        "top_10_likes":    [dict(r) for r in top_likes],
+        "top_10_comments": [dict(r) for r in top_comments],
+    }
+
+
+def get_ads_report_from_db(year: int, month: int, camp_type: str = None,
+                           content_type: str = None) -> dict:
+    """Đọc báo cáo ads từ DB (ads_campaign_stats)."""
+    where = ["year = %s", "month = %s"]
+    params = [year, month]
+    if camp_type:
+        where.append("LOWER(camp_type) = LOWER(%s)"); params.append(camp_type)
+    if content_type:
+        where.append("UPPER(content_type) = UPPER(%s)"); params.append(content_type)
+
+    w = " AND ".join(where)
+    rows = _db_query(f"""
+        SELECT campaign_name, camp_type, content_type, spend,
+               mess_count, cost_per_mess, like_count, cost_per_like,
+               engagement_count, cost_per_engagement, impressions, reach
+        FROM ads_campaign_stats WHERE {w}
+        ORDER BY spend DESC
+    """, params)
+
+    if not rows:
+        return {"has_data": False, "message": f"Chưa có dữ liệu ads tháng {month}/{year} trong DB."}
+
+    total_spend = sum(r["spend"] for r in rows)
+    total_mess  = sum(r["mess_count"] for r in rows)
+    total_likes = sum(r["like_count"] for r in rows)
+
+    good = [r["campaign_name"] for r in rows if r["camp_type"]=="mess" and 0 < r["cost_per_mess"] <= 10000]
+    bad  = [r["campaign_name"] for r in rows if r["camp_type"]=="mess" and r["cost_per_mess"] > 10000]
+
+    return {
+        "has_data": True,
+        "period": f"Tháng {month}/{year}",
+        "summary": {
+            "total_campaigns": len(rows),
+            "total_spend": total_spend,
+            "total_mess": total_mess,
+            "total_likes": total_likes,
+        },
+        "good_camps": good[:10],
+        "bad_camps":  bad[:10],
+        "campaigns":  [dict(r) for r in rows[:30]],
+    }
+
+
 def get_team_channel_summary() -> list:
     """Tổng hợp số kênh theo team từ huyk_channels."""
     sql = """
@@ -72,7 +193,7 @@ def get_team_channel_summary() -> list:
             COUNT(DISTINCT platform) AS platforms,
             STRING_AGG(DISTINCT platform, ', ' ORDER BY platform) AS platform_list
         FROM huyk_channels
-        WHERE status = 'Đang hoạt động'
+        WHERE status IN ('Đang hoạt động', 'ON')
         GROUP BY team_traffic
         ORDER BY total_channels DESC
     """
@@ -85,7 +206,7 @@ def get_top_channels(limit: int = 10, metric: str = 'total_followers') -> list:
         SELECT name AS display_name, platform, channel_id AS username,
                team_traffic AS team, owner AS owner_name, link_channel
         FROM huyk_channels
-        WHERE status = 'Đang hoạt động'
+        WHERE status IN ('Đang hoạt động', 'ON')
         ORDER BY name
         LIMIT %s
     """
@@ -98,7 +219,7 @@ def get_user_channels(user_name: str) -> list:
         SELECT name AS display_name, platform, channel_id AS username,
                team_traffic AS team, link_channel
         FROM huyk_channels
-        WHERE status = 'Đang hoạt động'
+        WHERE status IN ('Đang hoạt động', 'ON')
           AND (LOWER(owner) LIKE LOWER(%s) OR LOWER(email) LIKE LOWER(%s))
         ORDER BY platform, name
     """
@@ -1368,6 +1489,35 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "get_traffic_report_from_db",
+        "description": "Đọc báo cáo traffic (views/likes/comments) từ DB nội bộ — nhanh, không tốn API. Ưu tiên dùng tool này TRƯỚC khi gọi API. Trả về: tổng views/likes/comments, top 10 video, breakdown theo team. Dùng khi hỏi báo cáo traffic tháng X.",
+        "parameters": {
+            "type": "object",
+            "required": ["year", "month"],
+            "properties": {
+                "year":     {"type": "integer"},
+                "month":    {"type": "integer"},
+                "platform": {"type": "string", "description": "tiktok | facebook | youtube | instagram (tuỳ chọn)"},
+                "team":     {"type": "string", "description": "Lọc theo team (tuỳ chọn)"},
+                "owner":    {"type": "string", "description": "Lọc theo tên người (tuỳ chọn)"},
+            },
+        },
+    },
+    {
+        "name": "get_ads_report_from_db",
+        "description": "Đọc báo cáo quảng cáo Facebook từ DB nội bộ — nhanh, không tốn API. Trả về: tổng chi tiêu, số mess, camp GOOD/BAD theo rule VCB. Dùng khi hỏi báo cáo ads tháng X.",
+        "parameters": {
+            "type": "object",
+            "required": ["year", "month"],
+            "properties": {
+                "year":         {"type": "integer"},
+                "month":        {"type": "integer"},
+                "camp_type":    {"type": "string", "description": "mess | like_page | tuong_tac (tuỳ chọn)"},
+                "content_type": {"type": "string", "description": "A1 | A2 | A3 | A4 | A5 (tuỳ chọn)"},
+            },
+        },
+    },
+    {
         "name": "get_tiktok_monthly_report",
         "description": "Báo cáo traffic TikTok toàn bộ kênh đang hoạt động trong tháng. Trả về: tổng views/likes/comments/shares, top 10 video theo views/likes/comments, breakdown theo team và từng người. Dùng khi hỏi báo cáo traffic TikTok, thống kê kênh TikTok tháng X.",
         "parameters": {
@@ -1465,6 +1615,10 @@ def call_tool(name: str, args: dict):
         "get_instagram_monthly_views": lambda a: get_instagram_monthly_views(a["ig_username"], int(a["year"]), int(a["month"])),
         "get_youtube_channel_stats": lambda a: get_youtube_channel_stats(a["channel_id"]),
         "get_user_channels": lambda a: get_user_channels(a["user_name"]),
+        "get_traffic_report_from_db": lambda a: get_traffic_report_from_db(
+            int(a["year"]), int(a["month"]), a.get("platform"), a.get("team"), a.get("owner")),
+        "get_ads_report_from_db": lambda a: get_ads_report_from_db(
+            int(a["year"]), int(a["month"]), a.get("camp_type"), a.get("content_type")),
         "get_tiktok_monthly_report": lambda a: get_tiktok_monthly_report(
             int(a["year"]), int(a["month"]), a.get("team"), a.get("owner")),
         "get_channels_monthly_views": lambda a: get_channels_monthly_views(

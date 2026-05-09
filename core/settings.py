@@ -421,7 +421,13 @@ TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 CELERY_BEAT_SCHEDULE = {
     'cleanup-cache-daily': {
         'task': 'video_management.cleanup_old_cache',
-        'schedule': 86400.0,  # every 24 hours
+        'schedule': 86400.0,
+    },
+    # Sync traffic + ads data vào DB mỗi ngày lúc 2:00 AM
+    'daily-sync-traffic-ads': {
+        'task': 'video_management.tasks.daily_sync',
+        'schedule': 86400.0,   # 24 giờ
+        'options': {'queue': 'default'},
     },
 }
 

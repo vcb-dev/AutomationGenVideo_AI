@@ -296,3 +296,25 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.exception(f"Background sync to Lark failed for report {report_id}: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ─── Daily Sync Task ──────────────────────────────────────────────────────────
+
+@shared_task(name='video_management.tasks.daily_sync', bind=True, max_retries=2)
+def daily_sync(self):
+    """
+    Celery task chạy mỗi ngày — sync traffic + ads data vào DB.
+    Schedule: CELERY_BEAT_SCHEDULE → 'daily-sync-traffic-ads'
+    """
+    from .services.daily_sync_service import run_daily_sync
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info("[DailySync] Starting...")
+        results = run_daily_sync()
+        logger.info(f"[DailySync] Done: {results}")
+        return {"status": "ok", "results": results}
+    except Exception as exc:
+        logger.error(f"[DailySync] Failed: {exc}")
+        raise self.retry(exc=exc, countdown=3600)  # retry sau 1 giờ
