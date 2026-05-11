@@ -1,0 +1,49 @@
+{
+  "period": "2026-05-01 → 2026-05-11",
+  "fetched_at": "2026-05-11T10:30:20.967725",
+  "apify_token": "apify_api_D5lEOg867B...",
+  "summary": {
+    "channels_ok": 1,
+    "channels_error": 0,
+    "total_videos": 0,
+    "total_views": 0,
+    "total_likes": 0,
+    "total_comments": 0,
+    "total_shares": 0,
+    "total_followers": 0,
+    "apify_items_fetched": 30,
+    "apify_items_kept": 0,
+    "savings_pct": 100.0
+  },
+  "top_10_views": [],
+  "top_10_likes": [],
+  "top_10_comments": [],
+  "by_channel": [
+    {
+      "channel": "huyk.xuongkimhoan2",
+      "username": "huyk.xuongkimhoan2",
+      "owner": "",
+      "team": "",
+      "video_count": 0,
+      "followers": 0,
+      "total_views": 0,
+      "total_likes": 0,
+      "total_comments": 0,
+      "total_shares": 0,
+      "apify_fetched": 30,
+      "stopped_early": true
+    }
+  ],
+  "by_team": [
+    {
+      "team": "Chưa phân team",
+      "channels": 1,
+      "videos": 0,
+      "views": 0,
+      "likes": 0,
+      "comments": 0,
+      "followers": 0
+    }
+  ],
+  "errors": []
+}
