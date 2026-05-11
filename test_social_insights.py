@@ -435,7 +435,7 @@ def crawl_instagram_api(ig_info, ch, year, month, date_from, date_to):
     until_ts = int(datetime.strptime(date_to, "%Y-%m-%d").timestamp()) + 86399
     r = requests.get(f"{FB_BASE}/{ig_info['ig_id']}/media", params={
         "access_token": FB_TOKEN,
-        "fields": "id,caption,media_type,timestamp,like_count,comments_count",
+        "fields": "id,caption,media_type,timestamp,like_count,comments_count,video_views",
         "since": since_ts, "until": until_ts, "limit": 50,
     }, timeout=15)
     if not r.ok: return []
@@ -448,7 +448,8 @@ def crawl_instagram_api(ig_info, ch, year, month, date_from, date_to):
             'channel_name': ch['name'], 'username': ig_info['username'],
             'owner': ch.get('owner',''), 'team': ch.get('team',''),
             'title': cap[:500], 'hashtags': extract_hashtags(cap),
-            'views': 0, 'likes': int(item.get('like_count',0)),
+            'views': int(item.get('video_views',0) or 0),
+            'likes': int(item.get('like_count',0)),
             'comments': int(item.get('comments_count',0)), 'shares': 0,
             'followers': ig_info['followers'],
             'url': f"https://instagram.com/p/{item['id']}",

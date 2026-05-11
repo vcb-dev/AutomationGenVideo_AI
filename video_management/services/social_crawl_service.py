@@ -356,22 +356,27 @@ def crawl_instagram(year: int, month: int) -> dict:
         try:
             media_r = requests.get(f"{FB_BASE}/{acc['ig_id']}/media", params={
                 "access_token": token,
-                "fields": "id,caption,media_type,timestamp,like_count,comments_count",
+                "fields": "id,caption,media_type,timestamp,like_count,comments_count,video_views",
                 "since": since_ts, "until": until_ts, "limit": 50}, timeout=15)
             if not media_r.ok: continue
 
             posts = []
             for item in media_r.json().get("data",[]):
-                cap = item.get("caption","") or ""
-                pub = item.get("timestamp","")[:10]
+                cap        = item.get("caption","") or ""
+                pub        = item.get("timestamp","")[:10]
+                media_type = item.get("media_type","")
                 if not pub or not (date_from <= pub <= date_to): continue
+
+                # video_views chỉ có với VIDEO và REEL, IMAGE = 0
+                views = int(item.get("video_views", 0) or 0)
+
                 posts.append({
                     "platform": "instagram", "post_id": item["id"],
                     "channel_name": acc.get("username", username),
                     "username": username,
                     "owner": "", "team": "",
                     "title": cap[:500], "hashtags": _extract_hashtags(cap),
-                    "views": 0, "likes": int(item.get("like_count",0)),
+                    "views": views, "likes": int(item.get("like_count",0)),
                     "comments": int(item.get("comments_count",0)), "shares": 0,
                     "followers": acc.get("followers",0),
                     "url": f"https://instagram.com/p/{item['id']}",
