@@ -205,74 +205,106 @@ def crawl_tiktok(year: int, month: int) -> dict:
 
     return {"channels": total_channels, "saved": total_saved}
 
-# ── YouTube ───────────────────────────────────────────────────────────────────
+# ── YouTube (yt-dlp) ─────────────────────────────────────────────────────────
 def crawl_youtube(year: int, month: int) -> dict:
-    yt_key = YT_KEY()
-    if not yt_key: return {"skipped": "No YOUTUBE_API_KEY"}
+    """Crawl YouTube dùng yt-dlp — không cần API key, filter date phía server."""
+    try:
+        import yt_dlp
+    except ImportError:
+        return {"skipped": "yt-dlp chưa cài: pip install yt-dlp"}
 
     date_from, date_to = _month_range(year, month)
+    # yt-dlp dùng format YYYYMMDD
+    yt_date_from = date_from.replace("-", "")
+    yt_date_to   = date_to.replace("-", "")
+
     channels = _get_channels('youtube')
     total_saved, total_channels = 0, 0
 
+    ydl_opts = {
+        'quiet':          True,
+        'no_warnings':    True,
+        'extract_flat':   False,
+        'skip_download':  True,
+        'dateafter':      yt_date_from,   # Filter server-side: chỉ lấy từ ngày này
+        'datebefore':     yt_date_to,     # Filter server-side: đến ngày này
+        'playlistend':    50,
+        'ignoreerrors':   True,
+        'socket_timeout': 30,
+        'retries':        3,
+    }
+
     for ch in channels:
-        uid = _extract_uid(ch.get('channel_id',''), ch.get('link_channel',''))
-        uid = uid.strip().strip('\n')
-        if not uid: continue
+        uid  = _extract_uid(ch.get('channel_id',''), ch.get('link_channel',''))
+        uid  = uid.strip().strip('\n')
+        link = ch.get('link_channel','') or ''
+        if not uid and not link: continue
+
+        # Xây dựng base URL
+        if uid.startswith('UC'):
+            base_url = f"https://www.youtube.com/channel/{uid}"
+        elif uid.startswith('@'):
+            base_url = f"https://www.youtube.com/{uid}"
+        elif link and 'youtube.com' in link:
+            base_url = re.sub(r'/(videos|shorts|streams|playlists)/?$', '', link.rstrip('/'))
+        else:
+            base_url = f"https://www.youtube.com/@{uid}"
+
+        # Thử lần lượt: videos → shorts → streams
+        tabs = ['videos', 'shorts', 'streams']
+
         try:
-            channel_id = uid if uid.startswith("UC") else None
-            if not channel_id:
-                handle = uid.lstrip("@")
-                r = requests.get(f"{YT_BASE}/channels", params={
-                    "key": yt_key, "forHandle": f"@{handle}", "part": "id,statistics"}, timeout=10)
-                items = r.json().get("items",[]) if r.ok else []
-                if not items:
-                    r2 = requests.get(f"{YT_BASE}/channels", params={
-                        "key": yt_key, "forUsername": handle, "part": "id,statistics"}, timeout=10)
-                    items = r2.json().get("items",[]) if r2.ok else []
-                if items: channel_id = items[0]["id"]
-            if not channel_id: continue
+            all_entries = []
+            followers   = 0
+            for tab in tabs:
+                try:
+                    tab_url = f"{base_url}/{tab}"
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(tab_url, download=False)
+                    if info:
+                        followers = followers or int(info.get('channel_follower_count') or 0)
+                        tab_entries = [e for e in (info.get('entries') or []) if e]
+                        all_entries.extend(tab_entries)
+                        logger.debug(f"YouTube {uid}/{tab}: {len(tab_entries)} entries")
+                except Exception:
+                    pass  # Tab không tồn tại → thử tab tiếp
 
-            followers = 0
-            ch_r = requests.get(f"{YT_BASE}/channels", params={
-                "key": yt_key, "id": channel_id, "part": "statistics"}, timeout=10)
-            if ch_r.ok:
-                followers = int(ch_r.json().get("items",[{}])[0].get("statistics",{}).get("subscriberCount",0))
+            if not all_entries:
+                continue
 
-            sr = requests.get(f"{YT_BASE}/search", params={
-                "key": yt_key, "channelId": channel_id, "part": "id",
-                "type": "video", "order": "date", "maxResults": 50,
-                "publishedAfter": f"{date_from}T00:00:00Z",
-                "publishedBefore": f"{date_to}T23:59:59Z",
-            }, timeout=15)
-            video_ids = [i["id"]["videoId"] for i in (sr.json().get("items",[]) if sr.ok else [])]
-            if not video_ids: continue
+            entries = all_entries
 
-            vr = requests.get(f"{YT_BASE}/videos", params={
-                "key": yt_key, "id": ",".join(video_ids), "part": "snippet,statistics"}, timeout=15)
             posts = []
-            for item in (vr.json().get("items",[]) if vr.ok else []):
-                s       = item.get("statistics",{})
-                snippet = item.get("snippet",{})
-                desc    = snippet.get("description","") or ""
-                title   = snippet.get("title","") or ""
-                # Hashtag từ description + title (YouTube nhúng #tag trong mô tả)
-                # Fallback sang tags nếu là video của chính mình
-                tags_meta = [f"#{t}" for t in snippet.get("tags",[])[:5]]
-                tags_desc = _extract_hashtags(desc)[:10]
+            for entry in entries:
+                if not entry: continue
+                vid_id   = entry.get('id','')
+                if not vid_id: continue
+                title    = (entry.get('title') or '')[:500]
+                desc     = entry.get('description') or ''
+                pub_raw  = entry.get('upload_date','')  # YYYYMMDD
+                pub_date = f"{pub_raw[:4]}-{pub_raw[4:6]}-{pub_raw[6:]}" if len(pub_raw)==8 else ""
+
+                tags_desc  = _extract_hashtags(desc)[:10]
                 tags_title = _extract_hashtags(title)
-                hashtags  = list(dict.fromkeys(tags_desc + tags_title + tags_meta))[:15]
+                tags_meta  = [f"#{t}" for t in (entry.get('tags') or [])[:5]]
+                hashtags   = list(dict.fromkeys(tags_desc + tags_title + tags_meta))[:15]
+
                 posts.append({
-                    "platform": "youtube", "post_id": item["id"],
-                    "channel_name": ch["name"], "username": uid,
-                    "owner": ch.get("owner",""), "team": ch.get("team",""),
-                    "title": title[:500],
-                    "hashtags": hashtags,
-                    "views": int(s.get("viewCount",0)),
-                    "likes": int(s.get("likeCount",0)),
-                    "comments": int(s.get("commentCount",0)),
-                    "shares": 0, "followers": followers,
-                    "url": f"https://youtube.com/watch?v={item['id']}",
-                    "published_at": item["snippet"]["publishedAt"][:10],
+                    "platform":     "youtube",
+                    "post_id":      vid_id,
+                    "channel_name": ch["name"],
+                    "username":     uid or info.get('channel_id',''),
+                    "owner":        ch.get("owner",""),
+                    "team":         ch.get("team",""),
+                    "title":        title,
+                    "hashtags":     hashtags,
+                    "views":        int(entry.get('view_count')    or 0),
+                    "likes":        int(entry.get('like_count')    or 0),
+                    "comments":     int(entry.get('comment_count') or 0),
+                    "shares":       0,
+                    "followers":    followers or int(entry.get('channel_follower_count') or 0),
+                    "url":          f"https://www.youtube.com/watch?v={vid_id}",
+                    "published_at": pub_date,
                     "year": year, "month": month, "source": "api",
                 })
             n = _upsert_posts(posts)
