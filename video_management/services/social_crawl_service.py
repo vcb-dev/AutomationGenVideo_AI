@@ -251,13 +251,22 @@ def crawl_youtube(year: int, month: int) -> dict:
                 "key": yt_key, "id": ",".join(video_ids), "part": "snippet,statistics"}, timeout=15)
             posts = []
             for item in (vr.json().get("items",[]) if vr.ok else []):
-                s = item.get("statistics",{})
+                s       = item.get("statistics",{})
+                snippet = item.get("snippet",{})
+                desc    = snippet.get("description","") or ""
+                title   = snippet.get("title","") or ""
+                # Hashtag từ description + title (YouTube nhúng #tag trong mô tả)
+                # Fallback sang tags nếu là video của chính mình
+                tags_meta = [f"#{t}" for t in snippet.get("tags",[])[:5]]
+                tags_desc = _extract_hashtags(desc)[:10]
+                tags_title = _extract_hashtags(title)
+                hashtags  = list(dict.fromkeys(tags_desc + tags_title + tags_meta))[:15]
                 posts.append({
                     "platform": "youtube", "post_id": item["id"],
                     "channel_name": ch["name"], "username": uid,
                     "owner": ch.get("owner",""), "team": ch.get("team",""),
-                    "title": item["snippet"]["title"][:500],
-                    "hashtags": [f"#{t}" for t in item["snippet"].get("tags",[])[:10]],
+                    "title": title[:500],
+                    "hashtags": hashtags,
                     "views": int(s.get("viewCount",0)),
                     "likes": int(s.get("likeCount",0)),
                     "comments": int(s.get("commentCount",0)),

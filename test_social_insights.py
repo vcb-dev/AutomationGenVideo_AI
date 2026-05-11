@@ -255,15 +255,21 @@ def crawl_youtube(channels, year, month, date_from, date_to):
             }, timeout=15)
             posts = []
             for item in (vr.json().get('items',[]) if vr.ok else []):
-                s   = item.get('statistics',{})
-                pub = item['snippet']['publishedAt'][:10]
-                tags = item['snippet'].get('tags',[])[:10]
+                s       = item.get('statistics',{})
+                snippet = item.get('snippet',{})
+                pub     = snippet['publishedAt'][:10]
+                title   = snippet.get('title','') or ''
+                desc    = snippet.get('description','') or ''
+                tags_meta  = [f"#{t}" for t in snippet.get('tags',[])[:5]]
+                tags_desc  = extract_hashtags(desc)[:10]
+                tags_title = extract_hashtags(title)
+                hashtags   = list(dict.fromkeys(tags_desc + tags_title + tags_meta))[:15]
                 posts.append({
                     'platform': 'youtube', 'post_id': item['id'],
                     'channel_name': ch['name'], 'username': uid,
                     'owner': ch.get('owner',''), 'team': ch.get('team',''),
-                    'title': item['snippet']['title'][:500],
-                    'hashtags': [f"#{t}" for t in tags],
+                    'title': title[:500],
+                    'hashtags': hashtags,
                     'views': int(s.get('viewCount',0)),
                     'likes': int(s.get('likeCount',0)),
                     'comments': int(s.get('commentCount',0)),
