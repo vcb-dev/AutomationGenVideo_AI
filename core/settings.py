@@ -426,7 +426,14 @@ CELERY_BEAT_SCHEDULE = {
     # Sync traffic + ads data vào DB mỗi ngày lúc 2:00 AM
     'daily-sync-traffic-ads': {
         'task': 'video_management.tasks.daily_sync',
-        'schedule': 86400.0,   # 24 giờ
+        'schedule': 86400.0,
+        'options': {'queue': 'default'},
+    },
+    # Crawl social insights (TikTok/YT/FB/IG) → social_video_report
+    # Mỗi thứ Hai 2:00 AM Vietnam = Chủ nhật 19:00 UTC
+    'crawl-social-insights-weekly': {
+        'task': 'video_management.tasks.crawl_social_insights',
+        'schedule': 604800.0,  # 7 ngày
         'options': {'queue': 'default'},
     },
 }

@@ -23,13 +23,89 @@ ACTOR        = "clockworks~free-tiktok-scraper"
 DELAY        = 1.0  # Giây nghỉ giữa các kênh
 
 def calc_max_videos(year: int, month: int) -> int:
-    """Tính số video tối ưu cần fetch: số ngày trong khoảng × 5 video/ngày + buffer."""
     today = date.today()
-    if year == today.year and month == today.month:
-        days = today.day
+    days  = today.day if (year == today.year and month == today.month) \
+            else calendar.monthrange(year, month)[1]
+    return min(days * 2 + 5, 50)
+
+
+def apify_probe_and_fetch(username: str, year: int, month: int,
+                          date_from: str, date_to: str) -> tuple[list, dict]:
+    """
+    Phase 1: probe 5 videos → đếm bao nhiêu trong tháng cần.
+    Phase 2: nếu cần thêm → fetch đúng số lượng ước tính.
+    Tiết kiệm tối đa credits Apify.
+    """
+    def _fetch(n: int) -> list:
+        r = requests.post(
+            f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items",
+            params={"token": APIFY_TOKEN, "timeout": 120},
+            json={"profiles": [username], "resultsPerPage": n},
+            timeout=150,
+        )
+        if r.status_code == 403:
+            raise Exception("403 Forbidden — kiểm tra Apify account")
+        r.raise_for_status()
+        return r.json() or []
+
+    def _parse_date(item):
+        iso = (item.get("createTimeISO") or "")[:10]
+        ts  = item.get("createTime", 0)
+        if not iso and ts:
+            iso = datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d")
+        return iso
+
+    def _filter(items):
+        result = []
+        for item in items:
+            iso = _parse_date(item)
+            if not iso: continue
+            if iso < date_from: break   # Smart-stop
+            if iso > date_to:   continue
+            result.append(item)
+        return result
+
+    # ── Phase 1: Probe 5 videos ───────────────────────────────────────────────
+    probe  = _fetch(5)
+    dates  = [_parse_date(i) for i in probe if _parse_date(i)]
+    in_range_probe = [d for d in dates if date_from <= d <= date_to]
+    has_old = any(d < date_from for d in dates)
+
+    meta = {"phase": 1, "probe_fetched": len(probe),
+            "probe_in_range": len(in_range_probe)}
+
+    # Nếu probe đã thấy video tháng trước → tháng này có ≤5 videos → đủ rồi
+    if has_old or len(in_range_probe) < len(dates):
+        videos = _filter(probe)
+        meta["phase"] = 1
+        meta["total_fetched"] = len(probe)
+        meta["skipped"] = len(probe) - len(videos)
+        return videos, meta
+
+    # ── Phase 2: Estimate và fetch thêm ─────────────────────────────────────
+    # Estimate: nếu 5 videos phủ X ngày → avg = 5/X video/ngày → tháng cần Y videos
+    if len(dates) >= 2:
+        oldest = min(d for d in in_range_probe)
+        newest = max(d for d in in_range_probe)
+        days_span = max((datetime.strptime(newest, "%Y-%m-%d") -
+                         datetime.strptime(oldest, "%Y-%m-%d")).days, 1)
+        avg_per_day = len(in_range_probe) / days_span
+        today_dt = date.today()
+        days_in_range = (today_dt - datetime.strptime(date_from, "%Y-%m-%d").date()).days \
+                        if (year == today_dt.year and month == today_dt.month) \
+                        else calendar.monthrange(year, month)[1]
+        estimated = int(avg_per_day * days_in_range) + 5
+        fetch_n   = min(max(estimated, 10), 60)
     else:
-        days = calendar.monthrange(year, month)[1]
-    return min(days * 5 + 10, 100)  # Tối đa 100 để tránh tốn credits
+        fetch_n = 20  # fallback
+
+    info(f"@{username}: probe={len(in_range_probe)}/5 trong tháng → estimate {fetch_n} videos")
+
+    items  = _fetch(fetch_n)
+    videos = _filter(items)
+    meta.update({"phase": 2, "total_fetched": len(probe) + len(items),
+                 "estimated": fetch_n, "skipped": len(probe)+len(items)-len(videos)})
+    return videos, meta
 
 # ── Terminal colors ───────────────────────────────────────────────────────────
 G="\033[92m"; Y="\033[93m"; R="\033[91m"; B="\033[94m"; W="\033[97m"; D="\033[2m"; NC="\033[0m"
@@ -77,17 +153,17 @@ def save_to_db(videos: list, channel_name: str, username: str,
             tags = extract_hashtags(v.get('title', ''))
             try:
                 cur.execute("""
-                    INSERT INTO tiktok_video_report
-                      (id, video_id, channel_name, username, owner, team,
+                    INSERT INTO social_video_report
+                      (id, platform, post_id, channel_name, username, owner, team,
                        title, hashtags, views, likes, comments, shares,
                        followers, video_url, published_at,
-                       year, month, synced_at)
+                       year, month, source, synced_at)
                     VALUES
-                      (gen_random_uuid(), %s, %s, %s, %s, %s,
+                      (gen_random_uuid(), 'tiktok', %s, %s, %s, %s, %s,
                        %s, %s, %s, %s, %s, %s,
                        %s, %s, %s::date,
-                       %s, %s, NOW())
-                    ON CONFLICT (video_id) DO UPDATE SET
+                       %s, %s, 'apify', NOW())
+                    ON CONFLICT (platform, post_id) DO UPDATE SET
                       views     = EXCLUDED.views,
                       likes     = EXCLUDED.likes,
                       comments  = EXCLUDED.comments,
@@ -115,6 +191,17 @@ def save_to_db(videos: list, channel_name: str, username: str,
 
 def get_channels(team=None, single=None):
     if single:
+        # Tìm trong DB trước để lấy đủ team/owner
+        rows = db_query("""
+            SELECT name, channel_id, link_channel, team_traffic AS team, owner
+            FROM huyk_channels
+            WHERE LOWER(channel_id) = LOWER(%s)
+               OR LOWER(link_channel) LIKE LOWER(%s)
+            LIMIT 1
+        """, [single, f"%{single}%"])
+        if rows:
+            return rows
+        # Fallback nếu không tìm thấy trong DB
         return [{'name': single, 'channel_id': single, 'link_channel': '', 'team': '', 'owner': ''}]
     params = ['%tiktok%']
     extra  = ""
@@ -156,7 +243,7 @@ def apify_fetch(username: str, max_videos: int, date_from: str, date_to: str) ->
     r.raise_for_status()
     all_items = r.json() or []
 
-    # Apify KHÔNG sort theo ngày → phải filter toàn bộ, không smart-stop
+    # Smart-stop: gặp video đầu tiên cũ hơn date_from → dừng ngay, không lưu DB
     in_range, skipped = [], 0
 
     for item in all_items:
@@ -166,7 +253,10 @@ def apify_fetch(username: str, max_videos: int, date_from: str, date_to: str) ->
             iso = datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d")
         if not iso:
             continue
-        if not (date_from <= iso <= date_to):
+        if iso < date_from:
+            skipped += 1
+            break   # Dừng hẳn — chuyển sang kênh tiếp theo
+        if iso > date_to:
             skipped += 1
             continue
         in_range.append({
@@ -230,7 +320,7 @@ def run(year, month, team=None, single=None, save_json=True):
 
         try:
             start   = datetime.now()
-            videos, meta = apify_fetch(username, max_videos, date_from, date_to)
+            videos, meta = apify_probe_and_fetch(username, year, month, date_from, date_to)
             elapsed = (datetime.now() - start).seconds
 
             total_fetched += meta['fetched_raw']
@@ -250,11 +340,11 @@ def run(year, month, team=None, single=None, save_json=True):
                 except Exception as e:
                     db_tag = f"{R}[DB ✗ {str(e)[:30]}]{NC}"
 
-            skipped_tag = f"{D}[skip {meta['skipped']}]{NC}" if meta['skipped'] else ""
+            phase_tag   = f"{D}[p{meta.get('phase',1)} fetch={meta.get('total_fetched',0)}]{NC}"
             print(f"  {idx:>3}. {W}{name:<28}{NC} {D}{team_ch:<14}{NC} "
                   f"{len(videos):>7} {G}{fmt(views):>8}{NC} "
                   f"{fmt(likes):>7} {fmt(comments):>6} {fmt(shares):>7} "
-                  f"{fmt(followers):>10}  {db_tag} {skipped_tag}")
+                  f"{fmt(followers):>10}  {db_tag} {phase_tag}")
 
             stat = {
                 'channel': ch.get('name', username), 'username': username,
@@ -289,7 +379,7 @@ def run(year, month, team=None, single=None, save_json=True):
     print(f"{B}{'─'*62}{NC}")
     print(f"  Kênh thành công  : {G}{len(channel_stats)}/{len(channels)}{NC}")
     print(f"  Kênh lỗi         : {R}{len(errors)}{NC}")
-    print(f"  Lưu DB           : {G}tiktok_video_report{NC} ({grand_videos} videos)")
+    print(f"  Lưu DB           : {G}social_video_report{NC} (platform=tiktok, {grand_videos} videos)")
     print(f"  Tổng video       : {W}{grand_videos}{NC}")
     print(f"  Tổng views       : {G}{fmt(grand_views)}{NC}")
     print(f"  Tổng likes       : {fmt(grand_likes)}")

@@ -318,3 +318,25 @@ def daily_sync(self):
     except Exception as exc:
         logger.error(f"[DailySync] Failed: {exc}")
         raise self.retry(exc=exc, countdown=3600)  # retry sau 1 giờ
+
+
+# ─── Social Media Crawl Task ──────────────────────────────────────────────────
+
+@shared_task(name='video_management.tasks.crawl_social_insights', bind=True, max_retries=2)
+def crawl_social_insights(self, year: int = None, month: int = None):
+    """
+    Crawl TikTok, YouTube, Facebook, Instagram → lưu vào social_video_report.
+    Chạy hàng ngày lúc 2:00 AM (Vietnam time = 19:00 UTC hôm trước).
+    """
+    from .services.social_crawl_service import run_social_crawl
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        logger.info(f"[SocialCrawl] Starting year={year} month={month}")
+        result = run_social_crawl(year=year, month=month)
+        logger.info(f"[SocialCrawl] Done: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"[SocialCrawl] Failed: {exc}")
+        raise self.retry(exc=exc, countdown=3600)
