@@ -387,7 +387,7 @@ DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.co
 DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
 
 # RapidAPI TikTok API settings
-TIKTOK_API_KEY = env('TIKTOK_API_KEY', default='')
+TIKTOK_ACCESS_TOKEN = env('TIKTOK_ACCESS_TOKEN', default='')
 TIKTOK_API_HOST = env('TIKTOK_API_HOST', default='tiktok-scraper7.p.rapidapi.com')
 
 # ==========================================
