@@ -27,7 +27,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # ── Config ────────────────────────────────────────────────────────────────────
 APIFY_TOKEN   = os.getenv('APIFY_API_TOKEN', '')
-FB_TOKEN      = os.getenv('FACEBOOK_ACCESS_TOKEN', '')
+FB_TOKEN      = os.getenv('META_ACCESS_TOKEN') or os.getenv('FACEBOOK_ACCESS_TOKEN', '')
 YT_KEY        = os.getenv('YOUTUBE_API_KEY', '')
 DATABASE_URL  = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
 FB_BASE       = "https://graph.facebook.com/v19.0"
