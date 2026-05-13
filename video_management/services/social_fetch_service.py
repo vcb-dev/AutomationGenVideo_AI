@@ -152,9 +152,8 @@ def get_ads_report_from_db(year: int, month: int, camp_type: str = None,
 
     w = " AND ".join(where)
     rows = _db_query(f"""
-        SELECT campaign_name, camp_type, content_type, spend,
-               mess_count, cost_per_mess, like_count, cost_per_like,
-               engagement_count, cost_per_engagement, impressions, reach
+        SELECT platform, campaign_name, camp_type, content_type, spend,
+               mess_count, impressions, reach, clicks, team, owner
         FROM ads_campaign_stats WHERE {w}
         ORDER BY spend DESC
     """, params)
@@ -164,10 +163,10 @@ def get_ads_report_from_db(year: int, month: int, camp_type: str = None,
 
     total_spend = sum(r["spend"] for r in rows)
     total_mess  = sum(r["mess_count"] for r in rows)
-    total_likes = sum(r["like_count"] for r in rows)
-
-    good = [r["campaign_name"] for r in rows if r["camp_type"]=="mess" and 0 < r["cost_per_mess"] <= 10000]
-    bad  = [r["campaign_name"] for r in rows if r["camp_type"]=="mess" and r["cost_per_mess"] > 10000]
+    
+    # Phân nhóm theo platform
+    meta_spend = sum(r["spend"] for r in rows if r["platform"] == "meta")
+    tiktok_spend = sum(r["spend"] for r in rows if r["platform"] == "tiktok")
 
     return {
         "has_data": True,
@@ -175,12 +174,11 @@ def get_ads_report_from_db(year: int, month: int, camp_type: str = None,
         "summary": {
             "total_campaigns": len(rows),
             "total_spend": total_spend,
+            "meta_spend": meta_spend,
+            "tiktok_spend": tiktok_spend,
             "total_mess": total_mess,
-            "total_likes": total_likes,
         },
-        "good_camps": good[:10],
-        "bad_camps":  bad[:10],
-        "campaigns":  [dict(r) for r in rows[:30]],
+        "campaigns":  [dict(r) for r in rows[:40]],
     }
 
 

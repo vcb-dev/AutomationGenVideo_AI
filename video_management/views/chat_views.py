@@ -250,7 +250,11 @@ def chat(request):
     if not key:
         return Response({"error": "DEEPSEEK_API_KEY not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    from datetime import datetime
+    now = datetime.now()
+    date_context = f"\n\nLƯU Ý: Hôm nay là ngày {now.day}, tháng {now.month}, năm {now.year}. Khi người dùng hỏi 'tháng này', hãy dùng month={now.month}, year={now.year}."
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT + date_context}]
 
     for item in history[-10:]:
         role = item.get("role", "user")
