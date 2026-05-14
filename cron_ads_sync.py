@@ -6,8 +6,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 META_TOKEN = os.getenv('META_ACCESS_TOKEN')
-TIKTOK_TOKEN = os.getenv('TIKTOK_ADS_ACCESS_TOKEN') or os.getenv('TIKTOK_ACCESS_TOKEN')
-TIKTOK_ADV_ID = os.getenv('TIKTOK_ADVERTISER_ID')
+TIKTOK_TOKEN  = os.getenv('TIKTOK_ADS_ACCESS_TOKEN') or os.getenv('TIKTOK_ACCESS_TOKEN')
+# Hardcode advertiser ID đã xác nhận hoạt động — override env nếu env sai
+TIKTOK_ADV_ID = "7512289961128001543"
 DATABASE_URL = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
 
 def db_conn():
