@@ -15,17 +15,40 @@ def db_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 
 def parse_metadata(name):
-    team = None; owner = None; content = None
-    team_match = re.search(r"Team\s+([\w\s]+?)(?=\s+-|$)", name, re.IGNORECASE)
-    if team_match: team = team_match.group(1).strip()
-    content_match = re.search(r"\b(A[1-5])\b", name)
-    if content_match: content = content_match.group(1)
-    parts = [p.strip() for p in name.split("-")]
-    if len(parts) > 0: owner = parts[0]
+    team = None; owner = None; content = None; camp_type = None
+    n = name.lower()
+
+    # Camp type
+    if 'like page' in n or 'likepage' in n or 'like_page' in n: camp_type = 'like_page'
+    elif 'tương tác' in n or 'tuong tac' in n or 'engagement' in n: camp_type = 'tuong_tac'
+    elif 'mess' in n or 'tin nhắn' in n: camp_type = 'mess'
+    elif 'follow' in n: camp_type = 'follow'
+    else: camp_type = 'other'
+
+    # Team — thứ tự ưu tiên: brackets > "Team KX" > keyword
     tags = re.findall(r"\[(.*?)\]", name)
     if len(tags) >= 1: team = tags[0]
     if len(tags) >= 2: owner = tags[1]
-    return team, owner, content
+    if not team:
+        for kw, val in [('team k1','Team K1'),('team k2','Team K2'),('team k3','Team K3'),
+                        ('team k0','Team K0'),('huyk0','Team K0'),
+                        ('đồ da','Đồ Da'),('do da','Đồ Da'),
+                        ('đá quý','Đá Quý'),('da quy','Đá Quý')]:
+            if kw in n: team = val; break
+    if not team:
+        m = re.search(r'(?:^|\s|-)([KkTt][0-9])(?:\s|-|$)', name)
+        if m: team = f"Team {m.group(1).upper()}"
+
+    # Content type A1-A5
+    cm = re.search(r'\bA([1-5])\b', name, re.IGNORECASE)
+    if cm: content = f"A{cm.group(1)}"
+
+    # Owner — phần tử đầu tiên trước dấu -
+    if not owner:
+        parts = [p.strip() for p in name.split("-")]
+        if parts: owner = parts[0]
+
+    return team, owner, content, camp_type
 
 def sync_meta_ads():
     print("[*] Đang quét Meta Ads...")
@@ -37,15 +60,15 @@ def sync_meta_ads():
         for acc in r_accounts.get('data', []):
             r_ins = requests.get(f"https://graph.facebook.com/v19.0/{acc['id']}/insights", params={"level": "campaign", "fields": "campaign_id,campaign_name,spend,impressions,reach,clicks,actions", "time_range": "{'since':'" + yesterday + "','until':'" + today + "'}", "access_token": META_TOKEN}).json()
             for item in r_ins.get('data', []):
-                team, owner, content = parse_metadata(item['campaign_name'])
+                team, owner, content, camp_type = parse_metadata(item['campaign_name'])
                 mess = 0
                 for action in item.get('actions', []):
                     if action['action_type'] == 'messaging_conversation_started_7d': mess = int(action['value'])
                 cur.execute("""
-                    INSERT INTO ads_campaign_stats (id, platform, account_id, account_name, campaign_id, campaign_name, team, owner, content_type, spend, impressions, reach, mess_count, clicks, date_start, date_stop, year, month, synced_at)
-                    VALUES (gen_random_uuid(), 'meta', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (campaign_id, date_start, date_stop) DO UPDATE SET spend=EXCLUDED.spend, impressions=EXCLUDED.impressions, mess_count=EXCLUDED.mess_count, clicks=EXCLUDED.clicks, team=EXCLUDED.team, owner=EXCLUDED.owner, content_type=EXCLUDED.content_type, synced_at=NOW()
-                """, (acc['id'], acc['name'], item['campaign_id'], item['campaign_name'], team, owner, content, float(item['spend']), int(item['impressions']), int(item['reach']), mess, int(item['clicks']), yesterday, today, datetime.now().year, datetime.now().month))
+                    INSERT INTO ads_campaign_stats (id, platform, account_id, account_name, campaign_id, campaign_name, team, owner, content_type, camp_type, spend, impressions, reach, mess_count, clicks, date_start, date_stop, year, month, synced_at)
+                    VALUES (gen_random_uuid(), 'meta', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (campaign_id, date_start, date_stop) DO UPDATE SET spend=EXCLUDED.spend, impressions=EXCLUDED.impressions, mess_count=EXCLUDED.mess_count, clicks=EXCLUDED.clicks, team=EXCLUDED.team, owner=EXCLUDED.owner, content_type=EXCLUDED.content_type, camp_type=EXCLUDED.camp_type, synced_at=NOW()
+                """, (acc['id'], acc['name'], item['campaign_id'], item['campaign_name'], team, owner, content, camp_type, float(item['spend']), int(item['impressions']), int(item['reach']), mess, int(item['clicks']), yesterday, today, datetime.now().year, datetime.now().month))
             print(f"    + Đã lưu Meta: {acc['name']}")
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi Meta Ads: {e}")
@@ -68,12 +91,12 @@ def sync_tiktok_ads():
             r_rep = requests.get("https://business-api.tiktok.com/open_api/v1.3/report/integrated/get/", params=params, headers=headers).json()
             for row in r_rep.get('data', {}).get('list', []):
                 m = row['metrics']; d = row['dimensions']
-                team, owner, content = parse_metadata(m['campaign_name'])
+                team, owner, content, camp_type = parse_metadata(m['campaign_name'])
                 cur.execute("""
-                    INSERT INTO ads_campaign_stats (id, platform, account_id, account_name, campaign_id, campaign_name, team, owner, content_type, spend, impressions, reach, mess_count, clicks, date_start, date_stop, year, month, synced_at)
-                    VALUES (gen_random_uuid(), 'tiktok', %s, 'TikTok Account', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (campaign_id, date_start, date_stop) DO UPDATE SET spend=EXCLUDED.spend, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, team=EXCLUDED.team, owner=EXCLUDED.owner, content_type=EXCLUDED.content_type, synced_at=NOW()
-                """, (aid, d['campaign_id'], m['campaign_name'], team, owner, content, float(m['spend']), int(m['impressions']), int(m['reach']), int(m.get('conversions', 0)), int(m['clicks']), d['stat_time_day'], d['stat_time_day'], datetime.now().year, datetime.now().month))
+                    INSERT INTO ads_campaign_stats (id, platform, account_id, account_name, campaign_id, campaign_name, team, owner, content_type, camp_type, spend, impressions, reach, mess_count, clicks, date_start, date_stop, year, month, synced_at)
+                    VALUES (gen_random_uuid(), 'tiktok', %s, 'TikTok Account', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (campaign_id, date_start, date_stop) DO UPDATE SET spend=EXCLUDED.spend, impressions=EXCLUDED.impressions, clicks=EXCLUDED.clicks, team=EXCLUDED.team, owner=EXCLUDED.owner, content_type=EXCLUDED.content_type, camp_type=EXCLUDED.camp_type, synced_at=NOW()
+                """, (aid, d['campaign_id'], m['campaign_name'], team, owner, content, camp_type, float(m['spend']), int(m['impressions']), int(m['reach']), int(m.get('conversions', 0)), int(m['clicks']), d['stat_time_day'], d['stat_time_day'], datetime.now().year, datetime.now().month))
             print(f"    + Đã lưu TikTok Advertiser: {aid}")
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi TikTok Ads: {e}")
