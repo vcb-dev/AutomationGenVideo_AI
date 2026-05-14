@@ -1,5 +1,5 @@
-import os, sys, requests, psycopg2, psycopg2.extras, time, re
-from datetime import datetime, date
+import os, sys, requests, psycopg2, psycopg2.extras, time, re, json
+from datetime import datetime, date, timezone, timedelta
 from dotenv import load_dotenv
 
 # Load env
@@ -7,9 +7,12 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 # Config
-META_TOKEN    = os.getenv('META_ACCESS_TOKEN')
-YT_API_KEY    = os.getenv('YOUTUBE_API_KEY')
-DATABASE_URL  = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
+META_TOKEN      = os.getenv('META_ACCESS_TOKEN')
+YT_API_KEY      = os.getenv('YOUTUBE_API_KEY')
+TT_ADS_TOKEN    = os.getenv('TIKTOK_ACCESS_TOKEN')
+TT_ORGANIC_TOKEN= os.getenv('TIKTOK_ORGANIC_TOKEN')
+TT_BC_ID        = os.getenv('TIKTOK_BC_ID', '7274810417535270913')
+DATABASE_URL    = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
 
 # Lấy tháng hiện tại
 CURRENT_MONTH = datetime.now().month
@@ -244,10 +247,184 @@ def sync_meta(ch_meta):
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi Meta: {e}")
 
+# ── TikTok Organic Sync ──────────────────────────────────────────────────────
+def sync_tiktok():
+    if not TT_ORGANIC_TOKEN:
+        print("[!] TIKTOK_ORGANIC_TOKEN chưa có — bỏ qua TikTok sync")
+        print("    Chạy: python get_organic_token.py để lấy token trước.")
+        return
+    if not TT_ADS_TOKEN:
+        print("[!] TIKTOK_ACCESS_TOKEN chưa có — bỏ qua TikTok sync")
+        return
+
+    TT_BASE = 'https://business-api.tiktok.com/open_api/v1.3'
+
+    def tt_get(path, params):
+        r = requests.get(f"{TT_BASE}{path}", params=params,
+                         headers={'Access-Token': TT_ADS_TOKEN}, timeout=20)
+        return r.json()
+
+    def tt_post_organic(path, payload):
+        r = requests.post(f"{TT_BASE}{path}", json=payload,
+                          headers={'Access-Token': TT_ORGANIC_TOKEN,
+                                   'Content-Type': 'application/json'}, timeout=20)
+        return r.json()
+
+    print(f"[*] Đang quét TikTok tháng {CURRENT_MONTH}/{CURRENT_YEAR}...")
+
+    # 1. Lấy danh sách kênh từ Business Center
+    accounts = []
+    cursor   = None
+    while True:
+        params = {'bc_id': TT_BC_ID, 'asset_type': 'TT_ACCOUNT', 'page_size': 50}
+        if cursor:
+            params['cursor'] = cursor
+        res = tt_get('/bc/asset/get/', params)
+        if res.get('code') != 0:
+            print(f"    [!] Lỗi lấy kênh BC: {res.get('message')}")
+            break
+        data = res.get('data', {})
+        accounts.extend(data.get('list', []))
+        if not data.get('page_info', {}).get('has_more'):
+            break
+        cursor = data['page_info'].get('cursor')
+        time.sleep(0.3)
+    print(f"    Tìm thấy {len(accounts)} kênh TikTok")
+
+    # Metadata owner/team từ huyk_channels
+    try:
+        conn = db_conn(); cur = conn.cursor()
+        cur.execute("""
+            SELECT name, owner, team_traffic FROM huyk_channels
+            WHERE LOWER(platform) LIKE '%tiktok%'
+              AND status IN ('Đang hoạt động', 'ON')
+        """)
+        tt_meta = {r['name'].strip().lower(): r for r in cur.fetchall()}
+    except Exception as e:
+        print(f"    [!] Lỗi load metadata TikTok: {e}")
+        return
+
+    # Khoảng thời gian tháng hiện tại (Unix timestamp)
+    TZ_VN    = timezone(timedelta(hours=7))
+    start_dt = datetime(CURRENT_YEAR, CURRENT_MONTH, 1, tzinfo=TZ_VN)
+    end_dt   = (datetime(CURRENT_YEAR + 1, 1, 1, tzinfo=TZ_VN)
+                if CURRENT_MONTH == 12
+                else datetime(CURRENT_YEAR, CURRENT_MONTH + 1, 1, tzinfo=TZ_VN))
+    start_ts = int(start_dt.timestamp())
+    end_ts   = int(end_dt.timestamp())
+
+    total_saved = 0
+    for acc in accounts:
+        business_id  = str(acc.get('asset_id', ''))
+        display_name = acc.get('asset_name', business_id)
+        name_key     = display_name.strip().lower()
+        m            = tt_meta.get(name_key, {})
+
+        # Lấy followers qua organic token
+        followers = 0
+        try:
+            info_res = requests.get(
+                f"{TT_BASE}/business/get/",
+                params={'business_id': business_id},
+                headers={'Access-Token': TT_ORGANIC_TOKEN}, timeout=15
+            ).json()
+            if info_res.get('code') == 0:
+                d = info_res.get('data', {})
+                followers    = d.get('follower_count', 0)
+                display_name = d.get('display_name', display_name)
+        except Exception as e:
+            print(f"    [!] Lỗi /business/get/ {display_name}: {e}")
+
+        # Lấy danh sách video trong tháng
+        videos = []
+        vid_cursor = None
+        while True:
+            payload = {
+                'business_id': business_id,
+                'fields': json.dumps([
+                    'item_id', 'caption', 'video_views', 'likes',
+                    'comment_count', 'share_count', 'create_time',
+                    'share_url', 'reach',
+                ]),
+                'filters': json.dumps({
+                    'create_time': {'min': start_ts, 'max': end_ts}
+                }),
+                'page_size': 50,
+            }
+            if vid_cursor:
+                payload['cursor'] = vid_cursor
+            vres = tt_post_organic('/business/video/list/', payload)
+            if vres.get('code') != 0:
+                print(f"    [!] Lỗi video list {display_name}: {vres.get('message')} (code {vres.get('code')})")
+                break
+            vdata = vres.get('data', {})
+            batch = vdata.get('videos', []) or vdata.get('list', [])
+            videos.extend(batch)
+            if not vdata.get('has_more'):
+                break
+            vid_cursor = vdata.get('cursor')
+            time.sleep(0.2)
+
+        if not videos:
+            print(f"    - {display_name}: không có video tháng {CURRENT_MONTH}")
+            continue
+
+        # Upsert từng video
+        saved = 0
+        for v in videos:
+            vid_id    = str(v.get('item_id', ''))
+            caption   = v.get('caption', '')
+            title, tags = extract_and_clean_title(caption)
+            views     = int(v.get('video_views', 0) or v.get('reach', 0) or 0)
+            likes     = int(v.get('likes', 0) or 0)
+            comments  = int(v.get('comment_count', 0) or 0)
+            shares    = int(v.get('share_count', 0) or 0)
+            create_ts = v.get('create_time', 0)
+            published = (datetime.fromtimestamp(create_ts, tz=TZ_VN)
+                         if create_ts else datetime.now(TZ_VN))
+            video_url = v.get('share_url', f'https://www.tiktok.com/@{business_id}/video/{vid_id}')
+
+            try:
+                cur.execute("""
+                    INSERT INTO social_video_report
+                      (id, platform, post_id, channel_name, username, owner, team,
+                       title, hashtags, views, likes, comments, shares, followers,
+                       video_url, year, month, published_at, source, synced_at)
+                    VALUES
+                      (gen_random_uuid(), 'tiktok', %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s, 'api', NOW())
+                    ON CONFLICT (platform, post_id) DO UPDATE SET
+                      views=EXCLUDED.views, likes=EXCLUDED.likes,
+                      comments=EXCLUDED.comments, shares=EXCLUDED.shares,
+                      followers=EXCLUDED.followers, title=EXCLUDED.title,
+                      synced_at=NOW()
+                """, (
+                    vid_id, display_name, business_id,
+                    m.get('owner', ''), m.get('team_traffic', ''),
+                    title or caption[:500], tags,
+                    views, likes, comments, shares, int(followers or 0),
+                    video_url, CURRENT_YEAR, CURRENT_MONTH, published,
+                ))
+                saved += 1
+            except Exception as e:
+                print(f"    [!] Lỗi upsert video {vid_id}: {e}")
+                conn.rollback()
+
+        conn.commit()
+        total_saved += saved
+        print(f"    + {display_name}: {saved} video | {followers:,} followers")
+        time.sleep(0.3)
+
+    cur.close(); conn.close()
+    print(f"[*] TikTok sync hoàn tất: {total_saved} video.")
+
+
 def main():
     ch_meta = get_channel_metadata()
     sync_youtube(ch_meta)
     sync_meta(ch_meta)
+    sync_tiktok()
 
 if __name__ == "__main__":
     main()
