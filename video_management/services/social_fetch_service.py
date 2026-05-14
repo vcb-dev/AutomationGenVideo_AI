@@ -66,8 +66,7 @@ def get_channels_with_owners(platform: str = None, limit: int = 50) -> list:
 def get_traffic_report_from_db(year: int, month: int, platform: str = None,
                                team: str = None, owner: str = None) -> dict:
     """
-    Đọc báo cáo traffic từ DB (channel_monthly_stats + channel_post_stats).
-    Nhanh, không tốn API. Chỉ có data nếu cronjob đã chạy.
+    Đọc báo cáo traffic từ social_video_report.
     """
     where = ["year = %s", "month = %s"]
     params = [year, month]
@@ -82,14 +81,16 @@ def get_traffic_report_from_db(year: int, month: int, platform: str = None,
 
     monthly = _db_query(f"""
         SELECT platform, channel_name, username, team, owner,
-               total_views, total_likes, total_comments, total_shares,
-               total_followers, post_count
-        FROM channel_monthly_stats WHERE {w}
+               SUM(views) AS total_views, SUM(likes) AS total_likes,
+               SUM(comments) AS total_comments, SUM(shares) AS total_shares,
+               MAX(followers) AS total_followers, COUNT(*) AS post_count
+        FROM social_video_report WHERE {w}
+        GROUP BY platform, channel_name, username, team, owner
         ORDER BY total_views DESC
     """, params)
 
     if not monthly:
-        return {"has_data": False, "message": f"Chưa có dữ liệu tháng {month}/{year} trong DB. Cronjob chưa chạy hoặc chưa sync."}
+        return {"has_data": False, "message": f"Chưa có dữ liệu tháng {month}/{year} trong DB."}
 
     grand = {"views":0,"likes":0,"comments":0,"shares":0,"posts":0,"channels":len(monthly)}
     for r in monthly:
@@ -99,32 +100,30 @@ def get_traffic_report_from_db(year: int, month: int, platform: str = None,
         grand["shares"]   += int(r["total_shares"] or 0)
         grand["posts"]    += int(r["post_count"] or 0)
 
-    # Top 10 posts
     top_posts = _db_query(f"""
         SELECT platform, channel_name, username, team, owner,
-               title, url, published_at::text, views, likes, comments
-        FROM channel_post_stats WHERE {w}
+               title, video_url AS url, published_at::text, views, likes, comments
+        FROM social_video_report WHERE {w}
         ORDER BY views DESC LIMIT 10
     """, params)
 
     top_likes = _db_query(f"""
-        SELECT platform, channel_name, title, url, likes, comments
-        FROM channel_post_stats WHERE {w}
+        SELECT platform, channel_name, title, video_url AS url, likes, comments
+        FROM social_video_report WHERE {w}
         ORDER BY likes DESC LIMIT 10
     """, params)
 
     top_comments = _db_query(f"""
-        SELECT platform, channel_name, title, url, likes, comments
-        FROM channel_post_stats WHERE {w}
+        SELECT platform, channel_name, title, video_url AS url, likes, comments
+        FROM social_video_report WHERE {w}
         ORDER BY comments DESC LIMIT 10
     """, params)
 
-    # By team
     team_stats = _db_query(f"""
-        SELECT team, COUNT(*) AS channels,
-               SUM(total_views) AS views, SUM(total_likes) AS likes,
-               SUM(total_comments) AS comments, SUM(post_count) AS posts
-        FROM channel_monthly_stats WHERE {w}
+        SELECT team, COUNT(DISTINCT channel_name) AS channels,
+               SUM(views) AS views, SUM(likes) AS likes,
+               SUM(comments) AS comments, COUNT(*) AS posts
+        FROM social_video_report WHERE {w}
         GROUP BY team ORDER BY views DESC
     """, params)
 

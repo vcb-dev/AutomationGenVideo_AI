@@ -1,4 +1,4 @@
-import os, sys, requests, psycopg2, psycopg2.extras, time, re, yt_dlp
+import os, sys, requests, psycopg2, psycopg2.extras, time, re
 from datetime import datetime, date
 from dotenv import load_dotenv
 
@@ -7,8 +7,9 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 # Config
-META_TOKEN = os.getenv('META_ACCESS_TOKEN')
-DATABASE_URL = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
+META_TOKEN    = os.getenv('META_ACCESS_TOKEN')
+YT_API_KEY    = os.getenv('YOUTUBE_API_KEY')
+DATABASE_URL  = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replace('?pgbouncer=true','')
 
 # Lấy tháng hiện tại
 CURRENT_MONTH = datetime.now().month
@@ -35,54 +36,148 @@ def get_channel_metadata():
     except Exception as e: print(f"[!] Lỗi Metadata: {e}")
     return meta
 
-# ── YouTube Sync (V16 - Extra Clean ID) ─────────────────────────────────────
+# ── YouTube Sync (YouTube Data API v3) ───────────────────────────────────────
 def sync_youtube(ch_meta):
-    print(f"[*] Đang quét YouTube tháng {CURRENT_MONTH}...")
+    if not YT_API_KEY:
+        print("[!] YOUTUBE_API_KEY chưa cấu hình — bỏ qua YouTube sync")
+        return
+
+    print(f"[*] Đang quét YouTube tháng {CURRENT_MONTH}/{CURRENT_YEAR} (Data API v3)...")
+    YT_BASE = "https://www.googleapis.com/youtube/v3"
+
+    def yt_get(endpoint, params):
+        params['key'] = YT_API_KEY
+        r = requests.get(f"{YT_BASE}/{endpoint}", params=params, timeout=15)
+        if r.status_code == 403:
+            raise Exception(f"YouTube API 403 — hết quota hoặc key không hợp lệ")
+        return r.json()
+
+    def resolve_channel(raw_id):
+        """Trả về (channel_id, subscribers, uploads_playlist_id) từ UC... hoặc @handle."""
+        raw_id = raw_id.strip().replace(" ", "")
+        if raw_id.startswith("UC"):
+            params = {"part": "statistics,contentDetails", "id": raw_id}
+        else:
+            handle = raw_id if raw_id.startswith("@") else f"@{raw_id}"
+            params = {"part": "statistics,contentDetails", "forHandle": handle}
+        data = yt_get("channels", params)
+        items = data.get("items", [])
+        if not items:
+            return None, 0, None
+        item = items[0]
+        ch_id      = item["id"]
+        subs       = int(item.get("statistics", {}).get("subscriberCount", 0))
+        uploads_pl = item["contentDetails"]["relatedPlaylists"]["uploads"]
+        return ch_id, subs, uploads_pl
+
     try:
         conn = db_conn(); cur = conn.cursor()
         cur.execute("SELECT channel_id, name, team_traffic, owner FROM huyk_channels WHERE LOWER(platform) LIKE 'youtube%%'")
         channels = cur.fetchall()
-        
-        ydl_opts = {'quiet': True, 'extract_flat': 'in_playlist', 'skip_download': True, 'playlist_items': '1-10', 'ignoreerrors': True}
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            for ch in channels:
-                raw_id = ch['channel_id'].strip() if ch['channel_id'] else ""
-                if not raw_id: continue
-                
-                # Xóa khoảng trắng ở giữa nếu là handle
-                clean_id = raw_id.replace(" ", "") if raw_id.startswith("@") else raw_id
-                
-                # Tạo URL
-                if clean_id.startswith("UC"):
-                    url = f"https://www.youtube.com/channel/{clean_id}/videos"
-                elif clean_id.startswith("@"):
-                    url = f"https://www.youtube.com/{clean_id}/videos"
-                else:
-                    # Thử giả định là handle nếu không có UC
-                    url = f"https://www.youtube.com/@{clean_id}/videos"
-                
-                try:
-                    info = ydl.extract_info(url, download=False)
-                    if not info or 'entries' not in info: continue
-                    for entry in info['entries']:
-                        up_date_str = entry.get('upload_date')
-                        if not up_date_str: continue
-                        up_date = datetime.strptime(up_date_str, "%Y%m%d")
-                        if up_date.month != CURRENT_MONTH or up_date.year != CURRENT_YEAR: continue
-                        
-                        v_id = entry.get('id')
-                        title, tags = extract_and_clean_title(entry.get('title', ''))
-                        cur.execute("""
-                            INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, video_url, year, month, published_at, synced_at)
-                            VALUES (gen_random_uuid(), 'youtube', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                            ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, synced_at=NOW()
-                        """, (v_id, ch['name'], clean_id, ch['owner'], ch['team_traffic'], title, tags, entry.get('view_count', 0), entry.get('like_count', 0), entry.get('comment_count', 0), f"https://youtube.com/watch?v={v_id}", up_date.year, up_date.month, up_date))
-                    print(f"    + Đã lưu YT: {ch['name']}")
-                except:
-                    print(f"    [!] Lỗi: Không thể tìm thấy kênh '{ch['name']}' với ID '{clean_id}'")
-        conn.commit(); conn.close()
-    except Exception as e: print(f" [!] Lỗi hệ thống YT: {e}")
+        print(f"    Tìm thấy {len(channels)} kênh YouTube")
+
+        for ch in channels:
+            raw_id = (ch['channel_id'] or '').strip()
+            if not raw_id:
+                continue
+            try:
+                # 1. Lấy channel ID thực + subscriber count + uploads playlist
+                channel_id, subscribers, uploads_pl = resolve_channel(raw_id)
+                if not channel_id:
+                    print(f"    [!] Không tìm thấy kênh: {ch['name']} ({raw_id})")
+                    continue
+
+                # 2. Duyệt uploads playlist, lấy video của tháng hiện tại
+                videos_this_month = []
+                page_token = None
+                while True:
+                    params = {"part": "snippet,contentDetails", "playlistId": uploads_pl, "maxResults": 50}
+                    if page_token:
+                        params["pageToken"] = page_token
+                    pl = yt_get("playlistItems", params)
+
+                    stop_paging = False
+                    for item in pl.get("items", []):
+                        pub_str = item["snippet"].get("publishedAt", "")
+                        if not pub_str:
+                            continue
+                        pub_dt = datetime.strptime(pub_str[:10], "%Y-%m-%d")
+                        # Video cũ hơn tháng cần lấy → dừng phân trang
+                        if (pub_dt.year, pub_dt.month) < (CURRENT_YEAR, CURRENT_MONTH):
+                            stop_paging = True
+                            break
+                        if pub_dt.year == CURRENT_YEAR and pub_dt.month == CURRENT_MONTH:
+                            videos_this_month.append({
+                                "video_id":    item["contentDetails"]["videoId"],
+                                "title":       item["snippet"]["title"],
+                                "published_at": pub_dt,
+                            })
+
+                    if stop_paging or not pl.get("nextPageToken"):
+                        break
+                    page_token = pl["nextPageToken"]
+
+                if not videos_this_month:
+                    print(f"    - {ch['name']}: không có video tháng {CURRENT_MONTH}")
+                    continue
+
+                # 3. Lấy statistics theo batch 50
+                video_ids  = [v["video_id"] for v in videos_this_month]
+                stats_map  = {}
+                for i in range(0, len(video_ids), 50):
+                    batch = video_ids[i:i + 50]
+                    vdata = yt_get("videos", {"part": "statistics", "id": ",".join(batch)})
+                    for vi in vdata.get("items", []):
+                        s = vi.get("statistics", {})
+                        stats_map[vi["id"]] = {
+                            "views":    int(s.get("viewCount",    0)),
+                            "likes":    int(s.get("likeCount",    0)),
+                            "comments": int(s.get("commentCount", 0)),
+                        }
+
+                # 4. Upsert vào social_video_report
+                saved = 0
+                for v in videos_this_month:
+                    vid   = v["video_id"]
+                    s     = stats_map.get(vid, {"views": 0, "likes": 0, "comments": 0})
+                    title, tags = extract_and_clean_title(v["title"])
+                    cur.execute("""
+                        INSERT INTO social_video_report
+                          (id, platform, post_id, channel_name, username, owner, team,
+                           title, hashtags, views, likes, comments, shares, followers,
+                           video_url, year, month, published_at, source, synced_at)
+                        VALUES
+                          (gen_random_uuid(), 'youtube', %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, 0, %s,
+                           %s, %s, %s, %s, 'api', NOW())
+                        ON CONFLICT (platform, post_id) DO UPDATE SET
+                          views=EXCLUDED.views, likes=EXCLUDED.likes,
+                          comments=EXCLUDED.comments, followers=EXCLUDED.followers,
+                          title=EXCLUDED.title, synced_at=NOW()
+                    """, (
+                        vid, ch['name'], channel_id,
+                        ch['owner'], ch['team_traffic'],
+                        title, tags,
+                        s['views'], s['likes'], s['comments'],
+                        subscribers,
+                        f"https://youtube.com/watch?v={vid}",
+                        CURRENT_YEAR, CURRENT_MONTH, v['published_at'],
+                    ))
+                    saved += 1
+
+                conn.commit()
+                print(f"    + {ch['name']}: {saved} video | {subscribers:,} subscribers")
+                time.sleep(0.3)  # tránh rate limit
+
+            except Exception as e:
+                print(f"    [!] Lỗi kênh {ch['name']}: {e}")
+                continue
+
+        conn.close()
+        print(f"[*] YouTube sync hoàn tất.")
+
+    except Exception as e:
+        print(f"[!] Lỗi hệ thống YouTube: {e}")
 
 # ── Meta Sync (Giữ nguyên) ──────────────────────────────────────────────────
 def sync_meta(ch_meta):
