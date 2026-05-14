@@ -208,16 +208,38 @@ def sync_meta(ch_meta):
             if 'instagram_business_account' in pg:
                 ig = pg['instagram_business_account']
                 m_ig = ch_meta.get(ig['id']) or ch_meta.get(ig['username'].lower().strip())
-                ig_res = requests.get(f"https://graph.facebook.com/v19.0/{ig['id']}/media", params={"fields": "id,caption,timestamp,permalink,media_url,like_count,comments_count", "access_token": pg['access_token'], "limit": 15}).json()
+                # Lấy insights (impressions + video_views) để có view count
+                ig_res = requests.get(
+                    f"https://graph.facebook.com/v19.0/{ig['id']}/media",
+                    params={
+                        "fields": "id,caption,timestamp,permalink,media_url,media_type,like_count,comments_count,insights.metric(reach,impressions,video_views,plays)",
+                        "access_token": pg['access_token'],
+                        "limit": 20
+                    }
+                ).json()
                 for mi in ig_res.get('data', []):
                     pub_at = datetime.strptime(mi['timestamp'], "%Y-%m-%dT%H:%M:%S%z")
                     if pub_at.month != CURRENT_MONTH or pub_at.year != CURRENT_YEAR: continue
                     title, tags = extract_and_clean_title(mi.get('caption', ''))
+
+                    # Instagram API trả về: reach > plays/video_views > impressions
+                    # reach = số tài khoản unique đã xem (tương đương views)
+                    views = 0
+                    for ins in mi.get('insights', {}).get('data', []):
+                        val = ins.get('values', [{}])[0].get('value', 0) if ins.get('values') else ins.get('value', 0)
+                        val = int(val or 0)
+                        if ins['name'] in ('plays', 'video_views') and val > 0:
+                            views = max(views, val)
+                        elif ins['name'] == 'reach' and views == 0:
+                            views = val
+                        elif ins['name'] == 'impressions' and views == 0:
+                            views = val
+
                     cur.execute("""
                         INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, followers, video_url, year, month, published_at, synced_at)
-                        VALUES (gen_random_uuid(), 'instagram', %s, %s, %s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        VALUES (gen_random_uuid(), 'instagram', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW()
-                    """, (mi['id'], ig.get('username'), ig['id'], m_ig['owner'] if m_ig else None, m_ig['team_traffic'] if m_ig else None, title, tags, mi.get('like_count', 0), mi.get('comments_count', 0), ig.get('followers_count', 0), mi.get('media_url') or mi.get('permalink'), pub_at.year, pub_at.month, pub_at))
+                    """, (mi['id'], ig.get('username'), ig['id'], m_ig['owner'] if m_ig else None, m_ig['team_traffic'] if m_ig else None, title, tags, views, mi.get('like_count', 0), mi.get('comments_count', 0), ig.get('followers_count', 0), mi.get('media_url') or mi.get('permalink'), pub_at.year, pub_at.month, pub_at))
             print(f"    + Đã xong: {pg['name']}")
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi Meta: {e}")
