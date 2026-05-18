@@ -1,4 +1,4 @@
-import os, sys, requests, psycopg2, psycopg2.extras, time, re, json
+import os, sys, requests, psycopg2, psycopg2.extras, time, re, json, urllib.parse
 from datetime import datetime, date, timezone, timedelta
 from dotenv import load_dotenv
 
@@ -74,23 +74,33 @@ def sync_youtube(ch_meta):
         return ch_id, subs, uploads_pl
 
     try:
-        conn = db_conn(); cur = conn.cursor()
-        cur.execute("SELECT channel_id, link_channel, name, team_traffic, owner FROM huyk_channels WHERE LOWER(platform) LIKE 'youtube%%'")
-        channels = cur.fetchall()
+        conn = db_conn()
+        with conn.cursor() as sel:
+            sel.execute("SELECT channel_id, link_channel, name, team_traffic, owner FROM huyk_channels WHERE LOWER(platform) LIKE 'youtube%%'")
+            channels = sel.fetchall()
         print(f"    Tìm thấy {len(channels)} kênh YouTube")
 
         for ch in channels:
-            # Ưu tiên channel_id, fallback sang handle trích từ link_channel
-            raw_id = (ch['channel_id'] or '').strip()
-            if not raw_id:
-                link = (ch['link_channel'] or '').strip()
-                # Trích @handle từ URL: youtube.com/@handle hoặc youtube.com/@handle/videos
+            # Trích raw_id từ link_channel trước (ưu tiên URL), fallback sang channel_id
+            raw_id = ''
+            link = (ch['link_channel'] or '').strip()
+            if link:
+                # Dạng 1: youtube.com/@handle
                 m = re.search(r'youtube\.com/(@[^/?&\s]+)', link)
                 if m:
-                    raw_id = m.group(1)
-                    print(f"    [~] Dùng link_channel để lấy handle: {raw_id} cho {ch['name']}")
+                    raw_id = urllib.parse.unquote(m.group(1))
+                else:
+                    # Dạng 2: youtube.com/channel/UCxxx
+                    m2 = re.search(r'youtube\.com/channel/(UC[^/?&\s]+)', link)
+                    if m2:
+                        raw_id = m2.group(1)
+
+            # Fallback sang cột channel_id nếu link không trích được
             if not raw_id:
-                print(f"    [!] Bỏ qua {ch['name']}: không có channel_id lẫn link_channel")
+                raw_id = (ch['channel_id'] or '').strip()
+
+            if not raw_id:
+                print(f"    [!] Bỏ qua {ch['name']}: không có link_channel lẫn channel_id")
                 continue
             try:
                 # 1. Lấy channel ID thực + subscriber count + uploads playlist
@@ -147,41 +157,43 @@ def sync_youtube(ch_meta):
                             "comments": int(s.get("commentCount", 0)),
                         }
 
-                # 4. Upsert vào social_video_report
+                # 4. Upsert vào social_video_report — dùng cursor riêng
                 saved = 0
-                for v in videos_this_month:
-                    vid   = v["video_id"]
-                    s     = stats_map.get(vid, {"views": 0, "likes": 0, "comments": 0})
-                    title, tags = extract_and_clean_title(v["title"])
-                    cur.execute("""
-                        INSERT INTO social_video_report
-                          (id, platform, post_id, channel_name, username, owner, team,
-                           title, hashtags, views, likes, comments, shares, followers,
-                           video_url, year, month, published_at, source, synced_at)
-                        VALUES
-                          (gen_random_uuid(), 'youtube', %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, 0, %s,
-                           %s, %s, %s, %s, 'api', NOW())
-                        ON CONFLICT (platform, post_id) DO UPDATE SET
-                          views=EXCLUDED.views, likes=EXCLUDED.likes,
-                          comments=EXCLUDED.comments, followers=EXCLUDED.followers,
-                          title=EXCLUDED.title, synced_at=NOW()
-                    """, (
-                        vid, ch['name'], channel_id,
-                        ch['owner'], ch['team_traffic'],
-                        title, tags,
-                        s['views'], s['likes'], s['comments'],
-                        subscribers,
-                        f"https://youtube.com/watch?v={vid}",
-                        CURRENT_YEAR, CURRENT_MONTH, v['published_at'],
-                    ))
-                    saved += 1
+                with conn.cursor() as cur:
+                    for v in videos_this_month:
+                        vid   = v["video_id"]
+                        s     = stats_map.get(vid, {"views": 0, "likes": 0, "comments": 0})
+                        title, tags = extract_and_clean_title(v["title"])
+                        cur.execute("""
+                            INSERT INTO social_video_report
+                              (id, platform, post_id, channel_name, username, owner, team,
+                               title, hashtags, views, likes, comments, shares, followers,
+                               video_url, year, month, published_at, source, synced_at)
+                            VALUES
+                              (gen_random_uuid(), 'youtube', %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, 0, %s,
+                               %s, %s, %s, %s, 'api', NOW())
+                            ON CONFLICT (platform, post_id) DO UPDATE SET
+                              views=EXCLUDED.views, likes=EXCLUDED.likes,
+                              comments=EXCLUDED.comments, followers=EXCLUDED.followers,
+                              title=EXCLUDED.title, synced_at=NOW()
+                        """, (
+                            vid, ch['name'], channel_id,
+                            ch['owner'], ch['team_traffic'],
+                            title, tags,
+                            s['views'], s['likes'], s['comments'],
+                            subscribers,
+                            f"https://youtube.com/watch?v={vid}",
+                            CURRENT_YEAR, CURRENT_MONTH, v['published_at'],
+                        ))
+                        saved += 1
 
                 conn.commit()
                 print(f"    + {ch['name']}: {saved} video | {subscribers:,} subscribers")
                 time.sleep(0.3)  # tránh rate limit
 
             except Exception as e:
+                conn.rollback()  # reset transaction để kênh tiếp theo không bị ảnh hưởng
                 print(f"    [!] Lỗi kênh {ch['name']}: {e}")
                 continue
 
