@@ -48,15 +48,39 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
 
 def exchange_token(auth_code: str) -> dict:
-    url = 'https://business-api.tiktok.com/open_api/v1.3/oauth2/token/'
+    # Thử lần lượt các endpoint TikTok Business API
+    endpoints = [
+        'https://business-api.tiktok.com/open_api/v1.3/oauth2/creator_token/',
+        'https://business-api.tiktok.com/open_api/v1.3/tt_user/oauth2/token/',
+        'https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/',
+    ]
+    bc_id = os.getenv('TIKTOK_BC_ID', '7274810417535270913')
+    print(f"    BC_ID       : '{bc_id}'")
+    print(f"    auth_code   : '{auth_code[:20]}...'")
+
+    # Thử cả 2 tên field TikTok có thể dùng
     payload = {
-        'app_id':    APP_ID,
-        'secret':    APP_SECRET,
-        'auth_code': auth_code,
+        'app_id':      APP_ID,
+        'secret':      APP_SECRET,
+        'auth_code':   auth_code,
+        'business':    bc_id,
+        'bc_id':       bc_id,
+        'business_id': bc_id,
     }
-    r = requests.post(url, json=payload,
-                      headers={'Content-Type': 'application/json'}, timeout=15)
-    return r.json()
+    print(f"    Payload keys: {list(payload.keys())}")
+    for url in endpoints:
+        print(f"    Thử endpoint: {url}")
+        r = requests.post(url, json=payload,
+                          headers={'Content-Type': 'application/json'}, timeout=15)
+        print(f"    HTTP status : {r.status_code}")
+        print(f"    Raw response: {r.text[:300]}")
+        if r.status_code == 404:
+            continue
+        try:
+            return r.json()
+        except Exception:
+            return {'code': -1, 'message': f'Response không phải JSON: {r.text[:200]}'}
+    return {'code': -1, 'message': 'Tất cả endpoints đều trả về 404'}
 
 
 def main():
