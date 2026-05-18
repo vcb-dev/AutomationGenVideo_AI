@@ -159,6 +159,7 @@ def sync_youtube(ch_meta):
 
                 # 4. Upsert vào social_video_report — dùng cursor riêng
                 saved = 0
+                active_post_ids = []
                 with conn.cursor() as cur:
                     for v in videos_this_month:
                         vid   = v["video_id"]
@@ -168,15 +169,17 @@ def sync_youtube(ch_meta):
                             INSERT INTO social_video_report
                               (id, platform, post_id, channel_name, username, owner, team,
                                title, hashtags, views, likes, comments, shares, followers,
-                               video_url, year, month, published_at, source, synced_at)
+                               video_url, year, month, published_at, source, synced_at,
+                               is_active, deleted_at)
                             VALUES
                               (gen_random_uuid(), 'youtube', %s, %s, %s, %s, %s,
                                %s, %s, %s, %s, %s, 0, %s,
-                               %s, %s, %s, %s, 'api', NOW())
+                               %s, %s, %s, %s, 'api', NOW(), TRUE, NULL)
                             ON CONFLICT (platform, post_id) DO UPDATE SET
                               views=EXCLUDED.views, likes=EXCLUDED.likes,
                               comments=EXCLUDED.comments, followers=EXCLUDED.followers,
-                              title=EXCLUDED.title, synced_at=NOW()
+                              title=EXCLUDED.title, synced_at=NOW(),
+                              is_active=TRUE, deleted_at=NULL
                         """, (
                             vid, ch['name'], channel_id,
                             ch['owner'], ch['team_traffic'],
@@ -186,7 +189,20 @@ def sync_youtube(ch_meta):
                             f"https://youtube.com/watch?v={vid}",
                             CURRENT_YEAR, CURRENT_MONTH, v['published_at'],
                         ))
+                        active_post_ids.append(vid)
                         saved += 1
+
+                    # Đánh dấu video tháng này không còn trong API → đã bị xóa
+                    if active_post_ids:
+                        cur.execute("""
+                            UPDATE social_video_report
+                            SET is_active=FALSE, deleted_at=NOW()
+                            WHERE platform='youtube'
+                              AND username=%s
+                              AND year=%s AND month=%s
+                              AND is_active=TRUE
+                              AND post_id NOT IN %s
+                        """, (channel_id, CURRENT_YEAR, CURRENT_MONTH, tuple(active_post_ids)))
 
                 conn.commit()
                 print(f"    + {ch['name']}: {saved} video | {subscribers:,} subscribers")
@@ -213,6 +229,7 @@ def sync_meta(ch_meta):
         for pg in pages:
             m = ch_meta.get(pg['id']) or ch_meta.get(pg['name'].lower().strip())
             f_res = requests.get(f"https://graph.facebook.com/v19.0/{pg['id']}/posts", params={"fields": "id,message,created_time,permalink_url,attachments{media},reactions.summary(true),comments.summary(true),shares,insights.metric(post_impressions_unique)", "access_token": pg['access_token'], "limit": 15}).json()
+            fb_active_ids = []
             for p in f_res.get('data', []):
                 pub_at = datetime.strptime(p['created_time'], "%Y-%m-%dT%H:%M:%S%z")
                 if pub_at.month != CURRENT_MONTH or pub_at.year != CURRENT_YEAR: continue
@@ -225,10 +242,18 @@ def sync_meta(ch_meta):
                     if ins['name'] == 'post_impressions_unique': views = ins['values'][0]['value']
                 share_count = p.get('shares', {}).get('count', 0)
                 cur.execute("""
-                    INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, shares, followers, video_url, year, month, published_at, synced_at)
-                    VALUES (gen_random_uuid(), 'facebook', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, shares=EXCLUDED.shares, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW()
+                    INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, shares, followers, video_url, year, month, published_at, synced_at, is_active, deleted_at)
+                    VALUES (gen_random_uuid(), 'facebook', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), TRUE, NULL)
+                    ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, shares=EXCLUDED.shares, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW(), is_active=TRUE, deleted_at=NULL
                 """, (p['id'], pg['name'], pg['id'], m['owner'] if m else None, m['team_traffic'] if m else None, title, tags, views, p.get('reactions', {}).get('summary', {}).get('total_count', 0), p.get('comments', {}).get('summary', {}).get('total_count', 0), share_count, pg.get('fan_count', 0), v_url, pub_at.year, pub_at.month, pub_at))
+                fb_active_ids.append(p['id'])
+            # Đánh dấu post FB không còn trong API → đã bị xóa
+            if fb_active_ids:
+                cur.execute("""
+                    UPDATE social_video_report SET is_active=FALSE, deleted_at=NOW()
+                    WHERE platform='facebook' AND username=%s AND year=%s AND month=%s
+                      AND is_active=TRUE AND post_id NOT IN %s
+                """, (pg['id'], CURRENT_YEAR, CURRENT_MONTH, tuple(fb_active_ids)))
             if 'instagram_business_account' in pg:
                 ig = pg['instagram_business_account']
                 m_ig = ch_meta.get(ig['id']) or ch_meta.get(ig['username'].lower().strip())
@@ -260,10 +285,19 @@ def sync_meta(ch_meta):
                             views = val
 
                     cur.execute("""
-                        INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, followers, video_url, year, month, published_at, synced_at)
-                        VALUES (gen_random_uuid(), 'instagram', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW()
+                        INSERT INTO social_video_report (id, platform, post_id, channel_name, username, owner, team, title, hashtags, views, likes, comments, followers, video_url, year, month, published_at, synced_at, is_active, deleted_at)
+                        VALUES (gen_random_uuid(), 'instagram', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), TRUE, NULL)
+                        ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW(), is_active=TRUE, deleted_at=NULL
                     """, (mi['id'], ig.get('username'), ig['id'], m_ig['owner'] if m_ig else None, m_ig['team_traffic'] if m_ig else None, title, tags, views, mi.get('like_count', 0), mi.get('comments_count', 0), ig.get('followers_count', 0), mi.get('media_url') or mi.get('permalink'), pub_at.year, pub_at.month, pub_at))
+                    ig_active_ids = [mi.get('id') for mi in ig_res.get('data', [])
+                                     if datetime.strptime(mi['timestamp'], "%Y-%m-%dT%H:%M:%S%z").month == CURRENT_MONTH]
+                # Đánh dấu post IG không còn trong API → đã bị xóa
+                if ig_active_ids:
+                    cur.execute("""
+                        UPDATE social_video_report SET is_active=FALSE, deleted_at=NOW()
+                        WHERE platform='instagram' AND username=%s AND year=%s AND month=%s
+                          AND is_active=TRUE AND post_id NOT IN %s
+                    """, (ig.get('username'), CURRENT_YEAR, CURRENT_MONTH, tuple(ig_active_ids)))
             print(f"    + Đã xong: {pg['name']}")
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi Meta: {e}")

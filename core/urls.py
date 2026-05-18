@@ -101,9 +101,11 @@ urlpatterns = [
 
 # VCB Assistant Chat
 from video_management.views import chat_views
+from video_management.views.analytics_chat_views import analytics_chat
 
 urlpatterns += [
     path('api/chat/', chat_views.chat, name='vcb-chat'),
+    path('api/chat/analytics/', analytics_chat, name='vcb-analytics-chat'),
 ]
 
 # Cached audio serving endpoint
