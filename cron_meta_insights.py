@@ -75,13 +75,22 @@ def sync_youtube(ch_meta):
 
     try:
         conn = db_conn(); cur = conn.cursor()
-        cur.execute("SELECT channel_id, name, team_traffic, owner FROM huyk_channels WHERE LOWER(platform) LIKE 'youtube%%'")
+        cur.execute("SELECT channel_id, link_channel, name, team_traffic, owner FROM huyk_channels WHERE LOWER(platform) LIKE 'youtube%%'")
         channels = cur.fetchall()
         print(f"    Tìm thấy {len(channels)} kênh YouTube")
 
         for ch in channels:
+            # Ưu tiên channel_id, fallback sang handle trích từ link_channel
             raw_id = (ch['channel_id'] or '').strip()
             if not raw_id:
+                link = (ch['link_channel'] or '').strip()
+                # Trích @handle từ URL: youtube.com/@handle hoặc youtube.com/@handle/videos
+                m = re.search(r'youtube\.com/(@[^/?&\s]+)', link)
+                if m:
+                    raw_id = m.group(1)
+                    print(f"    [~] Dùng link_channel để lấy handle: {raw_id} cho {ch['name']}")
+            if not raw_id:
+                print(f"    [!] Bỏ qua {ch['name']}: không có channel_id lẫn link_channel")
                 continue
             try:
                 # 1. Lấy channel ID thực + subscriber count + uploads playlist
