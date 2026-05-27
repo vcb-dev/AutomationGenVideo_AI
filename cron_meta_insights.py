@@ -16,7 +16,16 @@ DATABASE_URL    = os.getenv('DIRECT_URL') or os.getenv('DATABASE_URL','').replac
 
 # Lấy tháng hiện tại
 CURRENT_MONTH = datetime.now().month
-CURRENT_YEAR = datetime.now().year
+CURRENT_YEAR  = datetime.now().year
+
+# ── Buffer window ──────────────────────────────────────────────────────────────
+# Video đăng N ngày cuối tháng cần thêm thời gian tích lũy view → crawl lại
+# trong N ngày đầu tháng sau để cập nhật số liệu trước khi chốt báo cáo.
+BUFFER_DAYS  = 7
+_month_start = datetime(CURRENT_YEAR, CURRENT_MONTH, 1)
+BUFFER_START = (_month_start - timedelta(days=BUFFER_DAYS)).date()
+# Ví dụ: crawl ngày 5/5 → BUFFER_START = 24/4
+# → vẫn cập nhật views cho video đăng 24/4–30/4 trước khi chốt tháng 4
 
 def db_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
@@ -124,23 +133,24 @@ def sync_youtube(ch_meta):
                         if not pub_str:
                             continue
                         pub_dt = datetime.strptime(pub_str[:10], "%Y-%m-%d")
-                        # Video cũ hơn tháng cần lấy → dừng phân trang
-                        if (pub_dt.year, pub_dt.month) < (CURRENT_YEAR, CURRENT_MONTH):
+                        # Dừng khi video cũ hơn cửa sổ buffer (không cần đọc thêm)
+                        if pub_dt.date() < BUFFER_START:
                             stop_paging = True
                             break
-                        if pub_dt.year == CURRENT_YEAR and pub_dt.month == CURRENT_MONTH:
-                            videos_this_month.append({
-                                "video_id":    item["contentDetails"]["videoId"],
-                                "title":       item["snippet"]["title"],
-                                "published_at": pub_dt,
-                            })
+                        # Thu thập tất cả video trong cửa sổ:
+                        # tháng hiện tại + N ngày cuối tháng trước (buffer)
+                        videos_this_month.append({
+                            "video_id":    item["contentDetails"]["videoId"],
+                            "title":       item["snippet"]["title"],
+                            "published_at": pub_dt,
+                        })
 
                     if stop_paging or not pl.get("nextPageToken"):
                         break
                     page_token = pl["nextPageToken"]
 
                 if not videos_this_month:
-                    print(f"    - {ch['name']}: không có video tháng {CURRENT_MONTH}")
+                    print(f"    - {ch['name']}: không có video tháng {CURRENT_MONTH} (kể cả buffer)")
                     continue
 
                 # 3. Lấy statistics theo batch 50
@@ -187,22 +197,32 @@ def sync_youtube(ch_meta):
                             s['views'], s['likes'], s['comments'],
                             subscribers,
                             f"https://youtube.com/watch?v={vid}",
-                            CURRENT_YEAR, CURRENT_MONTH, v['published_at'],
+                            v['published_at'].year, v['published_at'].month, v['published_at'],
                         ))
                         active_post_ids.append(vid)
                         saved += 1
 
-                    # Đánh dấu video tháng này không còn trong API → đã bị xóa
-                    if active_post_ids:
-                        cur.execute("""
-                            UPDATE social_video_report
-                            SET is_active=FALSE, deleted_at=NOW()
-                            WHERE platform='youtube'
-                              AND username=%s
-                              AND year=%s AND month=%s
-                              AND is_active=TRUE
-                              AND post_id NOT IN %s
-                        """, (channel_id, CURRENT_YEAR, CURRENT_MONTH, tuple(active_post_ids)))
+                    # Đánh dấu video bị xóa — kiểm tra từng tháng riêng trong cửa sổ
+                    # (tháng hiện tại + tháng buffer) để không nhầm tháng
+                    months_in_window = set(
+                        (v["published_at"].year, v["published_at"].month)
+                        for v in videos_this_month
+                    )
+                    for (y, m_w) in months_in_window:
+                        ids_in_month = [
+                            v["video_id"] for v in videos_this_month
+                            if v["published_at"].year == y and v["published_at"].month == m_w
+                        ]
+                        if ids_in_month:
+                            cur.execute("""
+                                UPDATE social_video_report
+                                SET is_active=FALSE, deleted_at=NOW()
+                                WHERE platform='youtube'
+                                  AND username=%s
+                                  AND year=%s AND month=%s
+                                  AND is_active=TRUE
+                                  AND post_id NOT IN %s
+                            """, (channel_id, y, m_w, tuple(ids_in_month)))
 
                 conn.commit()
                 print(f"    + {ch['name']}: {saved} video | {subscribers:,} subscribers")
@@ -228,11 +248,14 @@ def sync_meta(ch_meta):
         conn = db_conn(); cur = conn.cursor()
         for pg in pages:
             m = ch_meta.get(pg['id']) or ch_meta.get(pg['name'].lower().strip())
-            f_res = requests.get(f"https://graph.facebook.com/v19.0/{pg['id']}/posts", params={"fields": "id,message,created_time,permalink_url,attachments{media},reactions.summary(true),comments.summary(true),shares,insights.metric(post_impressions_unique)", "access_token": pg['access_token'], "limit": 15}).json()
-            fb_active_ids = []
+            _buf_since = int(datetime(BUFFER_START.year, BUFFER_START.month, BUFFER_START.day).timestamp())
+            f_res = requests.get(f"https://graph.facebook.com/v19.0/{pg['id']}/posts", params={"fields": "id,message,created_time,permalink_url,attachments{media},reactions.summary(true),comments.summary(true),shares,insights.metric(post_impressions_unique)", "access_token": pg['access_token'], "limit": 50, "since": _buf_since}).json()
+            fb_active_ids = []        # Tất cả ID trong cửa sổ (upsert)
+            fb_current_ids = []       # Chỉ tháng hiện tại (dùng cho deletion check)
             for p in f_res.get('data', []):
                 pub_at = datetime.strptime(p['created_time'], "%Y-%m-%dT%H:%M:%S%z")
-                if pub_at.month != CURRENT_MONTH or pub_at.year != CURRENT_YEAR: continue
+                # Bỏ qua post cũ hơn cửa sổ buffer
+                if pub_at.date() < BUFFER_START: continue
                 title, tags = extract_and_clean_title(p.get('message', ''))
                 v_url = p.get('permalink_url')
                 atts = p.get('attachments', {}).get('data', [])
@@ -247,13 +270,16 @@ def sync_meta(ch_meta):
                     ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, shares=EXCLUDED.shares, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW(), is_active=TRUE, deleted_at=NULL
                 """, (p['id'], pg['name'], pg['id'], m['owner'] if m else None, m['team_traffic'] if m else None, title, tags, views, p.get('reactions', {}).get('summary', {}).get('total_count', 0), p.get('comments', {}).get('summary', {}).get('total_count', 0), share_count, pg.get('fan_count', 0), v_url, pub_at.year, pub_at.month, pub_at))
                 fb_active_ids.append(p['id'])
-            # Đánh dấu post FB không còn trong API → đã bị xóa
-            if fb_active_ids:
+                if pub_at.year == CURRENT_YEAR and pub_at.month == CURRENT_MONTH:
+                    fb_current_ids.append(p['id'])
+            # Đánh dấu post FB bị xóa — chỉ check tháng hiện tại
+            # (buffer tháng trước không cần check vì đã xử lý trong tháng đó)
+            if fb_current_ids:
                 cur.execute("""
                     UPDATE social_video_report SET is_active=FALSE, deleted_at=NOW()
                     WHERE platform='facebook' AND username=%s AND year=%s AND month=%s
                       AND is_active=TRUE AND post_id NOT IN %s
-                """, (pg['id'], CURRENT_YEAR, CURRENT_MONTH, tuple(fb_active_ids)))
+                """, (pg['id'], CURRENT_YEAR, CURRENT_MONTH, tuple(fb_current_ids)))
             if 'instagram_business_account' in pg:
                 ig = pg['instagram_business_account']
                 m_ig = ch_meta.get(ig['id']) or ch_meta.get(ig['username'].lower().strip())
@@ -263,12 +289,15 @@ def sync_meta(ch_meta):
                     params={
                         "fields": "id,caption,timestamp,permalink,media_url,media_type,like_count,comments_count,insights.metric(reach,impressions,video_views,plays)",
                         "access_token": pg['access_token'],
-                        "limit": 20
+                        "limit": 50,
+                        "since": _buf_since,
                     }
                 ).json()
+                ig_current_ids = []
                 for mi in ig_res.get('data', []):
                     pub_at = datetime.strptime(mi['timestamp'], "%Y-%m-%dT%H:%M:%S%z")
-                    if pub_at.month != CURRENT_MONTH or pub_at.year != CURRENT_YEAR: continue
+                    # Bỏ qua media cũ hơn cửa sổ buffer
+                    if pub_at.date() < BUFFER_START: continue
                     title, tags = extract_and_clean_title(mi.get('caption', ''))
 
                     # Instagram API trả về: reach > plays/video_views > impressions
@@ -289,15 +318,16 @@ def sync_meta(ch_meta):
                         VALUES (gen_random_uuid(), 'instagram', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), TRUE, NULL)
                         ON CONFLICT (platform, post_id) DO UPDATE SET views=EXCLUDED.views, likes=EXCLUDED.likes, comments=EXCLUDED.comments, followers=EXCLUDED.followers, video_url=EXCLUDED.video_url, owner=EXCLUDED.owner, team=EXCLUDED.team, synced_at=NOW(), is_active=TRUE, deleted_at=NULL
                     """, (mi['id'], ig.get('username'), ig['id'], m_ig['owner'] if m_ig else None, m_ig['team_traffic'] if m_ig else None, title, tags, views, mi.get('like_count', 0), mi.get('comments_count', 0), ig.get('followers_count', 0), mi.get('media_url') or mi.get('permalink'), pub_at.year, pub_at.month, pub_at))
-                    ig_active_ids = [mi.get('id') for mi in ig_res.get('data', [])
-                                     if datetime.strptime(mi['timestamp'], "%Y-%m-%dT%H:%M:%S%z").month == CURRENT_MONTH]
-                # Đánh dấu post IG không còn trong API → đã bị xóa
-                if ig_active_ids:
+                    # Track riêng ID tháng hiện tại để deletion check
+                    if pub_at.year == CURRENT_YEAR and pub_at.month == CURRENT_MONTH:
+                        ig_current_ids.append(mi['id'])
+                # Đánh dấu post IG bị xóa — chỉ check tháng hiện tại
+                if ig_current_ids:
                     cur.execute("""
                         UPDATE social_video_report SET is_active=FALSE, deleted_at=NOW()
                         WHERE platform='instagram' AND username=%s AND year=%s AND month=%s
                           AND is_active=TRUE AND post_id NOT IN %s
-                    """, (ig.get('username'), CURRENT_YEAR, CURRENT_MONTH, tuple(ig_active_ids)))
+                    """, (ig.get('username'), CURRENT_YEAR, CURRENT_MONTH, tuple(ig_current_ids)))
             print(f"    + Đã xong: {pg['name']}")
         conn.commit(); conn.close()
     except Exception as e: print(f" [!] Lỗi Meta: {e}")
@@ -359,9 +389,10 @@ def sync_tiktok():
         print(f"    [!] Lỗi load metadata TikTok: {e}")
         return
 
-    # Khoảng thời gian tháng hiện tại (Unix timestamp)
+    # Cửa sổ crawl mở rộng: từ BUFFER_START đến cuối tháng hiện tại
+    # Buffer giúp cập nhật view cho video đăng cuối tháng trước
     TZ_VN    = timezone(timedelta(hours=7))
-    start_dt = datetime(CURRENT_YEAR, CURRENT_MONTH, 1, tzinfo=TZ_VN)
+    start_dt = datetime(BUFFER_START.year, BUFFER_START.month, BUFFER_START.day, tzinfo=TZ_VN)
     end_dt   = (datetime(CURRENT_YEAR + 1, 1, 1, tzinfo=TZ_VN)
                 if CURRENT_MONTH == 12
                 else datetime(CURRENT_YEAR, CURRENT_MONTH + 1, 1, tzinfo=TZ_VN))
@@ -459,7 +490,7 @@ def sync_tiktok():
                     m.get('owner', ''), m.get('team_traffic', ''),
                     title or caption[:500], tags,
                     views, likes, comments, shares, int(followers or 0),
-                    video_url, CURRENT_YEAR, CURRENT_MONTH, published,
+                    video_url, published.year, published.month, published,
                 ))
                 saved += 1
             except Exception as e:
