@@ -46,11 +46,12 @@ class MinimaxTTSService:
         vol: float = 1.0,
         pitch: int = 0,
         emotion: str = "happy",
+        language_boost: Optional[str] = None,
         output_path: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate audio from text using Minimax TTS.
-        
+
         Args:
             text: Text to convert to speech
             voice_id: Minimax voice ID (e.g., "moss_audio_ce3450f9-c782-11f0-a527-aab150a40f84")
@@ -58,8 +59,9 @@ class MinimaxTTSService:
             vol: Volume (0.1 - 10.0), default 1.0
             pitch: Pitch adjustment (-12 to 12), default 0
             emotion: Emotion type ("happy", "sad", "angry", "neutral", etc.)
+            language_boost: Minimax language hint (e.g. "Vietnamese", "English", "auto")
             output_path: Optional local path to save audio file
-            
+
         Returns:
             Dictionary with:
             {
@@ -92,6 +94,8 @@ class MinimaxTTSService:
                     "channel": 1
                 }
             }
+            if language_boost:
+                payload["language_boost"] = language_boost
             
             # Build headers
             headers = {
@@ -123,37 +127,51 @@ class MinimaxTTSService:
             data = response.json()
             logger.info(f"✅ Minimax Response: {data.keys()}")
             
-            # Extract audio URL from response
-            # Minimax v2 returns: {"audio_file": "base64...", "extra_info": {...}}
-            # OR {"data": {"audio_file": "url...", ...}}
-            
-            audio_file = data.get('audio_file') or data.get('data', {}).get('audio_file')
+            # Extract audio from response. Tuỳ model/account Minimax trả về một trong:
+            #   {"data": {"audio": "<hex>"}, "extra_info": {...}}        (t2a_v2 chính thức — hex)
+            #   {"audio_file": "<base64 hoặc url>", "extra_info": {...}} (biến thể cũ)
+            inner = data.get('data') or {}
+            audio_file = (
+                data.get('audio_file')
+                or inner.get('audio_file')
+                or inner.get('audio')
+                or data.get('audio')
+            )
             extra_info = data.get('extra_info', {})
-            
+
             if not audio_file:
-                logger.error(f"❌ No audio_file in response: {data}")
-                raise Exception(f"No audio_file in Minimax response: {data}")
-            
-            # Minimax may return base64 or URL
-            # If it's base64, we need to decode and save
+                logger.error(f"❌ No audio in response: {data}")
+                raise Exception(f"No audio in Minimax response: {data}")
+
             if audio_file.startswith('http'):
                 audio_url = audio_file
                 logger.info(f"✅ Audio URL: {audio_url[:100]}...")
+                # Caller (voice_tts_api) serves the file from output_path via /media —
+                # nếu không tải về thì URL /media trả 404. Download về output_path.
+                if output_path:
+                    dl = requests.get(audio_file, timeout=120)
+                    dl.raise_for_status()
+                    with open(output_path, 'wb') as f:
+                        f.write(dl.content)
+                    logger.info(f"✅ Audio downloaded to: {output_path}")
             else:
-                # Base64 audio - save to file
+                # Chuỗi audio nhúng: t2a_v2 trả hex, biến thể cũ trả base64 — thử hex trước.
                 import base64
-                audio_bytes = base64.b64decode(audio_file)
-                
+                try:
+                    audio_bytes = bytes.fromhex(audio_file)
+                except ValueError:
+                    audio_bytes = base64.b64decode(audio_file)
+
                 if not output_path:
                     # Generate temp path
                     import tempfile
                     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
                     output_path = temp_file.name
                     temp_file.close()
-                
+
                 with open(output_path, 'wb') as f:
                     f.write(audio_bytes)
-                
+
                 audio_url = output_path
                 logger.info(f"✅ Audio saved to: {output_path}")
             
