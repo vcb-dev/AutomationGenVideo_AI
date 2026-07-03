@@ -45,6 +45,22 @@ from .views import (
     pregen_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
+from .views.facebook_views import facebook_sync, facebook_import, facebook_backfill, get_managed_pages, get_synced_videos
+from .views.scraper_views import (
+    all_external_videos,
+    keyword_suggest, keyword_hit, keyword_list, keyword_create,
+    trigger_discovery, discovered_fanpages, fanpage_detail, fanpage_toggle,
+    search_reels, trigger_scrape_reels, fanpage_scrape_by_url,
+    tiktok_search, tiktok_videos, tiktok_keyword_suggest,
+    tiktok_profile_scrape, tiktok_profiles_list, tiktok_profile_detail,
+    tiktok_profile_videos, tiktok_profile_toggle,
+    instagram_profile_scrape, instagram_profiles_list, instagram_profile_detail,
+    instagram_profile_reels, instagram_profile_toggle,
+    douyin_keyword_search, douyin_videos_list, douyin_keyword_suggest,
+    douyin_profile_scrape, douyin_profiles_list,
+    douyin_profile_detail, douyin_profile_toggle, douyin_profile_videos,
+    owned_channel_videos,
+)
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
     analyze_facebook_url,
@@ -60,7 +76,10 @@ from .views.channel_analysis_generic_views import (
 )
 from .views.douyin_search_views import search_douyin_videos
 from .views.douyin_profile_views import fetch_douyin_channel_profile
-from .views.xiaohongshu_search_views import search_xiaohongshu_notes
+from .views.xiaohongshu_search_views import (
+    search_xiaohongshu_notes, list_xiaohongshu_videos, xiaohongshu_keyword_suggest,
+    xhs_profile_scrape, xhs_profiles_list, xhs_profile_detail, xhs_profile_videos,
+)
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.product_views import (
@@ -167,20 +186,80 @@ urlpatterns = [
     path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
     path('facebook/competitor-insights/', analyze_facebook_competitor, name='facebook-competitor-insights'),
     path('facebook/channel-metrics/', facebook_channel_metrics, name='facebook-channel-metrics'),
+    path('facebook/import/', facebook_import, name='facebook-import'),
+    path('facebook/sync/', facebook_sync, name='facebook-sync'),
+    path('facebook/backfill/', facebook_backfill, name='facebook-backfill'),
+    path('facebook/manage-pages/', get_managed_pages, name='facebook-pages-list'),
+    path('facebook/page-videos/<str:page_id>/', get_synced_videos, name='facebook-videos-list'),
+
+    # Scraper — All videos (gom tất cả nền tảng)
+    path('scraper/all-videos/', all_external_videos, name='scraper-all-videos'),
+    path('scraper/owned/videos/', owned_channel_videos, name='scraper-owned-videos'),
+
+    # Scraper — Keyword Search, Discovery & Fanpages
+    path('scraper/reels/search/', search_reels, name='scraper-reels-search'),
+    path('scraper/keywords/suggest/', keyword_suggest, name='scraper-keyword-suggest'),
+    path('scraper/keywords/hit/', keyword_hit, name='scraper-keyword-hit'),
+    path('scraper/keywords/', keyword_list, name='scraper-keyword-list'),
+    path('scraper/keywords/create/', keyword_create, name='scraper-keyword-create'),
+    path('scraper/discover/', trigger_discovery, name='scraper-discover'),
+    path('scraper/fanpages/', discovered_fanpages, name='scraper-fanpages'),
+    path('scraper/fanpages/<int:fanpage_id>/', fanpage_detail, name='scraper-fanpage-detail'),
+    path('scraper/fanpages/<int:fanpage_id>/toggle/', fanpage_toggle, name='scraper-fanpage-toggle'),
+    path('scraper/fanpages/scrape-reels/', trigger_scrape_reels, name='scraper-scrape-reels'),
+    path('scraper/fanpages/scrape-by-url/', fanpage_scrape_by_url, name='scraper-fanpage-scrape-by-url'),
+
+    # TikTok (keyword search)
+    path('scraper/tiktok/search/', tiktok_search, name='scraper-tiktok-search'),
+    path('scraper/tiktok/videos/', tiktok_videos, name='scraper-tiktok-videos'),
+    path('scraper/tiktok/keywords/suggest/', tiktok_keyword_suggest, name='scraper-tiktok-keyword-suggest'),
+
+    # TikTok (profile posts)
+    path('scraper/tiktok/profiles/', tiktok_profiles_list, name='scraper-tiktok-profiles'),
+    path('scraper/tiktok/profiles/scrape/', tiktok_profile_scrape, name='scraper-tiktok-profile-scrape'),
+    path('scraper/tiktok/profiles/<int:profile_id>/', tiktok_profile_detail, name='scraper-tiktok-profile-detail'),
+    path('scraper/tiktok/profiles/<int:profile_id>/videos/', tiktok_profile_videos, name='scraper-tiktok-profile-videos'),
+    path('scraper/tiktok/profiles/<int:profile_id>/toggle/', tiktok_profile_toggle, name='scraper-tiktok-profile-toggle'),
+
+    # Instagram (profile reels)
+    path('scraper/instagram/profiles/', instagram_profiles_list, name='scraper-instagram-profiles'),
+    path('scraper/instagram/profiles/scrape/', instagram_profile_scrape, name='scraper-instagram-profile-scrape'),
+    path('scraper/instagram/profiles/<int:profile_id>/', instagram_profile_detail, name='scraper-instagram-profile-detail'),
+    path('scraper/instagram/profiles/<int:profile_id>/reels/', instagram_profile_reels, name='scraper-instagram-profile-reels'),
+    path('scraper/instagram/profiles/<int:profile_id>/toggle/', instagram_profile_toggle, name='scraper-instagram-profile-toggle'),
 
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
     path('channel/analysis-unified/', channel_analysis_unified_generic, name='channel-analysis-unified'),
     
-    # Douyin Search
+    # Douyin Search (cũ — real-time, không lưu DB)
     path('douyin/search/', search_douyin_videos, name='douyin-search'),
-    
+    # Douyin Scraper (mới — lưu DB, giống TikTok)
+    path('scraper/douyin/search/', douyin_keyword_search, name='scraper-douyin-search'),
+    path('scraper/douyin/videos/', douyin_videos_list, name='scraper-douyin-videos'),
+    path('scraper/douyin/keywords/suggest/', douyin_keyword_suggest, name='scraper-douyin-keyword-suggest'),
+    path('scraper/douyin/profile/scrape/', douyin_profile_scrape, name='scraper-douyin-profile-scrape'),
+    path('scraper/douyin/profiles/', douyin_profiles_list, name='scraper-douyin-profiles'),
+    path('scraper/douyin/profiles/<int:pk>/', douyin_profile_detail, name='scraper-douyin-profile-detail'),
+    path('scraper/douyin/profiles/<int:pk>/toggle/', douyin_profile_toggle, name='scraper-douyin-profile-toggle'),
+    path('scraper/douyin/profiles/<int:pk>/videos/', douyin_profile_videos, name='scraper-douyin-profile-videos'),
+
     # Douyin Channel Profile (full: followers, avatar, engagement) — called on Update only
     path('douyin/profile/', fetch_douyin_channel_profile, name='douyin-channel-profile'),
     
-    # Xiaohongshu Search
+    # Xiaohongshu Search (TikHub)
+    path('scraper/xiaohongshu/search/', search_xiaohongshu_notes, name='scraper-xiaohongshu-search'),
+    path('scraper/xiaohongshu/videos/', list_xiaohongshu_videos, name='scraper-xiaohongshu-videos'),
+    path('scraper/xiaohongshu/keywords/suggest/', xiaohongshu_keyword_suggest, name='scraper-xiaohongshu-keyword-suggest'),
+    # Legacy (redirect-in-place: keep old path working)
     path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
+
+    # Xiaohongshu Profiles (TikHub)
+    path('scraper/xiaohongshu/profiles/', xhs_profiles_list, name='scraper-xhs-profiles'),
+    path('scraper/xiaohongshu/profiles/scrape/', xhs_profile_scrape, name='scraper-xhs-profile-scrape'),
+    path('scraper/xiaohongshu/profiles/<int:profile_id>/', xhs_profile_detail, name='scraper-xhs-profile-detail'),
+    path('scraper/xiaohongshu/profiles/<int:profile_id>/videos/', xhs_profile_videos, name='scraper-xhs-profile-videos'),
     
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),

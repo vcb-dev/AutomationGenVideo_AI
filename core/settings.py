@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import base64
 from pathlib import Path
 import environ
 import os
@@ -61,6 +62,7 @@ INSTALLED_APPS = [
     
     # Third party apps
     'rest_framework',
+    'rest_framework.authtoken',
     # 'drf_spectacular',
     'corsheaders',
     
@@ -203,7 +205,15 @@ LOGGING = {
 }
 
 # REST Framework settings
+JWT_SECRET = env('JWT_SECRET', default='')
+JWT_BOOT_SUFFIX = env('JWT_BOOT_SUFFIX', default='')
+
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'core.authentication.NestJWTAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
@@ -236,8 +246,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Celery settings
-CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://redis:6379/0')
-CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://redis:6379/0')
+CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -297,55 +307,52 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # ==========================================
-# APIFY CONFIGURATION (Primary Scraping Service)
+# APIFY REMOVED — All scraping now uses BrightData
 # ==========================================
-APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
-# Proxy password for Apify Residential Proxy (image-proxy cho Facebook CDN).
-# Lấy từ: https://console.apify.com/proxy - khác với API Token. Nếu không set, dùng APIFY_API_TOKEN.
-APIFY_PROXY_PASSWORD = env('APIFY_PROXY_PASSWORD', default='')
-# Country cho Residential Proxy (US, VN, ...). Phát huy khi dùng cho Image Proxy
-APIFY_PROXY_COUNTRY = env('APIFY_PROXY_COUNTRY', default='US')
-# Danh sách Country code. Hệ thống quét sẽ tự động chọn ngẫu nhiên để lách chặn IP
-APIFY_PROXY_COUNTRIES = env('APIFY_PROXY_COUNTRIES', default='VN,US,JP,SG')
 
-# Apify Actor IDs for different platforms
-APIFY_ACTORS = {
-    # TikTok
-    'tiktok': env('APIFY_ACTOR_TIKTOK', default='clockworks/free-tiktok-scraper'),
-    'tiktok_profile': env('APIFY_ACTOR_TIKTOK_PROFILE', default='apidojo/tiktok-profile-scraper'),
-    'tiktok_user': env('APIFY_ACTOR_TIKTOK_USER', default='apidojo/tiktok-user-scraper'),
-    # Instagram
-    'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
-    'instagram_profile': env('APIFY_ACTOR_INSTAGRAM_PROFILE', default='apify/instagram-profile-scraper'),  # Chuyên profile + avatar
-    'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
-    'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
-    'instagram_keyword': env('APIFY_ACTOR_INSTAGRAM_KEYWORD', default='crawlerbros/instagram-keyword-search-scraper'),  # Search by caption
-    # Facebook
-    'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
-    'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
-    'facebook_posts_search': env('APIFY_ACTOR_FACEBOOK_POSTS_SEARCH', default='scraper_one/facebook-posts-search'),
-    'facebook_video_search': env('APIFY_ACTOR_FACEBOOK_VIDEO_SEARCH', default='apify/facebook-video-search-scraper'),  # Reels + videos by keyword
-    # Douyin
-    'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
-    # YouTube
-    'youtube': env('APIFY_ACTOR_YOUTUBE', default='apify/youtube-scraper'),
-    'youtube_channel': env('APIFY_ACTOR_YOUTUBE_CHANNEL', default='apify/youtube-scraper'),
-}
+# ==========================================
+# RAPIDAPI CONFIGURATION
+# ==========================================
+RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
 
-# Apify timeout settings (in seconds)
-APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=900)  # 15 minutes
-APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=10000)
+# ==========================================
+# BRIGHTDATA API CONFIGURATION
+# ==========================================
+BRIGHTDATA_API_KEY = env('BRIGHTDATA_API_KEY', default='')
+BRIGHTDATA_REELS_DATASET_ID = env('BRIGHTDATA_DATASET_ID', default='')
+BRIGHTDATA_SERP_DATASET_ID = env('BRIGHTDATA_SERP_DATASET_ID', default='gd_mfz5x93lmsjjjylob')
+BRIGHTDATA_TIKTOK_DATASET_ID = env('BRIGHTDATA_TIKTOK_DATASET_ID', default='')
+BRIGHTDATA_TIKTOK_PROFILE_POSTS_DATASET_ID = env('BRIGHTDATA_TIKTOK_PROFILE_POSTS_DATASET_ID', default='')
+BRIGHTDATA_INSTAGRAM_REELS_DATASET_ID = env('BRIGHTDATA_INSTAGRAM_REELS_DATASET_ID', default='')
 
-# Instagram keyword search (requires login cookies - JSON array format)
-INSTAGRAM_COOKIES = env('INSTAGRAM_COOKIES', default='')
+# ==========================================
+# TIKHUB API CONFIGURATION
+# ==========================================
+TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
+
+# ==========================================
+# INTERNAL BE SERVICE
+# ==========================================
+BE_INTERNAL_URL = env('BE_INTERNAL_URL', default='')
+INTERNAL_API_KEY = env('INTERNAL_API_KEY', default='')
 
 # ==========================================
 # FACEBOOK GRAPH API CONFIGURATION
 # ==========================================
+META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
 FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
-FACEBOOK_ACCESS_TOKEN = env('FACEBOOK_ACCESS_TOKEN', default='')
+FACEBOOK_ACCESS_TOKEN = META_ACCESS_TOKEN
+INSTAGRAM_ACCESS_TOKEN = META_ACCESS_TOKEN
+FERNET_KEY = env('FERNET_KEY', default='') 
+SUPERUSER_TOKEN = env('SUPERUSER_TOKEN', default='')
 
+# ==========================================
+# TOKEN ENCRYPTION CONFIGURATION
+# ==========================================
+# Khóa mã hóa Fernet cho page_access_token.
+# Tạo key mới: từ video_management.utils.encryption import TokenEncryption; print(TokenEncryption.generate_encryption_key())
+ENCRYPTION_KEY = env('ENCRYPTION_KEY', default='')
 # ==========================================
 # HEYGEN API CONFIGURATION
 # ==========================================
@@ -417,11 +424,59 @@ MIX_VIDEO_OUTPUT_HEIGHT = env.int('MIX_VIDEO_OUTPUT_HEIGHT', default=0)  # 0 = a
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 
-# Celery Beat Schedule
+# Celery Beat Schedule — Facebook 3-Phase Scraper
+from celery.schedules import crontab
+
 CELERY_BEAT_SCHEDULE = {
     'cleanup-cache-daily': {
         'task': 'video_management.cleanup_old_cache',
-        'schedule': 86400.0,  # every 24 hours
+        'schedule': 86400.0,
+    },
+    # GĐ0: Tự phát hiện page mới (mỗi ngày lúc 6h sáng VN = 23h UTC ngày trước)
+    'facebook-auto-import-pages': {
+        'task': 'video_management.auto_import_pages',
+        'schedule': crontab(minute=0, hour=23),
+    },
+    # GĐ1: Backfill page chưa cào lịch sử (1 lần/ngày lúc 6:30 VN = 23:30 UTC)
+    'facebook-backfill-new-pages': {
+        'task': 'video_management.backfill_all_pages',
+        'schedule': crontab(minute=30, hour=23),
+    },
+    # GĐ2: Delta sync bài mới (mỗi ngày lúc 7h sáng VN = 0h UTC)
+    'facebook-delta-sync-daily': {
+        'task': 'video_management.delta_sync_all_pages',
+        'schedule': crontab(minute=0, hour=0),
+    },
+    # GĐ3: Refresh metrics video 7 ngày gần đây (mỗi ngày lúc 12h trưa VN = 5h UTC)
+    'facebook-refresh-metrics-daily': {
+        'task': 'video_management.refresh_recent_metrics',
+        'schedule': crontab(minute=0, hour=5),
+        'kwargs': {'days': 7},
+    },
+    # Scraper: Cào reels mới cho pages đánh dấu (mỗi ngày lúc 6h sáng VN = 23h UTC)
+    'scraper-periodic-reels': {
+        'task': 'video_management.periodic_scrape_marked_pages',
+        'schedule': crontab(minute=0, hour=23),
+    },
+    # TikTok: Cào posts mới cho profiles theo dõi (mỗi ngày lúc 5h30 sáng VN = 22h30 UTC)
+    'tiktok-periodic-profile-posts': {
+        'task': 'video_management.periodic_scrape_tiktok_profiles',
+        'schedule': crontab(minute=30, hour=22),
+    },
+    # Instagram: Cào reels mới + cập nhật metrics 7 ngày (mỗi ngày lúc 7h30 sáng VN = 0h30 UTC)
+    'instagram-periodic-profile-reels': {
+        'task': 'video_management.periodic_scrape_instagram_profiles',
+        'schedule': crontab(minute=30, hour=0),
+    },
+    # Douyin: Cào video mới cho profiles theo dõi (mỗi ngày lúc 8h sáng VN = 1h UTC)
+    'douyin-periodic-profile-videos': {
+        'task': 'video_management.periodic_scrape_douyin_profiles',
+        'schedule': crontab(minute=0, hour=1),
+    },
+    # Xiaohongshu: Cào video mới cho profiles theo dõi (mỗi ngày lúc 8h sáng VN = 1h UTC)
+    'xhs-periodic-profile-videos': {
+        'task': 'video_management.periodic_scrape_xhs_profiles',
+        'schedule': crontab(minute=0, hour=1),
     },
 }
 
