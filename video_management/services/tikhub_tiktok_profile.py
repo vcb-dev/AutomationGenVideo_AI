@@ -14,7 +14,9 @@ from ..models_scraper import TikTokProfile, TikTokProfileVideo
 
 logger = logging.getLogger(__name__)
 
-TIKHUB_BASE_URL = "https://api.tikhub.io/api/v1/tiktok/app/v3"
+
+def _tikhub_base() -> str:
+    return f"{getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')}/api/v1/tiktok/app/v3"
 
 
 # ─── Fetch ────────────────────────────────────────────────────────────────────
@@ -69,7 +71,7 @@ def fetch_user_posts(
 
         try:
             resp = requests.get(
-                f"{TIKHUB_BASE_URL}/fetch_user_post_videos_v3",
+                f"{_tikhub_base()}/fetch_user_post_videos_v3",
                 params=params,
                 headers=headers,
                 timeout=30,

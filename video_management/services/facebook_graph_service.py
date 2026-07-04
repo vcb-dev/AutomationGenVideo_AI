@@ -6,7 +6,7 @@ This service uses Facebook Graph API to fetch page metadata including:
 - Total posts count
 - Page information
 
-Unlike Apify, this provides accurate, official data directly from Facebook.
+This provides accurate, official data directly from Facebook.
 """
 
 import logging
@@ -22,7 +22,7 @@ class FacebookGraphService:
     Facebook Graph API service for fetching page metadata.
     
     This service provides accurate followers count and posts count
-    that Apify's facebook-posts-scraper doesn't provide.
+    that scrapers typically don't provide.
     """
     
     BASE_URL = "https://graph.facebook.com/v25.0"

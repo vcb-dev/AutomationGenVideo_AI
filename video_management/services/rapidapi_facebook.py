@@ -1,4 +1,4 @@
-"""RapidAPI Facebook scraper — thay thế BrightData cho scraper_fanpages + scraper_facebook_reels."""
+"""RapidAPI Facebook scraper cho scraper_fanpages + scraper_facebook_reels."""
 
 import logging
 import re
@@ -6,6 +6,7 @@ import time
 import requests
 from datetime import datetime, timezone as tz_dt
 from typing import Optional
+from urllib.parse import urlparse
 from django.conf import settings
 from django.utils import timezone
 
@@ -13,9 +14,54 @@ from ..models_scraper import ScrapedFanpage, FacebookReel, FanpageMetricsHistory
 
 logger = logging.getLogger(__name__)
 
-RAPIDAPI_HOST = "facebook-scraper-api4.p.rapidapi.com"
-RAPIDAPI_PROFILE_URL = f"https://{RAPIDAPI_HOST}/get_facebook_pages_details_from_link"
-RAPIDAPI_REELS_URL = f"https://{RAPIDAPI_HOST}/get_facebook_reels_details"
+
+def clean_facebook_url(raw_url: str) -> str:
+    """Normalize a Facebook URL to canonical form.
+
+    Examples:
+        https://www.facebook.com/katjewelry/?locale=vi_VN  -> https://www.facebook.com/katjewelry/
+        https://www.facebook.com/profile.php?id=100064880610399  -> kept as-is (profile ID)
+    """
+    if not raw_url:
+        return ''
+    parsed = urlparse(raw_url)
+    path = parsed.path.rstrip('/') + '/'
+
+    # profile.php?id=xxx → keep query
+    if 'profile.php' in path:
+        pid = dict(p.split('=') for p in parsed.query.split('&') if '=' in p).get('id', '')
+        if pid:
+            return f"https://www.facebook.com/profile.php?id={pid}"
+
+    return f"https://www.facebook.com{path}"
+
+
+def extract_handle_from_url(url: str) -> str:
+    """Extract the page handle from a clean Facebook URL.
+
+    https://www.facebook.com/katjewelry/  -> katjewelry
+    https://www.facebook.com/profile.php?id=100064880610399  -> ''
+    """
+    parsed = urlparse(url)
+    path = parsed.path.strip('/')
+    if not path or path == 'profile.php':
+        return ''
+    # Nếu path chứa / (sub-path) thì không phải handle đơn giản
+    if '/' in path:
+        return ''
+    return path
+
+
+def _rapidapi_host() -> str:
+    return getattr(settings, 'RAPIDAPI_FACEBOOK_HOST', 'facebook-scraper-api4.p.rapidapi.com')
+
+
+def _rapidapi_profile_url() -> str:
+    return f"https://{_rapidapi_host()}/get_facebook_pages_details_from_link"
+
+
+def _rapidapi_reels_url() -> str:
+    return f"https://{_rapidapi_host()}/get_facebook_reels_details"
 
 
 def _headers() -> dict:
@@ -24,7 +70,7 @@ def _headers() -> dict:
         raise ValueError("RAPIDAPI_FACEBOOK_KEY not configured")
     return {
         "x-rapidapi-key": api_key,
-        "x-rapidapi-host": RAPIDAPI_HOST,
+        "x-rapidapi-host": _rapidapi_host(),
         "Content-Type": "application/json",
     }
 
@@ -35,7 +81,7 @@ def fetch_page_profile(page_url: str) -> Optional[dict]:
     """Gọi profile detail API, trả về dict page hoặc None nếu lỗi."""
     try:
         resp = requests.get(
-            RAPIDAPI_PROFILE_URL,
+            _rapidapi_profile_url(),
             headers=_headers(),
             params={
                 "link": page_url,
@@ -65,7 +111,7 @@ def _fetch_reels_page(page_url: str, cursor: Optional[str] = None) -> tuple:
         params["cursor"] = cursor
     try:
         resp = requests.get(
-            RAPIDAPI_REELS_URL,
+            _rapidapi_reels_url(),
             headers=_headers(),
             params=params,
             timeout=30,

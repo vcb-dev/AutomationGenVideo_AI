@@ -11,7 +11,9 @@ from ..models_scraper import XiaohongshuVideo, XiaohongshuProfile
 
 logger = logging.getLogger(__name__)
 
-TIKHUB_BASE = 'https://api.tikhub.io'
+
+def _tikhub_base() -> str:
+    return getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
 
 
 def _parse_duration(s: str) -> int:
@@ -68,7 +70,7 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
             params['search_session_id'] = search_session_id
 
         resp = requests.get(
-            f'{TIKHUB_BASE}/api/v1/xiaohongshu/app_v2/search_notes',
+            f'{_tikhub_base()}/api/v1/xiaohongshu/app_v2/search_notes',
             params=params,
             headers=headers,
             timeout=30,
@@ -203,7 +205,7 @@ def fetch_xhs_user_video_notes(user_id: str, count: int = 100) -> list:
             params['cursor'] = cursor
 
         resp = requests.get(
-            f'{TIKHUB_BASE}/api/v1/xiaohongshu/app_v2/get_user_posted_notes',
+            f'{_tikhub_base()}/api/v1/xiaohongshu/app_v2/get_user_posted_notes',
             params=params,
             headers=headers,
             timeout=30,
@@ -216,7 +218,8 @@ def fetch_xhs_user_video_notes(user_id: str, count: int = 100) -> list:
         # TikHub trả code != 200 khi user_id không tồn tại hoặc lỗi API
         if body.get('code') not in (200, 0, None):
             logger.error(f'[XHS-PROFILE] TikHub error code={body.get("code")}: {body.get("msg") or body}')
-            raise ValueError(f'TikHub: {body.get("msg") or f"code={body.get(\"code\")}"}')
+            err_msg = body.get('msg') or f"code={body.get('code')}"
+            raise ValueError(f'TikHub: {err_msg}')
 
         inner = (body.get('data') or {}).get('data') or {}
         page_notes = inner.get('notes') or []

@@ -14,7 +14,9 @@ from ..models_scraper import DouyinVideo
 
 logger = logging.getLogger(__name__)
 
-TIKHUB_BASE_URL = "https://api.tikhub.io/api/v1/douyin/search"
+
+def _tikhub_base() -> str:
+    return getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
 
 
 def _parse_cover(video_obj: dict) -> str:
@@ -76,7 +78,7 @@ def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
 
         try:
             resp = requests.post(
-                f"{TIKHUB_BASE_URL}/fetch_video_search_v2",
+                f"{_tikhub_base()}/api/v1/douyin/search/fetch_video_search_v2",
                 json=payload,
                 headers=headers,
                 timeout=30,
@@ -183,7 +185,7 @@ def fetch_douyin_user_videos(sec_user_id: str, count: int = 30) -> list:
         }
         try:
             resp = requests.get(
-                "https://api.tikhub.io/api/v1/douyin/app/v3/fetch_user_post_videos",
+                f"{_tikhub_base()}/api/v1/douyin/app/v3/fetch_user_post_videos",
                 params=params,
                 headers=headers,
                 timeout=30,

@@ -17,7 +17,7 @@ class APIRootView(APIView):
             'message': 'AutomationGenVideo AI Service v2.0',
             'status': 'running',
             'version': '2.0.0',
-            'description': 'Multi-platform video scraping service using Apify',
+            'description': 'Multi-platform video scraping service',
             'platforms': ['tiktok', 'douyin', 'instagram', 'facebook'],
             'endpoints': {
                 'health': {

@@ -307,28 +307,16 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # ==========================================
-# APIFY REMOVED — All scraping now uses BrightData
-# ==========================================
-
-# ==========================================
 # RAPIDAPI CONFIGURATION
 # ==========================================
 RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
-
-# ==========================================
-# BRIGHTDATA API CONFIGURATION
-# ==========================================
-BRIGHTDATA_API_KEY = env('BRIGHTDATA_API_KEY', default='')
-BRIGHTDATA_REELS_DATASET_ID = env('BRIGHTDATA_DATASET_ID', default='')
-BRIGHTDATA_SERP_DATASET_ID = env('BRIGHTDATA_SERP_DATASET_ID', default='gd_mfz5x93lmsjjjylob')
-BRIGHTDATA_TIKTOK_DATASET_ID = env('BRIGHTDATA_TIKTOK_DATASET_ID', default='')
-BRIGHTDATA_TIKTOK_PROFILE_POSTS_DATASET_ID = env('BRIGHTDATA_TIKTOK_PROFILE_POSTS_DATASET_ID', default='')
-BRIGHTDATA_INSTAGRAM_REELS_DATASET_ID = env('BRIGHTDATA_INSTAGRAM_REELS_DATASET_ID', default='')
+RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
 
 # ==========================================
 # TIKHUB API CONFIGURATION
 # ==========================================
 TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
+TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
 
 # ==========================================
 # INTERNAL BE SERVICE

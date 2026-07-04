@@ -50,7 +50,7 @@ from .views.facebook_views import facebook_sync, facebook_import, facebook_backf
 from .views.scraper_views import (
     all_external_videos,
     keyword_suggest, keyword_hit, keyword_list, keyword_create,
-    trigger_discovery, discovered_fanpages, fanpage_detail, fanpage_toggle,
+    discovered_fanpages, fanpage_detail, fanpage_toggle,
     search_reels, trigger_scrape_reels, fanpage_scrape_by_url,
     tiktok_search, tiktok_videos, tiktok_keyword_suggest,
     tiktok_profile_scrape, tiktok_profiles_list, tiktok_profile_detail,
@@ -75,8 +75,6 @@ from .views.channel_analysis_generic_views import (
     channel_metrics_generic,
     channel_analysis_unified_generic,
 )
-from .views.douyin_search_views import search_douyin_videos
-from .views.douyin_profile_views import fetch_douyin_channel_profile
 from .views.xiaohongshu_search_views import (
     search_xiaohongshu_notes, list_xiaohongshu_videos, xiaohongshu_keyword_suggest,
     xhs_profile_scrape, xhs_profiles_list, xhs_profile_detail, xhs_profile_videos,
@@ -208,7 +206,6 @@ urlpatterns = [
     path('scraper/keywords/hit/', keyword_hit, name='scraper-keyword-hit'),
     path('scraper/keywords/', keyword_list, name='scraper-keyword-list'),
     path('scraper/keywords/create/', keyword_create, name='scraper-keyword-create'),
-    path('scraper/discover/', trigger_discovery, name='scraper-discover'),
     path('scraper/fanpages/', discovered_fanpages, name='scraper-fanpages'),
     path('scraper/fanpages/<int:fanpage_id>/', fanpage_detail, name='scraper-fanpage-detail'),
     path('scraper/fanpages/<int:fanpage_id>/toggle/', fanpage_toggle, name='scraper-fanpage-toggle'),
@@ -239,9 +236,7 @@ urlpatterns = [
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
     path('channel/analysis-unified/', channel_analysis_unified_generic, name='channel-analysis-unified'),
     
-    # Douyin Search (cũ — real-time, không lưu DB)
-    path('douyin/search/', search_douyin_videos, name='douyin-search'),
-    # Douyin Scraper (mới — lưu DB, giống TikTok)
+    # Douyin Scraper (lưu DB, giống TikTok)
     path('scraper/douyin/search/', douyin_keyword_search, name='scraper-douyin-search'),
     path('scraper/douyin/videos/', douyin_videos_list, name='scraper-douyin-videos'),
     path('scraper/douyin/keywords/suggest/', douyin_keyword_suggest, name='scraper-douyin-keyword-suggest'),
@@ -251,9 +246,6 @@ urlpatterns = [
     path('scraper/douyin/profiles/<int:pk>/toggle/', douyin_profile_toggle, name='scraper-douyin-profile-toggle'),
     path('scraper/douyin/profiles/<int:pk>/videos/', douyin_profile_videos, name='scraper-douyin-profile-videos'),
 
-    # Douyin Channel Profile (full: followers, avatar, engagement) — called on Update only
-    path('douyin/profile/', fetch_douyin_channel_profile, name='douyin-channel-profile'),
-    
     # Xiaohongshu Search (TikHub)
     path('scraper/xiaohongshu/search/', search_xiaohongshu_notes, name='scraper-xiaohongshu-search'),
     path('scraper/xiaohongshu/videos/', list_xiaohongshu_videos, name='scraper-xiaohongshu-videos'),

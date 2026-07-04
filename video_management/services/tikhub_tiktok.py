@@ -15,7 +15,9 @@ from ..models_scraper import TikTokVideo
 
 logger = logging.getLogger(__name__)
 
-TIKHUB_BASE_URL = "https://api.tikhub.io/api/v1/tiktok/app/v3"
+
+def _tikhub_base() -> str:
+    return f"{getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')}/api/v1/tiktok/app/v3"
 
 
 def search_tiktok_by_keyword(
@@ -53,7 +55,7 @@ def search_tiktok_by_keyword(
 
         try:
             resp = requests.get(
-                f"{TIKHUB_BASE_URL}/fetch_video_search_result",
+                f"{_tikhub_base()}/fetch_video_search_result",
                 params=params,
                 headers=headers,
                 timeout=30,

@@ -46,14 +46,26 @@ from ..serializers import (
 
 )
 
-from ..services.apify_service import create_scraper, fetch_tiktok_user_profile
-from ..services.base_scraper import ScraperException
-
-search_videos_task = None  # Removed — was Apify-based
-
+search_videos_task = None  # Async search not currently available (no scraper provider configured)
 
 
 logger = logging.getLogger(__name__)
+
+
+def create_scraper(platform: str, search_type: str = 'posts'):
+    """Generic multi-platform scraper — not currently available (no provider configured)."""
+    raise NotImplementedError(f"Scraping for '{platform}' is not currently available.")
+
+
+def fetch_tiktok_user_profile(username: str):
+    """TikTok profile enrichment — not currently available (no provider configured)."""
+    raise NotImplementedError("TikTok profile lookup is not currently available.")
+
+
+class InstagramApifyService:
+    """Instagram scraper — not currently available (no provider configured)."""
+    def __init__(self, *a, **kw):
+        raise NotImplementedError("Instagram scraping is not currently available.")
 
 
 
@@ -1008,11 +1020,8 @@ class UserVideosView(APIView):
                         logger.warning(f"Date filtering failed: {e}")
             
             
-            # --- INSTAGRAM: Use Instagram Apify Service ---
+            # --- INSTAGRAM ---
             elif platform_str.upper() == 'INSTAGRAM':
-                logger.info(f"📸 Using Instagram Apify Service for @{username}")
-                from ..services.instagram_apify_service import InstagramApifyService
-                
                 instagram_service = InstagramApifyService()
                 page_info = {}
                 

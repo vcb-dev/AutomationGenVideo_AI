@@ -15,7 +15,9 @@ from ..models_scraper import InstagramProfile, InstagramReel, InstagramProfileMe
 
 logger = logging.getLogger(__name__)
 
-TIKHUB_BASE = 'https://api.tikhub.io'
+
+def _tikhub_base() -> str:
+    return getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
 
 
 def fetch_user_info(username: str) -> Optional[dict]:
@@ -28,7 +30,7 @@ def fetch_user_info(username: str) -> Optional[dict]:
         raise ValueError("TIKHUB_API_KEY not configured")
 
     resp = requests.get(
-        f'{TIKHUB_BASE}/api/v1/instagram/v1/fetch_user_info_by_username_v3',
+        f'{_tikhub_base()}/api/v1/instagram/v1/fetch_user_info_by_username_v3',
         params={'username': username},
         headers={'Authorization': f'Bearer {api_key}'},
         timeout=30,
@@ -125,7 +127,7 @@ def fetch_instagram_reels(username: str, count: int = 100) -> list:
             params['pagination_token'] = pagination_token
 
         resp = requests.get(
-            f'{TIKHUB_BASE}/api/v1/instagram/v2/fetch_user_reels',
+            f'{_tikhub_base()}/api/v1/instagram/v2/fetch_user_reels',
             params=params,
             headers=headers,
             timeout=30,

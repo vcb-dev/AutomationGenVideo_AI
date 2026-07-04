@@ -30,7 +30,6 @@ class SearchKeyword(models.Model):
 
     - cleaned_keyword: human-readable version for UI display/autocomplete
     - hit_count: popularity counter for sorting suggestions
-    - is_google_active: whether this keyword is used in automated Google scraping
     """
     cleaned_keyword = models.CharField(
         max_length=500,
@@ -48,11 +47,6 @@ class SearchKeyword(models.Model):
         db_index=True,
         help_text="Search frequency — higher = more popular suggestion"
     )
-    is_google_active = models.BooleanField(
-        default=True,
-        db_index=True,
-        help_text="Include in periodic Google scraping runs"
-    )
     last_searched_at = models.DateTimeField(
         null=True, blank=True,
         help_text="Last time this keyword was used in Google discovery"
@@ -67,8 +61,6 @@ class SearchKeyword(models.Model):
         indexes = [
             models.Index(fields=['cleaned_keyword_ascii', '-hit_count'],
                          name='idx_keyword_ascii_popularity'),
-            models.Index(fields=['is_google_active', 'last_searched_at'],
-                         name='idx_keyword_google_schedule'),
         ]
 
     def __str__(self):

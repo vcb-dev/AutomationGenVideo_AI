@@ -701,8 +701,8 @@ class CollectionVideo(BaseModel):
 
 class FacebookPageCache(BaseModel):
     """
-    Cache Facebook page metadata to reduce Apify API calls.
-    
+    Cache Facebook page metadata to reduce external API calls.
+
     Stores page information (followers, avatar, etc.) with a 24-hour TTL.
     This significantly reduces quota usage since page info rarely changes.
     """
@@ -751,11 +751,11 @@ class FacebookPageCache(BaseModel):
         help_text="Whether page is verified"
     )
     
-    # Raw data from Apify
+    # Raw data from the fetch source
     raw_data = models.JSONField(
         default=dict,
         blank=True,
-        help_text="Complete raw data from Apify"
+        help_text="Complete raw data from the fetch source"
     )
     
     # Cache control
@@ -833,7 +833,7 @@ class FacebookPageCache(BaseModel):
             page_info = fetch_callback(username)
             
             # Extract followers/likes with multiple key fallbacks
-            # Apify facebook-pages-scraper uses 'followers'/'likes' OR 'followersCount'/'likesCount'
+            # ('followers'/'likes' OR 'followersCount'/'likesCount' depending on source)
             def _extract_int(d, *keys):
                 for k in keys:
                     v = d.get(k)
@@ -904,7 +904,7 @@ class FacebookPageCache(BaseModel):
 class ChannelAnalysis(BaseModel):
     """
     Store previously generated AI insights and metrics for a channel,
-    to avoid re-running expensive Apify and Gemini calls.
+    to avoid re-running expensive scraping and AI calls.
     """
     platform = models.CharField(max_length=20, choices=Platform.choices, db_index=True)
     username = models.CharField(max_length=255, db_index=True)

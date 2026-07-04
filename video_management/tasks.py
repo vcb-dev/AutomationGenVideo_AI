@@ -426,150 +426,6 @@ def scrape_single_facebook_page_task(self, page_id: str) -> Dict[str, Any]:
         raise self.retry(exc=e)
 
 
-# ═══════════════════════════════════════════════════════════
-#  GOOGLE SERP — Fanpage Discovery via BrightData
-# ═══════════════════════════════════════════════════════════
-
-@shared_task(
-    bind=True,
-    name='video_management.discover_pages_from_google',
-    max_retries=2,
-    default_retry_delay=60,
-    time_limit=600,
-)
-def discover_pages_from_google_task(self, keyword_id: int) -> Dict[str, Any]:
-    """Discover Facebook Fanpages via Google SERP + verify with Reels.
-
-    Flow:
-    1. Google SERP → get candidate URLs
-    2. Filter URLs (loại groups/posts)
-    3. Cho mỗi candidate: gọi BrightData Reels (num_of_posts=1)
-       → Verify page thật + lấy metrics + avatar + 1 sample reel
-    4. Lưu ScrapedFanpage (đã có đầy đủ info) + FacebookReel
-    """
-    from .models_scraper import SearchKeyword, ScrapedFanpage, FanpageKeywordLink
-    from .services.brightdata_serp import (
-        call_brightdata_serp_api, clean_facebook_url,
-        extract_handle_from_url, is_fanpage_url,
-    )
-    from .services.rapidapi_facebook import discover_and_verify_page
-
-    def _link_keyword(page, kw):
-        FanpageKeywordLink.objects.get_or_create(fanpage=page, keyword=kw)
-
-    try:
-        keyword = SearchKeyword.objects.get(id=keyword_id)
-    except SearchKeyword.DoesNotExist:
-        return {'success': False, 'error': f'Keyword ID {keyword_id} not found'}
-
-    logger.info(f"═══ [DISCOVER] '{keyword.cleaned_keyword}' ═══")
-
-    # Step 1: Google SERP
-    try:
-        organic_results = call_brightdata_serp_api(keyword.cleaned_keyword)
-    except Exception as e:
-        logger.error(f"❌ [SERP] BrightData API failed: {e}", exc_info=True)
-        raise self.retry(exc=e)
-
-    keyword.last_searched_at = timezone.now()
-    keyword.save(update_fields=['last_searched_at', 'updated_at'])
-
-    # Step 2: Filter candidate URLs
-    candidates = []
-    url_skipped = 0
-    for item in organic_results:
-        raw_link = item.get('link', '')
-        title = item.get('title', '')
-        if not is_fanpage_url(raw_link):
-            url_skipped += 1
-            continue
-        clean_url = clean_facebook_url(raw_link)
-        handle = extract_handle_from_url(clean_url)
-        candidates.append({'url': clean_url, 'title': title, 'handle': handle})
-
-    logger.info(f"  URL filter: {len(candidates)} candidates, {url_skipped} skipped")
-
-    # Step 3: Verify each candidate with 1 Reel
-    verified = 0
-    failed_verify = 0
-
-    for i, cand in enumerate(candidates):
-        clean_url = cand['url']
-        handle = cand['handle']
-
-        # Dedup: tìm page đã tồn tại theo page_url HOẶC handle (tránh trùng khi URL khác nhưng cùng page)
-        existing = ScrapedFanpage.objects.filter(page_url=clean_url).first()
-        if not existing and handle:
-            existing = ScrapedFanpage.objects.filter(handle=handle).first()
-
-        if existing and existing.profile_id:
-            # Page đã verify trước đó → chỉ link keyword, skip verify
-            _link_keyword(existing, keyword)
-            verified += 1
-            logger.info(f"  ✓ Already verified: {existing.name}")
-            continue
-
-        # Tạo placeholder nếu chưa có
-        if not existing:
-            existing = ScrapedFanpage.objects.create(
-                profile_id='',
-                name=cand['title'][:500] or handle,
-                handle=handle,
-                page_url=clean_url,
-                is_visible_on_ui=False,
-            )
-
-        logger.info(f"  [{i+1}/{len(candidates)}] Verifying: {clean_url}")
-
-        page = discover_and_verify_page(clean_url, fanpage=existing)
-        if page:
-            _link_keyword(page, keyword)
-            verified += 1
-            logger.info(f"  ✅ Verified: {page.name} ({page.followers_count} followers)")
-        else:
-            # Không có reels → xóa placeholder
-            if not existing.profile_id:
-                existing.delete()
-            failed_verify += 1
-            logger.info(f"  ✗ No reels / not a page: {clean_url}")
-
-        # Cooldown giữa các lần gọi BrightData
-        if i < len(candidates) - 1:
-            time.sleep(3)
-
-    summary = {
-        'success': True,
-        'keyword': keyword.cleaned_keyword,
-        'total_google_results': len(organic_results),
-        'url_filtered': len(candidates),
-        'url_skipped': url_skipped,
-        'verified': verified,
-        'failed_verify': failed_verify,
-    }
-    logger.info(f"═══ [DISCOVER] Done: {verified} verified, {failed_verify} failed ═══")
-    return summary
-
-
-@shared_task(
-    name='video_management.discover_all_active_keywords',
-    time_limit=600,
-)
-def discover_all_active_keywords_task() -> Dict[str, Any]:
-    """Cron: Chạy Google discovery cho TẤT CẢ keywords đang active."""
-    from .models_scraper import SearchKeyword
-
-    keywords = SearchKeyword.objects.filter(is_google_active=True)
-    total = keywords.count()
-    if total == 0:
-        logger.info("[SERP] No active keywords to discover.")
-        return {'success': True, 'total': 0}
-
-    logger.info(f"[SERP] Dispatching {total} keyword(s) for Google discovery")
-    for kw in keywords:
-        discover_pages_from_google_task.delay(kw.id)
-        time.sleep(2)
-
-    return {'success': True, 'dispatched': total}
 
 
 # ─── SCRAPE REELS FOR A PAGE (manual trigger) ────────────
@@ -747,7 +603,7 @@ def periodic_scrape_marked_pages_task() -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════
-#  TIKTOK — Search by keyword via BrightData
+#  TIKTOK — Search by keyword via TikHub
 # ═══════════════════════════════════════════════════════════
 
 @shared_task(
@@ -760,53 +616,30 @@ def periodic_scrape_marked_pages_task() -> Dict[str, Any]:
 def search_tiktok_keyword_task(
     self, keyword: str, num_of_posts: int = 30, country: str = 'VN'
 ) -> Dict[str, Any]:
-    """Cào TikTok videos theo keyword qua TikHub API (fallback: BrightData)."""
+    """Cào TikTok videos theo keyword qua TikHub API."""
     logger.info(f"═══ [TIKTOK] Searching: '{keyword}' (num={num_of_posts}) ═══")
 
     try:
-        # Thử TikHub trước
         from .services.tikhub_tiktok import search_tiktok_by_keyword as tikhub_search, ingest_tikhub_videos
         from django.conf import settings
 
-        if getattr(settings, 'TIKHUB_API_KEY', ''):
-            logger.info(f"[TIKTOK] Using TikHub API")
-            videos = tikhub_search(
-                keyword=keyword,
-                count=num_of_posts,
-                region=country,
-            )
+        if not getattr(settings, 'TIKHUB_API_KEY', ''):
+            logger.error("[TIKTOK] TIKHUB_API_KEY not configured")
+            return {'success': False, 'keyword': keyword, 'error': 'TIKHUB_API_KEY not configured'}
 
-            if not videos:
-                logger.info(f"[TIKTOK] No videos returned for '{keyword}'")
-                return {'success': True, 'keyword': keyword, 'created': 0, 'updated': 0}
-
-            result = ingest_tikhub_videos(videos, search_keyword=keyword)
-            logger.info(f"═══ [TIKTOK] Done (TikHub): +{result['created']} videos ═══")
-            return {'success': True, 'keyword': keyword, **result}
-
-        # Fallback: BrightData
-        logger.info(f"[TIKTOK] TikHub not configured, falling back to BrightData")
-        from .services.brightdata_tiktok import search_tiktok_by_keyword, ingest_tiktok_videos
-        from .models_scraper import TikTokVideo
-
-        existing_ids = list(
-            TikTokVideo.objects.order_by('-date_posted')
-            .values_list('post_id', flat=True)[:500]
-        )
-
-        videos = search_tiktok_by_keyword(
+        logger.info(f"[TIKTOK] Using TikHub API")
+        videos = tikhub_search(
             keyword=keyword,
-            num_of_posts=num_of_posts,
-            country=country,
-            exclude_post_ids=existing_ids if existing_ids else None,
+            count=num_of_posts,
+            region=country,
         )
 
         if not videos:
             logger.info(f"[TIKTOK] No videos returned for '{keyword}'")
             return {'success': True, 'keyword': keyword, 'created': 0, 'updated': 0}
 
-        result = ingest_tiktok_videos(videos, search_keyword=keyword)
-        logger.info(f"═══ [TIKTOK] Done (BrightData): +{result['created']} videos ═══")
+        result = ingest_tikhub_videos(videos, search_keyword=keyword)
+        logger.info(f"═══ [TIKTOK] Done (TikHub): +{result['created']} videos ═══")
         return {'success': True, 'keyword': keyword, **result}
 
     except Exception as e:

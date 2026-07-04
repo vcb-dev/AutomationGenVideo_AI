@@ -362,7 +362,6 @@ def keyword_hit(request):
         defaults={
             'cleaned_keyword_ascii': ascii_version,
             'hit_count': 1,
-            'is_google_active': False,
         }
     )
     if not created:
@@ -502,7 +501,6 @@ def keyword_list(request):
             'id': kw.id,
             'keyword': kw.cleaned_keyword,
             'hits': kw.hit_count,
-            'is_google_active': kw.is_google_active,
             'last_searched_at': kw.last_searched_at,
         }
         for kw in keywords
@@ -516,82 +514,27 @@ def keyword_create(request):
     """Tạo keyword mới.
 
     POST /api/scraper/keywords/create/
-    Body: { "keyword": "trang sức bạc", "is_google_active": true }
+    Body: { "keyword": "trang sức bạc" }
     """
     keyword_text = (request.data.get('keyword', '') or '').strip()
     if not keyword_text:
         return Response({'error': 'keyword is required'}, status=400)
 
     ascii_version = unidecode(keyword_text).lower()
-    is_active = request.data.get('is_google_active', True)
 
     kw, created = SearchKeyword.objects.get_or_create(
         cleaned_keyword=keyword_text,
         defaults={
             'cleaned_keyword_ascii': ascii_version,
             'hit_count': 0,
-            'is_google_active': is_active,
         }
     )
     if not created:
         return Response({'error': 'Keyword already exists', 'id': kw.id}, status=409)
 
     return Response({
-        'id': kw.id, 'keyword': kw.cleaned_keyword,
-        'is_google_active': kw.is_google_active, 'created': True,
+        'id': kw.id, 'keyword': kw.cleaned_keyword, 'created': True,
     }, status=201)
-
-
-# ═══════════════════════════════════════════════════════════
-#  4. FANPAGE DISCOVERY (gọi BrightData — "Tìm mới")
-# ═══════════════════════════════════════════════════════════
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def trigger_discovery(request):
-    """Trigger Google SERP discovery — CHỈ khi user bấm "Tìm mới".
-
-    POST /api/scraper/discover/
-    Body: { "keyword_id": 5 }           → discover 1 keyword
-    Body: { "keyword": "đá quý" }       → tạo keyword nếu chưa có, rồi discover
-    Body: { "all_active": true }         → discover all active keywords
-    """
-    from ..tasks import discover_pages_from_google_task, discover_all_active_keywords_task
-
-    all_active = request.data.get('all_active', False)
-    if all_active:
-        discover_all_active_keywords_task.delay()
-        count = SearchKeyword.objects.filter(is_google_active=True).count()
-        return Response({'status': 'ok', 'message': f'Đã dispatch {count} keyword(s).'})
-
-    # Tìm hoặc tạo keyword
-    keyword_id = request.data.get('keyword_id')
-    keyword_text = (request.data.get('keyword', '') or '').strip()
-
-    if keyword_id:
-        try:
-            kw = SearchKeyword.objects.get(id=keyword_id)
-        except SearchKeyword.DoesNotExist:
-            return Response({'error': f'Keyword {keyword_id} not found'}, status=404)
-    elif keyword_text:
-        ascii_version = unidecode(keyword_text).lower()
-        kw, _ = SearchKeyword.objects.get_or_create(
-            cleaned_keyword=keyword_text,
-            defaults={
-                'cleaned_keyword_ascii': ascii_version,
-                'hit_count': 1,
-                'is_google_active': True,
-            }
-        )
-    else:
-        return Response({'error': 'keyword_id or keyword is required'}, status=400)
-
-    discover_pages_from_google_task.delay(kw.id)
-    return Response({
-        'status': 'ok',
-        'keyword_id': kw.id,
-        'message': f'Đang tìm kiếm fanpages cho "{kw.cleaned_keyword}" trên Google...',
-    })
 
 
 # ═══════════════════════════════════════════════════════════
@@ -771,7 +714,7 @@ def fanpage_scrape_by_url(request):
     if 'facebook.com' not in page_url:
         return Response({'error': 'URL không hợp lệ. Ví dụ: https://www.facebook.com/pagename'}, status=400)
 
-    from ..services.brightdata_serp import clean_facebook_url, extract_handle_from_url
+    from ..services.rapidapi_facebook import clean_facebook_url, extract_handle_from_url
 
     clean_url = clean_facebook_url(page_url)
     handle = extract_handle_from_url(clean_url)
