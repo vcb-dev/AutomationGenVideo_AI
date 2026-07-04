@@ -1635,7 +1635,7 @@ from .models_search import SearchQuery, TrendingKeyword
 from .models_scraper import (
     SearchKeyword, ScrapedFanpage, FanpageMetricsHistory,
     FacebookReel, ReelMetricsHistory,
-    TikTokVideo, TikTokProfile, TikTokProfileVideo, TikTokProfileMetrics,
+    TikTokVideo, TikTokProfile, TikTokProfileVideo,
     InstagramProfile, InstagramReel, InstagramProfileMetrics,
 )
 

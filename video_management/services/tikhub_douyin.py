@@ -276,7 +276,6 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
         has_drive = _is_drive_url(existing_preview)
 
         defaults = {
-            'shortcode': aweme_id,
             'url': item.get('share_url') or f'https://www.douyin.com/video/{aweme_id}',
             'description': item.get('desc') or '',
             'hashtags': hashtags,

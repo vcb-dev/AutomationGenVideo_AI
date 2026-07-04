@@ -201,7 +201,7 @@ def owned_channel_videos(request):
                 'description': r.description,
                 'thumbnail_url': r.thumbnail_drive_url or r.thumbnail_url or '',
                 'duration_seconds': r.duration_seconds,
-                'play_count': r.play_count or r.views_count,
+                'play_count': r.play_count,
                 'likes_count': r.likes_count,
                 'comments_count': r.comments_count,
                 'date_posted': r.date_posted,
@@ -360,7 +360,6 @@ def keyword_hit(request):
     kw, created = SearchKeyword.objects.get_or_create(
         cleaned_keyword=keyword_text,
         defaults={
-            'raw_keyword': keyword_text,
             'cleaned_keyword_ascii': ascii_version,
             'hit_count': 1,
             'is_google_active': False,
@@ -502,7 +501,6 @@ def keyword_list(request):
         {
             'id': kw.id,
             'keyword': kw.cleaned_keyword,
-            'raw_keyword': kw.raw_keyword,
             'hits': kw.hit_count,
             'is_google_active': kw.is_google_active,
             'last_searched_at': kw.last_searched_at,
@@ -530,7 +528,6 @@ def keyword_create(request):
     kw, created = SearchKeyword.objects.get_or_create(
         cleaned_keyword=keyword_text,
         defaults={
-            'raw_keyword': keyword_text,
             'cleaned_keyword_ascii': ascii_version,
             'hit_count': 0,
             'is_google_active': is_active,
@@ -581,7 +578,6 @@ def trigger_discovery(request):
         kw, _ = SearchKeyword.objects.get_or_create(
             cleaned_keyword=keyword_text,
             defaults={
-                'raw_keyword': keyword_text,
                 'cleaned_keyword_ascii': ascii_version,
                 'hit_count': 1,
                 'is_google_active': True,
@@ -610,7 +606,6 @@ def _serialize_fanpage(p):
         'handle': p.handle,
         'page_url': p.page_url,
         'avatar_url': p.avatar_url,
-        'header_image_url': p.header_image_url,
         'is_verified': p.is_verified,
         'followers_count': p.followers_count,
         'likes_count': p.likes_count,
@@ -1524,13 +1519,11 @@ def instagram_profile_detail(request, profile_id):
     total_plays = 0
     total_likes = 0
     total_comments = 0
-    total_views = 0
     reels = InstagramReel.objects.filter(profile=p)
     for r in reels:
         total_plays += r.play_count
         total_likes += r.likes_count
         total_comments += r.comments_count
-        total_views += r.views_count
 
     return Response({
         'id': p.id,
@@ -1552,7 +1545,6 @@ def instagram_profile_detail(request, profile_id):
         'total_plays': total_plays,
         'total_likes': total_likes,
         'total_comments': total_comments,
-        'total_views': total_views,
     })
 
 
@@ -1609,7 +1601,6 @@ def instagram_profile_reels(request, profile_id):
             'thumbnail_url': r.thumbnail_drive_url or r.thumbnail_url or '',
             'duration_seconds': r.duration_seconds,
             'is_paid_partnership': r.is_paid_partnership,
-            'views_count': r.views_count,
             'play_count': r.play_count,
             'likes_count': r.likes_count,
             'comments_count': r.comments_count,
@@ -1736,7 +1727,6 @@ def douyin_videos_list(request):
     results = [
         {
             'post_id': v.post_id,
-            'shortcode': v.shortcode,
             'url': v.url,
             'description': v.description,
             'hashtags': v.hashtags,
@@ -1818,9 +1808,6 @@ def _serialize_douyin_profile(p, videos_in_db: int = 0) -> dict:
         'biography': p.biography,
         'is_verified': p.is_verified,
         'followers_count': p.followers_count,
-        'following_count': p.following_count,
-        'likes_count': p.likes_count,
-        'videos_count': p.videos_count,
         'is_bookmarked': p.is_bookmarked,
         'is_tracked': p.is_tracked,
         'is_owned': p.is_owned,
@@ -1944,9 +1931,6 @@ def douyin_profile_scrape(request):
                 'biography': profile.biography or '',
                 'is_verified': profile.is_verified,
                 'followers_count': profile.followers_count,
-                'following_count': profile.following_count,
-                'likes_count': profile.likes_count,
-                'videos_count': profile.videos_count,
                 'scraping_status': profile.scraping_status,
             },
             'initial_posts_count': result['created'],
@@ -2118,7 +2102,6 @@ def douyin_profile_videos(request, pk):
         'videos': [
             {
                 'post_id': v.post_id,
-                'shortcode': v.shortcode,
                 'url': v.url,
                 'description': v.description,
                 'hashtags': v.hashtags,

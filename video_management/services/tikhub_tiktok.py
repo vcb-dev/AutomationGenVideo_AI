@@ -205,7 +205,6 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
             # Music
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            'original_sound': '',
             # Discovery
             'search_keyword': search_keyword,
             'date_posted': date_posted,

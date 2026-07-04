@@ -271,7 +271,6 @@ def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
             'favorites_count': int(stats.get('collect_count') or 0),
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            'original_sound': '',
             'date_posted': date_posted,
         }
 

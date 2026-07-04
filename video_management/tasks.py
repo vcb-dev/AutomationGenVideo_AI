@@ -1453,9 +1453,6 @@ def upload_thumbnail_to_drive_task(
     elif model == 'facebook_scraped_avatar':
         from .models_scraper import ScrapedFanpage
         updated = ScrapedFanpage.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    elif model == 'facebook_scraped_cover':
-        from .models_scraper import ScrapedFanpage
-        updated = ScrapedFanpage.objects.filter(id=object_id).update(header_image_drive_url=drive_url)
     elif model == 'facebook_managed_avatar':
         from .models import ManagedFacebookPage
         updated = ManagedFacebookPage.objects.filter(id=object_id).update(avatar_drive_url=drive_url)

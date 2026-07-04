@@ -149,7 +149,6 @@ def ingest_tiktok_videos(videos: list, search_keyword: str = '') -> dict:
             # Music
             'music_title': music.get('title', ''),
             'music_author': music.get('authorname', ''),
-            'original_sound': v.get('original_sound', ''),
             # Discovery
             'search_keyword': search_keyword,
             'date_posted': date_posted,

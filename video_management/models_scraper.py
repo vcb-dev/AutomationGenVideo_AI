@@ -28,14 +28,10 @@ class ScrapingStatus(models.TextChoices):
 class SearchKeyword(models.Model):
     """Keywords for page discovery (Google) and autocomplete suggestions.
 
-    - raw_keyword: exact query user typed (may contain operators like site:facebook.com)
     - cleaned_keyword: human-readable version for UI display/autocomplete
     - hit_count: popularity counter for sorting suggestions
     - is_google_active: whether this keyword is used in automated Google scraping
     """
-    raw_keyword = models.TextField(
-        help_text="Full Google search query including operators"
-    )
     cleaned_keyword = models.CharField(
         max_length=500,
         db_index=True,
@@ -118,8 +114,6 @@ class ScrapedFanpage(models.Model):
     )
     avatar_url = models.TextField(blank=True)
     avatar_drive_url = models.TextField(blank=True)
-    header_image_url = models.TextField(blank=True)
-    header_image_drive_url = models.TextField(blank=True)
     is_verified = models.BooleanField(null=True, blank=True)
 
     # ── Latest Metrics Snapshot (denormalized for fast list queries) ──
@@ -373,7 +367,6 @@ class FanpageKeywordLink(models.Model):
 class DouyinVideo(models.Model):
     """Video Douyin được cào bằng keyword search qua TikHub."""
     post_id = models.CharField(max_length=50, unique=True, db_index=True)
-    shortcode = models.CharField(max_length=50, unique=True, db_index=True)
     url = models.URLField(max_length=1000)
     description = models.TextField(blank=True)
     hashtags = ArrayField(models.CharField(max_length=200), default=list, blank=True)
@@ -409,7 +402,7 @@ class DouyinVideo(models.Model):
         ]
 
     def __str__(self):
-        return f"Douyin {self.shortcode}"
+        return f"Douyin {self.post_id}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -428,9 +421,6 @@ class DouyinProfile(models.Model):
     is_verified = models.BooleanField(default=False)
 
     followers_count = models.BigIntegerField(default=0)
-    following_count = models.BigIntegerField(default=0)
-    likes_count = models.BigIntegerField(default=0)
-    videos_count = models.IntegerField(default=0)
 
     is_bookmarked = models.BooleanField(default=False)
     is_tracked = models.BooleanField(default=False)
@@ -488,7 +478,6 @@ class TikTokVideo(models.Model):
     # Music
     music_title = models.CharField(max_length=500, blank=True)
     music_author = models.CharField(max_length=255, blank=True)
-    original_sound = models.TextField(blank=True)
 
     # Discovery
     search_keyword = models.CharField(max_length=500, blank=True, db_index=True)
@@ -536,22 +525,12 @@ class TikTokProfile(models.Model):
     biography = models.TextField(blank=True)
     is_verified = models.BooleanField(default=False)
     is_private = models.BooleanField(default=False)
-    predicted_lang = models.CharField(max_length=10, blank=True)
 
     # ── Metrics (snapshot mới nhất) ──
     followers_count = models.BigIntegerField(default=0)
     following_count = models.BigIntegerField(default=0)
     likes_count = models.BigIntegerField(default=0)
     videos_count = models.IntegerField(default=0)
-
-    # ── Engagement rates ──
-    avg_engagement_rate = models.FloatField(default=0)
-    like_engagement_rate = models.FloatField(default=0)
-    comment_engagement_rate = models.FloatField(default=0)
-
-    # ── Account metadata ──
-    account_created_at = models.DateTimeField(null=True, blank=True)
-    is_commerce_user = models.BooleanField(default=False)
 
     # ── Tracking flags ──
     is_tracked = models.BooleanField(
@@ -623,7 +602,6 @@ class TikTokProfileVideo(models.Model):
     # ── Music ──
     music_title = models.CharField(max_length=500, blank=True)
     music_author = models.CharField(max_length=255, blank=True)
-    original_sound = models.TextField(blank=True)
 
     date_posted = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -640,31 +618,6 @@ class TikTokProfileVideo(models.Model):
 
     def __str__(self):
         return f"TikTok {self.video_id} ({self.play_count} plays)"
-
-
-# ═══════════════════════════════════════════════════════════
-#  10. TIKTOK PROFILE METRICS HISTORY (Timeseries)
-# ═══════════════════════════════════════════════════════════
-
-class TikTokProfileMetrics(models.Model):
-    """Snapshot metrics của profile theo thời gian (trend graph)."""
-    profile = models.ForeignKey(
-        TikTokProfile, on_delete=models.CASCADE, related_name='metrics_history',
-    )
-    followers_count = models.BigIntegerField(default=0)
-    following_count = models.BigIntegerField(default=0)
-    likes_count = models.BigIntegerField(default=0)
-    videos_count = models.IntegerField(default=0)
-    avg_engagement_rate = models.FloatField(default=0)
-    captured_at = models.DateTimeField(default=timezone.now, db_index=True)
-
-    class Meta:
-        managed = False
-        db_table = 'scraper_tiktok_profile_metrics'
-        ordering = ['-captured_at']
-
-    def __str__(self):
-        return f"@{self.profile.username} @ {self.captured_at:%Y-%m-%d}"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -745,7 +698,6 @@ class InstagramReel(models.Model):
     duration_seconds = models.FloatField(null=True, blank=True)
     is_paid_partnership = models.BooleanField(default=False)
 
-    views_count = models.BigIntegerField(default=0)
     play_count = models.BigIntegerField(default=0, db_index=True)
     likes_count = models.BigIntegerField(default=0)
     comments_count = models.BigIntegerField(default=0)
