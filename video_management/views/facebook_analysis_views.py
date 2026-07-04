@@ -345,19 +345,15 @@ def analyze_facebook_competitor(request):
             'posts': compact_posts,
         }
 
-        # Gọi Gemini qua google.generativeai (SDK cũ)
-        import google.generativeai as genai
-
-        api_key = getattr(settings, 'GEMINI_API_KEY', '')
-        if not api_key:
+        anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '')
+        if not anthropic_key or anthropic_key.startswith('your_'):
             return Response(
-                {'success': False, 'error': 'GEMINI_API_KEY is not configured'},
+                {'success': False, 'error': 'ANTHROPIC_API_KEY is not configured'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        genai.configure(api_key=api_key)
-        model_name = getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash')
-        model = genai.GenerativeModel(model_name)
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
 
         # 13 mục theo UI SocialLens (accordion) + Đề xuất hành động
         section_keys = [
@@ -413,32 +409,36 @@ DỮ LIỆU KÊNH (JSON):
 {json.dumps(context, ensure_ascii=False)}
 """.strip()
 
-        def _call_gemini(temp: float):
-            return model.generate_content(
-                prompt,
-                generation_config={
-                    "temperature": temp,
-                    "top_p": 0.9,
-                    "top_k": 40,
-                    "max_output_tokens": 8192,
-                    "response_mime_type": "application/json",
-                }
-            )
+        def _call_claude(temp: float):
+            models = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"]
+            for m in models:
+                try:
+                    return client.messages.create(
+                        model=m,
+                        max_tokens=4096,
+                        temperature=temp,
+                        system="Bạn là chuyên gia marketing phân tích kênh đối thủ trên Facebook.",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                except Exception as e:
+                    if "not_found_error" in str(e).lower() and m != models[-1]:
+                        continue
+                    raise e
 
         # Call 1: normal creativity
-        response = _call_gemini(0.6)
-        text = (response.text or '').strip()
+        response = _call_claude(0.6)
+        text = response.content[0].text.strip()
         insights = _parse_insights_json(text, section_keys)
 
         # Nếu output thiếu/placeholder quá nhiều, retry 1 lần với temperature thấp hơn
         placeholder_count = sum(1 for v in insights.values() if _is_placeholder(v))
         if (not text) or placeholder_count >= max(6, int(len(section_keys) * 0.5)):
             logger.warning(
-                "Gemini low-quality/empty output, retrying once. "
+                "Claude low-quality/empty output, retrying once. "
                 f"text_len={len(text)}, placeholders={placeholder_count}/{len(section_keys)}"
             )
-            response2 = _call_gemini(0.2)
-            text2 = (response2.text or '').strip()
+            response2 = _call_claude(0.2)
+            text2 = response2.content[0].text.strip()
             insights2 = _parse_insights_json(text2, section_keys)
             placeholder_count2 = sum(1 for v in insights2.values() if _is_placeholder(v))
             if text2 and placeholder_count2 < placeholder_count:
@@ -447,11 +447,11 @@ DỮ LIỆU KÊNH (JSON):
         # Nếu vẫn toàn placeholder → coi là lỗi, không trả success
         all_placeholder = all(_is_placeholder(v) for v in insights.values())
         if all_placeholder or not text:
-            logger.warning(f"Gemini returned empty/invalid response. text_len={len(text)}, preview={repr(text[:200])}")
+            logger.warning(f"Claude returned empty/invalid response. text_len={len(text)}, preview={repr(text[:200])}")
             return Response(
                 {
                     'success': False,
-                    'error': 'AI không tạo được phân tích (phản hồi rỗng hoặc không đúng định dạng). Vui lòng bấm “Phân tích lại” hoặc kiểm tra GEMINI_API_KEY, GEMINI_MODEL.',
+                    'error': 'AI không tạo được phân tích (phản hồi rỗng hoặc không đúng định dạng). Vui lòng bấm “Phân tích lại” hoặc kiểm tra ANTHROPIC_API_KEY.',
                     'code': 'EMPTY_RESPONSE',
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -995,10 +995,9 @@ def facebook_analysis_unified(request):
     # [Metrics logic...]
     # I'll just skip the internal logic here for brevity and use a more efficient approach.
     
-    # 4. Generate AI Insights
-    import google.generativeai as genai
-    genai.configure(api_key=getattr(settings, 'GEMINI_API_KEY', ''))
-    model = genai.GenerativeModel(getattr(settings, 'GEMINI_MODEL', 'gemini-1.5-flash'))
+    # 4. Generate AI Insights (Placeholder for Unified)
+    anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '')
+    # [Insight generation code would go here using Claude]
     
     # [Insight generation code...]
     # For now, to fulfill the prompt, I'll just return success with whatever we have.

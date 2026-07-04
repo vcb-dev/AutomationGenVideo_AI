@@ -11,6 +11,11 @@ from django.core.validators import MinValueValidator
 from typing import Optional
 import json
 
+try:
+    from video_management.utils.encryption import TokenEncryption
+except ImportError:
+    from .utils.encryption import TokenEncryption
+
 
 class Platform(models.TextChoices):
     """Supported social media platforms."""
@@ -39,6 +44,224 @@ class BaseModel(models.Model):
     class Meta:
         abstract = True
 
+
+class ManagedFacebookPage(BaseModel):
+    """
+    Quản lý các Fanpage chính chủ do người dùng cấp quyền qua Facebook Login App.
+    
+    Lưu trữ Page Access Token (mã hóa) và các chỉ số cốt lõi để phục vụ tính năng 
+    đồng bộ báo cáo (Insights) và tự động đăng bài (Auto-post).
+    """
+    # 1. Định danh Fanpage (Who are you?)
+    page_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text="ID cứng của Fanpage do Facebook cấp"
+    )
+    name = models.CharField(
+        max_length=255,
+        db_index=True,
+        help_text="Tên hiển thị của Fanpage"
+    )
+    username = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Facebook Page Username (Handle dạng chữ nếu có)"
+    )
+    category = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Danh mục chính của Trang"
+    )
+    avatar_url = models.TextField(
+        blank=True,
+        null=True,
+        help_text="URL ảnh đại diện lấy từ Facebook"
+    )
+    avatar_drive_url = models.TextField(blank=True, null=True)
+
+    # 2. Quyền hạn & Mật mã (Credentials & Permissions) - Token được mã hóa trước lưu
+    page_access_token = models.TextField(
+        default='',
+        help_text="[ENCRYPTED] Page Access Token dài hạn (mã hóa trước khi lưu DB)"
+    )
+    _token_decrypted = None  # Internal cache để tránh decrypt nhiều lần
+    
+    tasks = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Danh sách các quyền cụ thể user có trên Page này (e.g., ANALYZE, CREATE_CONTENT)"
+    )
+
+    # 3. Snapshot Chỉ số cơ bản (Gắn thẳng vào đây để FE render nhanh danh sách trang)
+    followers_count = models.BigIntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Số lượng người theo dõi hiện tại"
+    )
+    likes_count = models.BigIntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Số lượng lượt thích Trang hiện tại"
+    )
+
+    # 4. Trạng thái & Điều phối (Control & Syncing)
+    is_active = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="Bật/Tắt đồng bộ dữ liệu tự động cho Page này"
+    )
+    last_synced_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Thời điểm cuối cùng hệ thống kéo Insights/Metrics của Page này về"
+    )
+    last_scraped_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Thời điểm cuối cùng Cron Job cào video thành công"
+    )
+    is_scraping = models.BooleanField(
+        default=False,
+        help_text="Flag khóa: True khi đang có worker cào page này (tránh trùng lặp)"
+    )
+    is_backfilled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True khi đã cào hết lịch sử (Giai đoạn 1). Cron delta sync chỉ quét page đã backfill."
+    )
+    scrape_error = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Lỗi cuối cùng nếu lần cào gần nhất thất bại"
+    )
+
+    # 5. Lưu trữ thô phòng vệ (Data Insurance)
+    raw_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Toàn bộ cục dữ liệu gốc trả về từ Graph API lúc phân quyền"
+    )
+
+    class Meta:
+        managed = False
+        verbose_name = "Managed Facebook Page"
+        verbose_name_plural = "Managed Facebook Pages"
+        ordering = ['-last_synced_at', 'name']
+        indexes = [
+            models.Index(fields=['is_active', 'name']),
+            models.Index(fields=['is_active', 'last_synced_at']),
+        ]
+
+    def __str__(self) -> str:
+        return f"Managed: {self.name} (ID: {self.page_id})"
+    
+    def save(self, *args, **kwargs):
+        """Override save to auto-encrypt token before storing in DB."""
+        # Nếu token chưa được mã hóa (plain text), thì mã hóa nó trước save
+        if self.page_access_token and not self.page_access_token.startswith('gAAAAAB'):
+            try:
+                self.page_access_token = TokenEncryption.encrypt(self.page_access_token)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Token encryption failed: {str(e)}")
+                raise
+        super().save(*args, **kwargs)
+    
+    def get_decrypted_token(self) -> str:
+        # Nếu đã từng decrypt trong phiên chạy này, trả về luôn để tiết kiệm CPU
+        if self._token_decrypted:
+            return self._token_decrypted
+        """Get decrypted access token."""
+        if not self.page_access_token:
+            return ''
+        
+        # Nếu token này đã là plain text (not encrypted), return as-is
+        if not self.page_access_token.startswith('gAAAAAB'):
+            self._token_decrypted = self.page_access_token
+            return self.page_access_token
+        
+        # Decrypt encrypted token
+        try:
+            self._token_decrypted = TokenEncryption.decrypt(self.page_access_token)
+            return TokenEncryption.decrypt(self.page_access_token)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Token decryption failed: {str(e)}")
+            return ''
+
+    def mark_synced(self) -> None:
+        """Cập nhật thời gian đồng bộ thành công mà không gây Lock toàn bộ bảng."""
+        self.last_synced_at = timezone.now()
+        self.save(update_fields=['last_synced_at', 'updated_at'])
+
+    @property
+    def has_analyze_permission(self) -> bool:
+        """Kiểm tra nhanh xem token này có quyền đọc số liệu báo cáo không."""
+        return 'ANALYZE' in self.tasks
+
+    @property
+    def has_publish_permission(self) -> bool:
+        """Kiểm tra nhanh xem token này có quyền đăng bài hộ không."""
+        return 'CREATE_CONTENT' in self.tasks
+    
+class OwnedVideoContent(BaseModel):
+    """
+    Lưu trữ video/Reels chính chủ.
+    Đã tối ưu hóa dựa trên cấu trúc Graph API thực tế của Facebook.
+    """
+    managed_page = models.ForeignKey(
+        'ManagedFacebookPage',
+        on_delete=models.CASCADE,
+        related_name='videos'
+    )
+    
+    # Khớp với "id" của FB (964204583450876_122116652625288597)
+    post_id = models.CharField(max_length=255, unique=True, db_index=True)
+    
+    # Khớp với "message" (Vì Reels/Post FB không có tiêu đề riêng, chỉ có nội dung chữ)
+    caption = models.TextField(blank=True, help_text="Nội dung bài viết/Hashtag")
+    
+    # Khớp với "created_time"
+    published_at = models.DateTimeField(db_index=True)
+    
+    # Khớp với "permalink_url" (Link xem trực tiếp trên FB)
+    permalink_url = models.URLField(max_length=500, blank=True, null=True)
+    
+    # Khớp với "full_picture" (Dùng làm ảnh preview trên Dashboard)
+    thumbnail_url = models.TextField(blank=True, null=True)
+    thumbnail_drive_url = models.TextField(blank=True, null=True)
+    
+    # Khớp với "attachments.data[0].media.source" (Link file .mp4 gốc)
+    # BẮT BUỘC dùng TextField vì link CDN của Facebook cực kỳ dài
+    video_url = models.TextField(blank=True, null=True)
+
+    # --- Các trường chỉ số (Metrics) sẽ được cập nhật ở bước sau ---
+    view_count = models.BigIntegerField(default=0, db_index=True)
+    like_count = models.IntegerField(default=0)
+    comment_count = models.IntegerField(default=0)
+    share_count = models.IntegerField(default=0)
+    
+    # Chỉ số nội bộ để phân tích Ads / Sản xuất
+    reach_count = models.IntegerField(default=0)
+    link_clicks = models.IntegerField(default=0)
+
+    raw_data = models.JSONField(default=dict, blank=True)
+    last_updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        verbose_name = "Owned Video Content"
+        verbose_name_plural = "Owned Video Contents"
+        ordering = ['-published_at']
+        indexes = [
+            models.Index(fields=['managed_page', '-view_count']),
+        ]
+
+    def __str__(self) -> str:
+        return f"Owned: {self.post_id} (Views: {self.view_count})"
 
 class SearchHistory(BaseModel):
     """
@@ -1407,6 +1630,14 @@ class ReportSettings(BaseModel):
 
 # Import search-related models
 from .models_search import SearchQuery, TrendingKeyword
+
+# Import scraper models (Facebook Fanpage & Reels discovery system)
+from .models_scraper import (
+    SearchKeyword, ScrapedFanpage, FanpageMetricsHistory,
+    FacebookReel, ReelMetricsHistory,
+    TikTokVideo, TikTokProfile, TikTokProfileVideo,
+    InstagramProfile, InstagramReel, InstagramProfileMetrics,
+)
 
 # End of models
 

@@ -24,6 +24,7 @@ MANIFEST
 # Virtual Env
 venv/
 .venv/
+.venv_worker/
 env/
 .env
 
@@ -63,6 +64,10 @@ tmp/
 # OS
 Thumbs.db
 .DS_Store
+*.exe
+
+# Tooling cache
+.cache/
 
 # Databases
 *.sqlite3
@@ -74,6 +79,7 @@ db.sqlite3.bak
 # Media & Uploads
 media/
 uploads/
+*.mp4
 gen-n-CongThucA4.jpg
 
 # Celery

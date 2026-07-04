@@ -12,7 +12,7 @@ import logging
 import re
 
 from video_management.models import SearchQuery, TrendingKeyword
-from .tiktok_suggest_views import _fetch_gemini_pool, _fetch_google_suggestions
+from .tiktok_suggest_views import _fetch_claude_pool, _fetch_google_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def get_search_suggestions(request):
     # 0. AI-powered real-time suggestions (HIGHEST PRIORITY)
     if platform == 'TIKTOK':
         try:
-            ai_results = _fetch_gemini_pool(query, limit)
+            ai_results = _fetch_claude_pool(query, limit)
             if ai_results:
                 for text in ai_results:
                     suggestions.append({
@@ -256,13 +256,13 @@ def generate_ai_suggestions(query: str, platform: str) -> list:
     Returns:
         List of suggestion strings (10-12 items)
     """
-    import google.generativeai as genai
-    from django.conf import settings
+    anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '')
+    if not anthropic_key or anthropic_key.startswith('your_'):
+        return []
     
     try:
-        # Configure Gemini with old package
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
         
         # Context-aware prompt
         context_map = {
@@ -307,18 +307,23 @@ trang sức mèo
 
 BÂY GIỜ hãy gợi ý 12 từ khóa cho "{query}" (CHỈ trả về 12 dòng, không giải thích):"""
         
-        # Generate with old API
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.9,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 1024,
-            }
-        )
+        models = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+        response = None
+        for m in models:
+            try:
+                response = client.messages.create(
+                    model=m,
+                    max_tokens=1024,
+                    temperature=0.9,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                break
+            except Exception as e:
+                if "not_found_error" in str(e).lower() and m != models[-1]:
+                    continue
+                raise e
         
-        suggestions_text = response.text.strip()
+        suggestions_text = response.content[0].text.strip()
         
         # Parse suggestions
         suggestions = []
@@ -368,7 +373,7 @@ BÂY GIỜ hãy gợi ý 12 từ khóa cho "{query}" (CHỈ trả về 12 dòng,
         return suggestions[:12]
         
     except Exception as e:
-        logger.error(f"Gemini API error: {e}")
+        logger.error(f"Claude API error: {e}")
         
         # Fallback: Generate 10 variations
         return [

@@ -4,12 +4,14 @@ services:
   redis:
     image: redis:alpine
     container_name: vcb_ai_redis
+    hostname: vcb_ai_redis
     restart: always
 
   vcb_ai_web:
     build: .
     image: ai-server-web:latest
     container_name: vcb_ai_web
+    hostname: vcb_ai_web
     volumes:
       - .:/app
       - /volume1:/volume1
@@ -21,19 +23,9 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
-    # Production server: gunicorn + gthread workers instead of single-threaded runserver
+    # Production server: single-line command to avoid sh parsing errors on NAS
     command: >
-      sh -c "
-      python manage.py migrate --noinput &&
-      gunicorn core.wsgi:application
-        --bind 0.0.0.0:8000
-        --workers 4
-        --worker-class gthread
-        --threads 4
-        --timeout 120
-        --keep-alive 5
-        --log-level info
-      "
+      sh -c "python manage.py migrate --noinput && gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 4 --worker-class gthread --threads 4 --timeout 180 --keep-alive 5 --log-level info"
     depends_on:
       - redis
     restart: always
@@ -42,6 +34,7 @@ services:
     build: .
     image: ai-server-celery:latest
     container_name: vcb_ai_celery
+    hostname: vcb_ai_celery
     volumes:
       - .:/app
       - /volume1:/volume1
@@ -52,9 +45,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
     command: >
-      sh -c "
-      celery -A core worker --loglevel=info --pool=threads --concurrency=4
-      "
+      sh -c "celery -A core worker --loglevel=info --pool=threads --concurrency=4"
     depends_on:
       - redis
       - vcb_ai_web
@@ -64,6 +55,7 @@ services:
     build: .
     image: ai-server-beat:latest
     container_name: vcb_ai_beat
+    hostname: vcb_ai_beat
     volumes:
       - .:/app
       - /volume1:/volume1
@@ -73,9 +65,7 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
     command: >
-      sh -c "
-      celery -A core beat --loglevel=info
-      "
+      sh -c "celery -A core beat --loglevel=info"
     depends_on:
       - redis
       - vcb_ai_web
@@ -84,6 +74,7 @@ services:
   vcb_ai_tunnel:
     image: cloudflare/cloudflared:latest
     container_name: vcb_ai_tunnel
+    hostname: vcb_ai_tunnel
     env_file:
       - .env
     command: tunnel --protocol http2 --no-autoupdate --url http://vcb_ai_web:8000

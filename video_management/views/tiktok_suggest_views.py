@@ -135,7 +135,7 @@ def tiktok_search_suggest(request):
             return Response({
                 'success': True,
                 'suggestions': gemini_batch,
-                'source': 'gemini',
+                'source': 'claude',
                 'query': query,
                 'platform': platform
             })
@@ -198,11 +198,11 @@ def _trigger_gemini_background(query: str, platform: str, count: int):
 
     def _generate():
         try:
-            logger.info(f"[Suggest] Gemini background generating pool for '{query}' ({platform})...")
-            pool = _fetch_gemini_pool(query, platform, GEMINI_POOL_SIZE)
+            logger.info(f"[Suggest] Claude background generating pool for '{query}' ({platform})...")
+            pool = _fetch_claude_pool(query, platform, GEMINI_POOL_SIZE)
             if pool:
                 _gemini_store_pool(cache_key, pool)
-                logger.info(f"[Suggest] Gemini pool ready: '{query}' ({platform}) → {len(pool)} items")
+                logger.info(f"[Suggest] Claude pool ready: '{query}' ({platform}) → {len(pool)} items")
         except Exception as e:
             logger.error(f"[Suggest] Gemini pool generation failed ({platform}): {e}")
         finally:
@@ -257,15 +257,15 @@ def _fetch_google_suggestions(query: str, max_items: int = 25) -> list:
     return []
 
 
-def _fetch_gemini_pool(query: str, platform: str = 'tiktok', pool_size: int = 40) -> list:
-    """Uses Gemini with platform-specific prompts."""
-    api_key = getattr(settings, 'GEMINI_API_KEY', '')
-    if not api_key:
+def _fetch_claude_pool(query: str, platform: str = 'tiktok', pool_size: int = 40) -> list:
+    """Uses Claude with platform-specific prompts."""
+    anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '')
+    if not anthropic_key or anthropic_key.startswith('your_'):
         return []
 
     try:
-        model = "gemini-2.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
 
         # Platform-specific personas
         if platform == 'douyin':
@@ -297,22 +297,22 @@ Yêu cầu:
 Chỉ trả về JSON array (không giải thích gì thêm):
 ["gợi ý 1", "gợi ý 2", ..., "gợi ý {pool_size}"]"""
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],
-            "generationConfig": {
-                "temperature": 1.0,
-                "maxOutputTokens": 2048,
-                "topP": 0.95,
-            }
-        }
-
-        resp = requests.post(url, json=payload, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-
-        if 'candidates' not in data: return []
-        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+        models = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+        response = None
+        for m in models:
+            try:
+                response = client.messages.create(
+                    model=m,
+                    max_tokens=2048,
+                    temperature=1.0,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                break
+            except Exception as e:
+                if "not_found_error" in str(e).lower() and m != models[-1]:
+                    continue
+                raise e
+        text = response.content[0].text.strip()
 
         start = text.find('[')
         end = text.rfind(']') + 1
@@ -324,5 +324,5 @@ Chỉ trả về JSON array (không giải thích gì thêm):
 
         return []
     except Exception as e:
-        logger.warning(f"[Suggest] Gemini pool error ({platform}): {e}")
+        logger.warning(f"[Suggest] Claude pool error ({platform}): {e}")
         return []

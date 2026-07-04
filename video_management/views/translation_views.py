@@ -28,29 +28,42 @@ def translate_to_chinese(request):
     if any('\u4e00' <= char <= '\u9fff' for char in text):
         return Response({'success': True, 'translated': text, 'source': 'already_chinese'})
 
-    api_key = getattr(settings, 'GEMINI_API_KEY', '')
+    anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '')
     
-    # ── Phase 1: Try Gemini (Smart, localized) ─────────────────────────────
-    if api_key:
+    # ── Phase 1: Try Claude (Smart, localized) ─────────────────────────────
+    if anthropic_key and not anthropic_key.startswith('your_'):
         try:
-            import google.generativeai as genai
+            from anthropic import Anthropic
+            client = Anthropic(api_key=anthropic_key)
             
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
             prompt = f"""Bạn là máy dịch thuật tốt nhất. Dịch cụm từ tìm kiếm sau từ tiếng Việt sang tiếng Trung Quốc Giản thể.
 Chỉ trả về bản dịch, không giải thích.
 Cụm từ: "{text}"
 Dịch:"""
 
-            response = model.generate_content(
-                prompt,
-                generation_config={"temperature": 0.0, "max_output_tokens": 50}
-            )
-            translated = response.text.strip().replace('"', '').replace("'", "")
+            models = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+            response = None
+            for m in models:
+                try:
+                    kwargs = {
+                        "model": m,
+                        "max_tokens": 50,
+                        "messages": [{"role": "user", "content": prompt}]
+                    }
+                    if "opus-4-7" not in m:
+                        kwargs["temperature"] = 0.0
+                    
+                    response = client.messages.create(**kwargs)
+                    break
+                except Exception as e:
+                    if "not_found_error" in str(e).lower() and m != models[-1]:
+                        continue
+                    raise e
+            translated = response.content[0].text.strip().replace('"', '').replace("'", "")
             if translated and translated.lower() != text.lower():
-                return Response({'success': True, 'translated': translated, 'source': 'gemini'})
+                return Response({'success': True, 'translated': translated, 'source': 'claude'})
         except Exception as e:
-            logger.warning(f"Gemini translation failed: {e}")
+            logger.warning(f"Claude translation failed: {e}")
 
     # ── Phase 2: Fallback to Google Translate (Free, Reliable) ──────────────
     try:

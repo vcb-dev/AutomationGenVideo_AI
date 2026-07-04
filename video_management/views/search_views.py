@@ -49,7 +49,7 @@ from ..serializers import (
 from ..services.apify_service import create_scraper, fetch_tiktok_user_profile
 from ..services.base_scraper import ScraperException
 
-from ..tasks import search_videos_task
+search_videos_task = None  # Removed — was Apify-based
 
 
 
