@@ -8,6 +8,7 @@ import logging
 import re
 import requests
 import os
+import uuid
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -17,14 +18,16 @@ def _make_voice_id(voice_name: str) -> str:
     """
     Generate valid Minimax voice_id from voice_name.
     Rules: length 8-256, start with letter, only [a-zA-Z0-9_-], cannot end with - or _
+
+    A random suffix is always appended so two concurrent clone requests with the same
+    voice_name (e.g. a double-submit) don't collide on the same voice_id.
     """
     # Replace spaces/special with underscore, keep only letters digits _ -
     s = re.sub(r'[^a-zA-Z0-9_\-]', '_', voice_name.strip())
     s = re.sub(r'_+', '_', s).strip('_')
     if not s or not s[0].isalpha():
         s = 'v_' + s if s else 'voice_01'
-    if len(s) < 8:
-        s = s + '_' + str(abs(hash(s)) % 10000)
+    s = f"{s}_{uuid.uuid4().hex[:8]}"
     if len(s) > 256:
         s = s[:256]
     if s.endswith('_') or s.endswith('-'):

@@ -1,12 +1,10 @@
 """
 Image proxy to bypass CORS/referrer when loading external thumbnails (e.g. Instagram CDN).
-Facebook CDN (fbcdn.net) chặn 403 khi request từ datacenter - dùng Apify Residential Proxy.
 """
 
 import logging
 from urllib.parse import urlparse
 
-from django.conf import settings
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.views import View
 from django.utils.decorators import method_decorator
@@ -60,27 +58,8 @@ class ImageProxyView(View):
                 'Sec-Fetch-Dest': 'image',
                 'Sec-Fetch-Mode': 'no-cors',
             }
-            proxies = None
-            proxy_pwd = (getattr(settings, 'APIFY_PROXY_PASSWORD', '') or
-                        getattr(settings, 'APIFY_API_TOKEN', '') or '')
-            if proxy_pwd and ('fbcdn.net' in url or 'graph.facebook.com' in url):
-                # Mỗi request dùng IP khác (không session) - tăng cơ hội bypass 403
-                country = getattr(settings, 'APIFY_PROXY_COUNTRY', 'US') or 'US'
-                proxy_user = f'groups-RESIDENTIAL,country-{country}'
-                proxy_url = f'http://{proxy_user}:{proxy_pwd}@proxy.apify.com:8000'
-                proxies = {'http': proxy_url, 'https': proxy_url}
-                logger.info("Using Apify Residential Proxy for Facebook image")
-            
-            try:
-                resp = requests.get(url, timeout=15, headers=headers, stream=True, allow_redirects=True, proxies=proxies)
-                resp.raise_for_status()
-            except requests.RequestException as e:
-                if proxies:
-                    logger.warning(f"Apify Proxy failed ({e}). Falling back to direct request for {url[:80]}")
-                    resp = requests.get(url, timeout=10, headers=headers, stream=True, allow_redirects=True, proxies=None)
-                    resp.raise_for_status()
-                else:
-                    raise
+            resp = requests.get(url, timeout=15, headers=headers, stream=True, allow_redirects=True)
+            resp.raise_for_status()
 
             content_type = resp.headers.get('Content-Type', 'image/jpeg')
             # Chỉ cho phép image/*

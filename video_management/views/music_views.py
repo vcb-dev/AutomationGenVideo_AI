@@ -44,8 +44,8 @@ class MusicPostsView(APIView):
             # api_service = TikhubService()
             # videos = api_service.get_music_posts(...)
             
-            # Temporarily disabled or return empty list as Apify migration is in progress
-            logger.warning("Music search disabled (Migration to Apify in progress)")
+            # Temporarily disabled — no provider configured
+            logger.warning("Music search disabled (no provider configured)")
             videos = []
             
             # Cache results

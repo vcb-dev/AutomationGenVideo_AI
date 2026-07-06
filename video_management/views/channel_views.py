@@ -9,9 +9,13 @@ from rest_framework import generics
 
 from ..models import TrackedChannel, Platform, ScrapedVideo
 from ..serializers import TrackedChannelSerializer
-from ..services.apify_service import create_scraper
 
 logger = logging.getLogger(__name__)
+
+
+def create_scraper(platform: str):
+    """Generic multi-platform scraper — not currently available (no provider configured)."""
+    raise NotImplementedError(f"Channel scraping for '{platform}' is not currently available.")
 
 
 class ChannelListCreateView(generics.ListCreateAPIView):
