@@ -365,6 +365,7 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION

@@ -104,6 +104,7 @@ from .views.virtual_mix_views import (
 )
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
+from .views.task_script_views import generate_task_video_script
 
 app_name = 'video_management'
 
@@ -274,6 +275,9 @@ urlpatterns = [
     path('products/<int:product_id>/', get_product_detail, name='product-detail'),
     path('products/find-video/', find_product_video_path, name='find-product-video'),
     
+    # Task-Auto: adapt content thắng cho sản phẩm mới (BE task-auto/tasks module)
+    path('task-auto/video-script/generate/', generate_task_video_script, name='task-auto-video-script-generate'),
+
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
