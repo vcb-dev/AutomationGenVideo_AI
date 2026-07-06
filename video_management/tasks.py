@@ -748,13 +748,6 @@ def scrape_douyin_profile_task(
                 profile.avatar_url = avatar_urls[-1]  # lấy URL cuối (thường là jpeg)
                 if 'avatar_url' not in update_fields:
                     update_fields.append('avatar_url')
-                if not profile.avatar_drive_url:
-                    upload_thumbnail_to_drive_task.delay(
-                        model='douyin_profile_avatar',
-                        object_id=profile.id,
-                        cdn_url=profile.avatar_url,
-                        filename=f'douyin-avatar-{profile.id}.jpg',
-                    )
 
             followers = first_author.get('follower_count') or first_author.get('followers_count')
             if followers is not None:
@@ -1219,81 +1212,3 @@ def periodic_scrape_xhs_profiles_task() -> Dict[str, Any]:
 
     logger.info(f"═══ [XHS-PERIODIC] Dispatched: {done}/{total}, {failed} lỗi ═══")
     return {'success': True, 'total': total, 'dispatched': done, 'failed': failed, 'errors': errors[:10]}
-
-
-# ═══════════════════════════════════════════════════════════
-#  THUMBNAIL UPLOAD TO DRIVE (background, non-blocking)
-# ═══════════════════════════════════════════════════════════
-
-@shared_task(
-    name='video_management.upload_thumbnail_to_drive',
-    max_retries=1,
-    default_retry_delay=60,
-    time_limit=180,
-)
-def upload_thumbnail_to_drive_task(
-    model: str,
-    object_id: int,
-    cdn_url: str,
-    filename: str,
-) -> dict:
-    """Upload thumbnail từ CDN URL lên Google Drive và cập nhật DB.
-
-    Args:
-        model: 'tiktok_video' hoặc 'tiktok_profile_video'
-        object_id: PK của record cần cập nhật
-        cdn_url: URL CDN gốc (từ TikTok)
-        filename: Tên file lưu trên Drive (vd: tiktok-123456.jpg)
-    """
-    from .services.drive_upload import upload_thumbnail_from_url, _is_drive_url
-
-    if _is_drive_url(cdn_url):
-        return {'skipped': True, 'reason': 'already drive url'}
-
-    drive_url = upload_thumbnail_from_url(cdn_url, filename=filename)
-    if not drive_url:
-        logger.warning(f"[THUMB-UPLOAD] Upload thất bại {filename} (id={object_id})")
-        return {'success': False, 'filename': filename}
-
-    if model == 'tiktok_video':
-        from .models_scraper import TikTokVideo
-        updated = TikTokVideo.objects.filter(id=object_id).update(preview_image=drive_url)
-    elif model == 'tiktok_profile_video':
-        from .models_scraper import TikTokProfileVideo
-        updated = TikTokProfileVideo.objects.filter(id=object_id).update(cover_image=drive_url)
-    elif model == 'douyin_video':
-        from .models_scraper import DouyinVideo
-        updated = DouyinVideo.objects.filter(id=object_id).update(preview_image=drive_url)
-    elif model == 'instagram_reel':
-        from .models_scraper import InstagramReel
-        updated = InstagramReel.objects.filter(id=object_id).update(thumbnail_drive_url=drive_url)
-    elif model == 'xiaohongshu_video':
-        from .models_scraper import XiaohongshuVideo
-        updated = XiaohongshuVideo.objects.filter(id=object_id).update(thumbnail_drive_url=drive_url)
-    elif model == 'facebook_reel':
-        from .models_scraper import FacebookReel
-        updated = FacebookReel.objects.filter(id=object_id).update(thumbnail_drive_url=drive_url)
-    elif model == 'facebook_owned_video':
-        from .models import OwnedVideoContent
-        updated = OwnedVideoContent.objects.filter(id=object_id).update(thumbnail_drive_url=drive_url)
-    elif model == 'tiktok_profile_avatar':
-        from .models_scraper import TikTokProfile
-        updated = TikTokProfile.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    elif model == 'instagram_profile_avatar':
-        from .models_scraper import InstagramProfile
-        updated = InstagramProfile.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    elif model == 'douyin_profile_avatar':
-        from .models_scraper import DouyinProfile
-        updated = DouyinProfile.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    elif model == 'facebook_scraped_avatar':
-        from .models_scraper import ScrapedFanpage
-        updated = ScrapedFanpage.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    elif model == 'facebook_managed_avatar':
-        from .models import ManagedFacebookPage
-        updated = ManagedFacebookPage.objects.filter(id=object_id).update(avatar_drive_url=drive_url)
-    else:
-        logger.error(f"[THUMB-UPLOAD] Unknown model: {model}")
-        return {'success': False, 'reason': 'unknown model'}
-
-    logger.info(f"[THUMB-UPLOAD] {filename} → Drive OK (updated={updated})")
-    return {'success': True, 'filename': filename, 'drive_url': drive_url}

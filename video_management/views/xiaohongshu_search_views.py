@@ -194,7 +194,6 @@ def xhs_profile_scrape(request):
         return Response({'error': 'user_id is required'}, status=400)
 
     is_owned = bool(request.data.get('is_owned', False))
-    num = min(max(_parse_int(request.data.get('num_of_posts'), 600), 1), 600)
 
     profile, created = XiaohongshuProfile.objects.get_or_create(
         user_id=user_id,
@@ -203,6 +202,11 @@ def xhs_profile_scrape(request):
 
     if profile.scraping_status == 'processing':
         return Response({'error': 'Profile đang được cào, vui lòng đợi'}, status=400)
+
+    # Profile đã cào lần đầu rồi → bỏ qua num_of_posts client gửi, chỉ cào delta
+    # (50 video mới nhất). num_of_posts chỉ có ý nghĩa cho lần cào đầu tiên.
+    needs_delta_scrape = not created and profile.is_initial_scraped
+    num = 50 if needs_delta_scrape else min(max(_parse_int(request.data.get('num_of_posts'), 600), 1), 600)
 
     update_fields = ['scraping_status', 'scrape_error', 'updated_at']
     if is_owned and not profile.is_owned:
@@ -218,7 +222,10 @@ def xhs_profile_scrape(request):
 
     return Response({
         'status': 'ok',
-        'message': f'Đang cào video từ user {user_id}...',
+        'message': (
+            f'Đang cập nhật video mới cho user {user_id}...' if needs_delta_scrape
+            else f'Đang cào video từ user {user_id}...'
+        ),
         'profile': _profile_dict(profile),
         'created': created,
     })

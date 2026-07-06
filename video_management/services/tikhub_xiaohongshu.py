@@ -168,15 +168,6 @@ def ingest_xiaohongshu_videos(notes: list, keyword: str = '') -> dict:
         else:
             updated += 1
 
-        # Upload thumbnail lên Drive (non-blocking)
-        if thumbnail and (was_created or not obj.thumbnail_drive_url):
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='xiaohongshu_video',
-                object_id=obj.id,
-                cdn_url=thumbnail,
-                filename=f'xhs-{note_id}.jpg',
-            )
 
     logger.info(f'[XHS] keyword="{keyword}": +{created} new, ~{updated} updated, {skipped} skipped')
     return {'created': created, 'updated': updated, 'skipped': skipped}
@@ -316,15 +307,6 @@ def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dic
         else:
             updated += 1
 
-        # Upload thumbnail lên Drive (non-blocking)
-        if thumbnail and (was_created or not obj.thumbnail_drive_url):
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='xiaohongshu_video',
-                object_id=obj.id,
-                cdn_url=thumbnail,
-                filename=f'xhs-{note_id}.jpg',
-            )
 
     logger.info(f'[XHS-PROFILE] user_id={profile.user_id}: +{created} new, ~{updated} updated, {skipped} skipped')
     return {'created': created, 'updated': updated, 'skipped': skipped}

@@ -184,16 +184,6 @@ def upsert_profile_from_author(author: dict, profile: Optional[TikTokProfile] = 
         )
         logger.info(f"[TT-PROFILE-TH] Created profile: @{unique_id}")
 
-    avatar = profile.avatar_url
-    if avatar and not profile.avatar_drive_url:
-        from ..tasks import upload_thumbnail_to_drive_task
-        upload_thumbnail_to_drive_task.delay(
-            model='tiktok_profile_avatar',
-            object_id=profile.id,
-            cdn_url=avatar,
-            filename=f'tiktok-avatar-{profile.id}.jpg',
-        )
-
     return profile
 
 
@@ -285,16 +275,6 @@ def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
             existing_data[aweme_id] = cover_url
         else:
             updated += 1
-
-        # Upload thumbnail: video mới hoặc video trùng chưa có Drive URL
-        if cover_url and not has_drive:
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='tiktok_profile_video',
-                object_id=obj.id,
-                cdn_url=cover_url,
-                filename=f'tiktok-{aweme_id}.jpg',
-            )
 
     logger.info(f"[TT-PROFILE-TH] @{profile.username}: +{created} new, ~{updated} updated, {skipped} skipped")
     return {'profile_id': profile.id, 'created': created, 'updated': updated, 'skipped': skipped}
