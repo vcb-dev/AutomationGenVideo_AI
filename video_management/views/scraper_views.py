@@ -786,8 +786,8 @@ def fanpage_scrape_by_url(request):
 def tiktok_search(request):
     """TikTok keyword search — gọi TikHub synchronously, trả CDN URL về ngay.
 
-    Drive upload chạy async bên trong ingest_tikhub_videos (upload_thumbnail_to_drive_task.delay).
-    Lần sau user query lại, preview_image đã là Drive URL nếu upload xong.
+    preview_image lưu CDN URL thô — BE tự tải + upload lên Drive định kỳ (ThumbnailMigrationService),
+    ghi đè lại field này khi xong. Lần sau user query lại, preview_image đã là Drive URL nếu upload xong.
 
     POST /api/scraper/tiktok/search/
     Body: { "keyword": "jewelry", "num_of_posts": 30, "country": "VN" }
@@ -1001,24 +1001,26 @@ def tiktok_profile_scrape(request):
                 'profile_id': profile.id,
             })
 
-        if not created and profile.is_initial_scraped:
-            if is_owned and not profile.is_owned:
-                profile.is_owned = True
-                profile.save(update_fields=['is_owned', 'updated_at'])
-            return Response({
-                'status': 'ok',
-                'message': f'@{username} đã có trong hệ thống.',
-                'already_exists': True,
-                'profile_id': profile.id,
-            })
-
-        profile.scraping_status = 'processing'
-        profile.scrape_error = None
+        needs_delta_scrape = not created and profile.is_initial_scraped
         update_fields = ['scraping_status', 'scrape_error', 'updated_at']
         if is_owned and not profile.is_owned:
             profile.is_owned = True
             update_fields.append('is_owned')
+        profile.scraping_status = 'processing'
+        profile.scrape_error = None
         profile.save(update_fields=update_fields)
+
+    # Profile đã cào lần đầu rồi → chỉ cào delta (posts trong 7 ngày gần nhất),
+    # không cào lại từ đầu. Dispatch sau khi transaction đã commit.
+    if needs_delta_scrape:
+        from ..tasks import scrape_tiktok_profile_posts_task
+        scrape_tiktok_profile_posts_task.delay(profile.id, days=7)
+        return Response({
+            'status': 'ok',
+            'message': f'Đang cập nhật video mới cho @{username}...',
+            'already_exists': True,
+            'profile_id': profile.id,
+        })
 
     # ── Fetch batch đầu từ TikHub SYNCHRONOUSLY (chỉ 1 page ~20 posts, rất nhanh) ──
     # Trả data về cho user ngay sau khi có. Drive upload chạy async bên trong
@@ -1036,7 +1038,7 @@ def tiktok_profile_scrape(request):
             profile.save(update_fields=['scraping_status', 'scrape_error', 'updated_at'])
             return Response({'error': 'Không tìm thấy posts cho username này'}, status=404)
 
-        # Lưu vào DB — Drive upload thumbnail chạy async bên trong (upload_thumbnail_to_drive_task.delay)
+        # Lưu vào DB — cover_image lưu CDN URL thô, BE tự upload lên Drive định kỳ
         result = ingest_tikhub_profile_posts(items, profile)
 
         # Kick off background task để cào nốt 600 posts còn lại (non-blocking)
@@ -1352,33 +1354,28 @@ def instagram_profile_scrape(request):
                 'profile_id': profile.id,
             })
 
-        if not created and profile.is_initial_scraped:
-            if is_owned and not profile.is_owned:
-                profile.is_owned = True
-                profile.save(update_fields=['is_owned', 'updated_at'])
-            return Response({
-                'status': 'ok',
-                'message': f'@{username} đã có trong hệ thống.',
-                'already_exists': True,
-                'profile_id': profile.id,
-            })
-
-        profile.scraping_status = 'processing'
-        profile.scrape_error = None
+        needs_delta_scrape = not created and profile.is_initial_scraped
         update_fields = ['scraping_status', 'scrape_error', 'updated_at']
         if is_owned and not profile.is_owned:
             profile.is_owned = True
             update_fields.append('is_owned')
+        profile.scraping_status = 'processing'
+        profile.scrape_error = None
         profile.save(update_fields=update_fields)
 
-    num_of_posts = 600 if not profile.is_initial_scraped else 0
+    # Profile đã cào lần đầu rồi → chỉ cào delta (50 reels mới nhất), không cào lại từ đầu
+    num_of_posts = 50 if needs_delta_scrape else 600
 
     from ..tasks import scrape_instagram_profile_reels_task
     scrape_instagram_profile_reels_task.delay(profile.id, num_of_posts=num_of_posts)
 
     return Response({
         'status': 'ok',
-        'message': f'Đã gửi yêu cầu cào reels cho @{username}.',
+        'message': (
+            f'Đang cập nhật reels mới cho @{username}...' if needs_delta_scrape
+            else f'Đã gửi yêu cầu cào reels cho @{username}.'
+        ),
+        'already_exists': needs_delta_scrape,
         'profile_id': profile.id,
     })
 
@@ -1779,14 +1776,14 @@ def douyin_profile_scrape(request):
         return Response({'error': 'sec_user_id is required'}, status=400)
 
     is_owned = bool(request.data.get('is_owned', False))
-    num = min(600, max(1, int(request.data.get('num_of_posts', 30) or 30)))
 
     profile, created = DouyinProfile.objects.get_or_create(
         sec_user_id=sec_user_id,
         defaults={'scraping_status': 'idle', 'is_owned': is_owned},
     )
 
-    # Profile đã tồn tại → dispatch task để cập nhật, navigate ngay tới detail
+    # Profile đã tồn tại → dispatch task cào delta (bỏ qua num_of_posts client gửi,
+    # chỉ có ý nghĩa cho lần cào đầu tiên), navigate ngay tới detail
     if not created:
         update_fields = ['scraping_status', 'scrape_error', 'updated_at']
         if is_owned and not profile.is_owned:
@@ -1796,7 +1793,7 @@ def douyin_profile_scrape(request):
         profile.scrape_error = None
         profile.save(update_fields=update_fields)
         from ..tasks import scrape_douyin_profile_task
-        scrape_douyin_profile_task.delay(profile.id, num_of_posts=num)
+        scrape_douyin_profile_task.delay(profile.id, num_of_posts=30)
         return Response({
             'status': 'ok',
             'message': f'Đang cập nhật profile Douyin...',

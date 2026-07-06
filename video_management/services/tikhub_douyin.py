@@ -237,11 +237,13 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
     if not items:
         return {'created': 0, 'updated': 0, 'skipped': 0}
 
-    # Pre-fetch existing records kèm preview_image để tránh ghi đè Drive URL
+    # Pre-fetch existing records kèm preview_image + search_keyword để tránh ghi đè
+    # Drive URL và ghi đè keyword cũ (video cào lại bởi keyword khác vẫn phải lọc được
+    # theo keyword gốc đã tìm ra nó)
     batch_ids = [str(item.get('aweme_id', '')) for item in items if item.get('aweme_id')]
-    existing_data: dict[str, str] = {
-        row['post_id']: row['preview_image']
-        for row in DouyinVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image')
+    existing_data: dict[str, dict] = {
+        row['post_id']: row
+        for row in DouyinVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image', 'search_keyword')
     }
     existing_ids = set(existing_data.keys())
 
@@ -274,8 +276,10 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
         short_id = author.get('short_id') or author.get('unique_id') or ''
         nickname = author.get('nickname') or ''
 
-        existing_preview = existing_data.get(aweme_id, '')
+        existing_row = existing_data.get(aweme_id) or {}
+        existing_preview = existing_row.get('preview_image', '')
         has_drive = _is_drive_url(existing_preview)
+        existing_keyword = existing_row.get('search_keyword', '')
 
         defaults = {
             'url': item.get('share_url') or f'https://www.douyin.com/video/{aweme_id}',
@@ -297,7 +301,9 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
             'collect_count': int(stats.get('collect_count') or 0),
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            'search_keyword': search_keyword,
+            # Giữ nguyên keyword gốc đã tìm ra video này, không ghi đè bằng keyword
+            # của lần search/cào hiện tại nếu video đã tồn tại
+            'search_keyword': existing_keyword or search_keyword,
             'date_posted': date_posted,
         }
 
@@ -308,19 +314,10 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
 
         if was_created:
             created += 1
-            existing_data[aweme_id] = cover_url
+            existing_data[aweme_id] = {'preview_image': cover_url, 'search_keyword': search_keyword}
         else:
             updated += 1
 
-        # Upload thumbnail: video mới hoặc video trùng chưa có Drive URL
-        if cover_url and not has_drive:
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='douyin_video',
-                object_id=obj.id,
-                cdn_url=cover_url,
-                filename=f'douyin-{aweme_id}.jpg',
-            )
 
     logger.info(f"[DOUYIN] Ingest '{search_keyword}': +{created} new, ~{updated} updated, {skipped} skipped")
     return {'created': created, 'updated': updated, 'skipped': skipped}

@@ -299,7 +299,6 @@ def _upsert_fanpage(
     if handle:
         fanpage.handle = handle
 
-    prev_avatar = fanpage.avatar_url
     if avatar_url:
         fanpage.avatar_url = avatar_url
 
@@ -312,16 +311,6 @@ def _upsert_fanpage(
 
     fanpage.is_visible_on_ui = True
     fanpage.save()
-
-    # Upload ảnh đại diện lên Drive nếu URL thay đổi hoặc chưa có drive URL
-    from ..tasks import upload_thumbnail_to_drive_task
-    if fanpage.avatar_url and (fanpage.avatar_url != prev_avatar or not fanpage.avatar_drive_url):
-        upload_thumbnail_to_drive_task.delay(
-            model='facebook_scraped_avatar',
-            object_id=fanpage.id,
-            cdn_url=fanpage.avatar_url,
-            filename=f'fb-scraped-avatar-{fanpage.id}.jpg',
-        )
 
     return fanpage
 
@@ -405,15 +394,6 @@ def ingest_reels_data(
         else:
             updated += 1
 
-        # Upload thumbnail lên Drive (ảnh có TTL, cần lưu lại)
-        if thumbnail_url and (was_created or not obj.thumbnail_drive_url):
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='facebook_reel',
-                object_id=obj.id,
-                cdn_url=thumbnail_url,
-                filename=f'fb-reel-{post_id}.jpg',
-            )
 
     fanpage.last_scraped_at = timezone.now()
     fanpage.scraping_status = 'completed'

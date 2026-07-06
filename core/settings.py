@@ -319,12 +319,6 @@ TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
 TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
 
 # ==========================================
-# INTERNAL BE SERVICE
-# ==========================================
-BE_INTERNAL_URL = env('BE_INTERNAL_URL', default='')
-INTERNAL_API_KEY = env('INTERNAL_API_KEY', default='')
-
-# ==========================================
 # FACEBOOK GRAPH API CONFIGURATION
 # ==========================================
 META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
