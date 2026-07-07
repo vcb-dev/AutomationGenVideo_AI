@@ -27,16 +27,30 @@ REDIS_KEY_PREFIX = "mix_progress:"
 # ─── Lazy Redis connection ──────────────────────────────────────────────────
 _redis_client = None
 _redis_lock = threading.Lock()
+_redis_last_attempt = 0.0
+_REDIS_RETRY_COOLDOWN = 30  # giây — tránh retry connect (và ăn socket_connect_timeout) ở MỌI lần gọi khi Redis đang down
 
 
 def _get_redis():
-    """Lazy-init Redis client. Returns None nếu không kết nối được."""
-    global _redis_client
+    """
+    Lazy-init Redis client. Returns None nếu không kết nối được.
+    Khi Redis down, chỉ thử kết nối lại mỗi _REDIS_RETRY_COOLDOWN giây thay vì mỗi lần gọi —
+    nếu không, các job gọi progress_update() liên tục (vd tải video) sẽ bị cộng dồn độ trễ
+    socket_connect_timeout ở từng lần cập nhật, làm chậm hẳn cả request đang xử lý.
+    """
+    global _redis_client, _redis_last_attempt
     if _redis_client is not None:
         return _redis_client
+    now = time.time()
+    if now - _redis_last_attempt < _REDIS_RETRY_COOLDOWN:
+        return None
     with _redis_lock:
         if _redis_client is not None:
             return _redis_client
+        now = time.time()
+        if now - _redis_last_attempt < _REDIS_RETRY_COOLDOWN:
+            return None
+        _redis_last_attempt = now
         try:
             import redis
             from django.conf import settings
@@ -46,7 +60,7 @@ def _get_redis():
             _redis_client = client
             logger.info(f"✅ Mix Progress Store: Redis connected ({url})")
         except Exception as e:
-            logger.warning(f"⚠️ Mix Progress Store: Redis not available ({e}). Falling back to in-memory dict.")
+            logger.warning(f"⚠️ Mix Progress Store: Redis not available ({e}). Falling back to in-memory dict for {_REDIS_RETRY_COOLDOWN}s.")
             _redis_client = None
     return _redis_client
 

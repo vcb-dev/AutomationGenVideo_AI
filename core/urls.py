@@ -136,6 +136,16 @@ urlpatterns += [
     path('api/content/transcribe/', transcribe_views.transcribe_video, name='content-transcribe'),
 ]
 
+# Video Downloader (Tiện ích → Tải video, dùng yt-dlp)
+from video_management.views import video_downloader_views
+
+urlpatterns += [
+    path('api/tools/video-downloader/info/', video_downloader_views.video_info, name='video-dl-info'),
+    path('api/tools/video-downloader/jobs/', video_downloader_views.start_download, name='video-dl-start'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/', video_downloader_views.download_status, name='video-dl-status'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/file/', video_downloader_views.download_file, name='video-dl-file'),
+]
+
 # Serve media files in development
 from django.conf import settings
 from django.conf.urls.static import static

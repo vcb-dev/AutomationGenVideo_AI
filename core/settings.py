@@ -232,6 +232,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': env('DRF_THROTTLE_ANON', default='120/min'),
         'user': env('DRF_THROTTLE_USER', default='600/min'),
+        'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
     },
     # Global pagination defaults for list endpoints that use DRF pagination.
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -293,6 +294,7 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://127.0.0.1:5173',
 ])
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Disposition']  # cho FE đọc tên file khi tải video
 CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 CORS_ALLOW_HEADERS = [
     'accept',
