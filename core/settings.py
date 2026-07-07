@@ -59,7 +59,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+    'django.contrib.postgres',
+
     # Third party apps
     'rest_framework',
     'rest_framework.authtoken',
@@ -321,12 +322,6 @@ TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
 TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
 
 # ==========================================
-# INTERNAL BE SERVICE
-# ==========================================
-BE_INTERNAL_URL = env('BE_INTERNAL_URL', default='')
-INTERNAL_API_KEY = env('INTERNAL_API_KEY', default='')
-
-# ==========================================
 # FACEBOOK GRAPH API CONFIGURATION
 # ==========================================
 META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
@@ -334,7 +329,7 @@ FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
 FACEBOOK_ACCESS_TOKEN = META_ACCESS_TOKEN
 INSTAGRAM_ACCESS_TOKEN = META_ACCESS_TOKEN
-FERNET_KEY = env('FERNET_KEY', default='') 
+FERNET_KEY = env('FERNET_KEY', default='')
 SUPERUSER_TOKEN = env('SUPERUSER_TOKEN', default='')
 
 # ==========================================
@@ -367,6 +362,7 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION
@@ -384,7 +380,7 @@ DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.co
 DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
 
 # RapidAPI TikTok API settings
-TIKTOK_API_KEY = env('TIKTOK_API_KEY', default='')
+TIKTOK_ACCESS_TOKEN = env('TIKTOK_ACCESS_TOKEN', default='')
 TIKTOK_API_HOST = env('TIKTOK_API_HOST', default='tiktok-scraper7.p.rapidapi.com')
 
 # ==========================================
@@ -468,6 +464,17 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'video_management.periodic_scrape_xhs_profiles',
         'schedule': crontab(minute=0, hour=1),
     },
+    # Đã chuyển sang cron JS (social-sync.scheduler.js) chạy lúc 01:00 AM hàng ngày
+    # 'daily-sync-traffic-ads': {
+    #     'task': 'video_management.tasks.daily_sync',
+    #     'schedule': 86400.0,
+    #     'options': {'queue': 'default'},
+    # },
+    # 'crawl-social-insights-weekly': {
+    #     'task': 'video_management.tasks.crawl_social_insights',
+    #     'schedule': 604800.0,
+    #     'options': {'queue': 'default'},
+    # },
 }
 
 

@@ -89,16 +89,6 @@ def upsert_profile_from_user_info(username: str, info: dict) -> 'InstagramProfil
     update_fields = list(fields.keys()) + ['updated_at']
     profile.save(update_fields=update_fields)
 
-    avatar = profile.avatar_url or profile.hd_avatar_url
-    if avatar and not profile.avatar_drive_url:
-        from ..tasks import upload_thumbnail_to_drive_task
-        upload_thumbnail_to_drive_task.delay(
-            model='instagram_profile_avatar',
-            object_id=profile.id,
-            cdn_url=avatar,
-            filename=f'ig-avatar-{profile.id}.jpg',
-        )
-
     logger.info(f'[IG-TIKHUB] {"Created" if created else "Updated"} profile from user_info: @{username}')
     return profile
 
@@ -204,15 +194,6 @@ def upsert_profile_from_item(item: dict) -> Optional[InstagramProfile]:
         profile.is_verified = is_verified
         profile.save(update_fields=['url', 'avatar_url', 'is_verified', 'updated_at'])
 
-    if avatar and not profile.avatar_drive_url:
-        from ..tasks import upload_thumbnail_to_drive_task
-        upload_thumbnail_to_drive_task.delay(
-            model='instagram_profile_avatar',
-            object_id=profile.id,
-            cdn_url=avatar,
-            filename=f'ig-avatar-{profile.id}.jpg',
-        )
-
     logger.info(f'[IG-TIKHUB] {"Created" if created else "Updated"} profile from reel: @{username}')
     return profile
 
@@ -305,16 +286,6 @@ def ingest_instagram_reels(items: list) -> dict:
             created += 1
         else:
             updated += 1
-
-        needs_upload = thumbnail and (was_created or not obj.thumbnail_drive_url)
-        if needs_upload:
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='instagram_reel',
-                object_id=obj.id,
-                cdn_url=thumbnail,
-                filename=f'ig-{post_id}.jpg',
-            )
 
     logger.info(f'[IG-TIKHUB] @{profile.username}: +{created} new, ~{updated} updated, {skipped} skipped')
     return {'profile_id': profile.id, 'created': created, 'updated': updated, 'skipped': skipped}

@@ -1,0 +1,49 @@
+{
+  "period": "2026-05-01 → 2026-05-11",
+  "fetched_at": "2026-05-11T14:22:30.771536",
+  "apify_token": "apify_api_rZiHlbl5kh...",
+  "summary": {
+    "channels_ok": 1,
+    "channels_error": 0,
+    "total_videos": 0,
+    "total_views": 0,
+    "total_likes": 0,
+    "total_comments": 0,
+    "total_shares": 0,
+    "total_followers": 0,
+    "apify_items_fetched": 27,
+    "apify_items_kept": 0,
+    "savings_pct": 100.0
+  },
+  "top_10_views": [],
+  "top_10_likes": [],
+  "top_10_comments": [],
+  "by_channel": [
+    {
+      "channel": "HuyK - Xưởng Kim Hoàn 2",
+      "username": "huyk.xuongkimhoan2",
+      "owner": "Bùi Minh Quyết",
+      "team": "Team K2",
+      "video_count": 0,
+      "followers": 0,
+      "total_views": 0,
+      "total_likes": 0,
+      "total_comments": 0,
+      "total_shares": 0,
+      "apify_fetched": 27,
+      "skipped": 1
+    }
+  ],
+  "by_team": [
+    {
+      "team": "Team K2",
+      "channels": 1,
+      "videos": 0,
+      "views": 0,
+      "likes": 0,
+      "comments": 0,
+      "followers": 0
+    }
+  ],
+  "errors": []
+}

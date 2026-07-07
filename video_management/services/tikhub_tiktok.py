@@ -127,11 +127,13 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
     if not videos:
         return {'created': 0, 'updated': 0, 'skipped': 0}
 
-    # Pre-fetch existing records kèm preview_image để tránh ghi đè Drive URL
+    # Pre-fetch existing records kèm preview_image + search_keyword để tránh ghi đè
+    # Drive URL và ghi đè keyword cũ (video cào lại bởi keyword khác vẫn phải lọc được
+    # theo keyword gốc đã tìm ra nó)
     batch_ids = [str(v.get('aweme_id', '')) for v in videos if v.get('aweme_id')]
-    existing_data: dict[str, str] = {
-        row['post_id']: row['preview_image']
-        for row in TikTokVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image')
+    existing_data: dict[str, dict] = {
+        row['post_id']: row
+        for row in TikTokVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image', 'search_keyword')
     }
     existing_ids = set(existing_data.keys())
 
@@ -176,8 +178,10 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
 
         cdn_thumb = _parse_cover_url(video_info)
         post_id_str = str(aweme_id)
-        existing_preview = existing_data.get(post_id_str, '')
+        existing_row = existing_data.get(post_id_str) or {}
+        existing_preview = existing_row.get('preview_image', '')
         has_drive = _is_drive_url(existing_preview)
+        existing_keyword = existing_row.get('search_keyword', '')
 
         defaults = {
             'shortcode': post_id_str,
@@ -207,8 +211,9 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
             # Music
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            # Discovery
-            'search_keyword': search_keyword,
+            # Discovery — giữ nguyên keyword gốc đã tìm ra video này, không ghi đè
+            # bằng keyword của lần search hiện tại nếu video đã tồn tại
+            'search_keyword': existing_keyword or search_keyword,
             'date_posted': date_posted,
         }
 
@@ -218,19 +223,9 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
         )
         if was_created:
             created += 1
-            existing_data[post_id_str] = cdn_thumb
+            existing_data[post_id_str] = {'preview_image': cdn_thumb, 'search_keyword': search_keyword}
         else:
             updated += 1
-
-        # Upload thumbnail: video mới hoặc video trùng chưa có Drive URL
-        if cdn_thumb and not has_drive:
-            from ..tasks import upload_thumbnail_to_drive_task
-            upload_thumbnail_to_drive_task.delay(
-                model='tiktok_video',
-                object_id=obj.id,
-                cdn_url=cdn_thumb,
-                filename=f'tiktok-{aweme_id}.jpg',
-            )
 
     logger.info(f"[TIKHUB] Ingest: +{created} new, ~{updated} updated, {skipped} skipped")
     return {'created': created, 'updated': updated, 'skipped': skipped}

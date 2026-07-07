@@ -94,14 +94,6 @@ class FacebookFetcher:
                 updated_count += 1
                 logger.info(f"🔄 Đã cập nhật token cho Page: {page_obj.name}")
 
-            if avatar_url and not page_obj.avatar_drive_url:
-                from ..tasks import upload_thumbnail_to_drive_task
-                upload_thumbnail_to_drive_task.delay(
-                    model='facebook_managed_avatar',
-                    object_id=page_obj.id,
-                    cdn_url=avatar_url,
-                    filename=f'fb-managed-avatar-{page_obj.id}.jpg',
-                )
         # Sau khi lưu hết danh sách Page vào DB, kích hoạt hàm refresh số liệu luôn
         if created_count > 0 or updated_count > 0:
             logger.info("🚀 Kích hoạt làm tươi số liệu ngay sau khi import...")
@@ -222,15 +214,6 @@ class FacebookFetcher:
                 }
             )
 
-            if avatar_url and not page_obj.avatar_drive_url:
-                from ..tasks import upload_thumbnail_to_drive_task
-                upload_thumbnail_to_drive_task.delay(
-                    model='facebook_managed_avatar',
-                    object_id=page_obj.id,
-                    cdn_url=avatar_url,
-                    filename=f'fb-managed-avatar-{page_obj.id}.jpg',
-                )
-
             logger.info(f"Upserted ManagedFacebookPage: {page_obj} (created={created})")
 
             # Fetch posts
@@ -317,15 +300,6 @@ class FacebookFetcher:
                 else:
                     updated_count += 1
 
-                thumbnail = defaults.get('thumbnail_url') or ''
-                if thumbnail and (was_created or not obj.thumbnail_drive_url):
-                    from ..tasks import upload_thumbnail_to_drive_task
-                    upload_thumbnail_to_drive_task.delay(
-                        model='facebook_owned_video',
-                        object_id=obj.id,
-                        cdn_url=thumbnail,
-                        filename=f'fb-owned-{post_id}.jpg',
-                    )
 
             # Đánh dấu trang đã được sync thành công
             page_obj.mark_synced()
@@ -448,15 +422,6 @@ class FacebookFetcher:
                 else:
                     updated_count += 1
 
-                thumbnail = defaults.get('thumbnail_url') or ''
-                if thumbnail and (was_created or not obj.thumbnail_drive_url):
-                    from ..tasks import upload_thumbnail_to_drive_task
-                    upload_thumbnail_to_drive_task.delay(
-                        model='facebook_owned_video',
-                        object_id=obj.id,
-                        cdn_url=thumbnail,
-                        filename=f'fb-owned-{post_id}.jpg',
-                    )
 
             page_obj.is_backfilled = True
             page_obj.last_scraped_at = timezone.now()
