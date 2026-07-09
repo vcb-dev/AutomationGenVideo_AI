@@ -1,6 +1,7 @@
-"""TikHub TikTok Profile Posts scraper — thay thế BrightData.
+"""TikHub TikTok Profile Posts scraper — fetch-only (không đụng DB).
 
-Flow: username → TikHub fetch_user_post_videos_v3 (cursor pagination) → upsert profile + videos.
+Flow: username → TikHub fetch_user_post_videos_v3 (cursor pagination) → parse thành dict.
+BE (Prisma) là nơi upsert vào scraper_tiktok_profiles/scraper_tiktok_profile_videos.
 """
 
 import logging
@@ -9,8 +10,6 @@ from typing import Optional
 import requests
 from django.conf import settings
 from django.utils import timezone
-
-from ..models_scraper import TikTokProfile, TikTokProfileVideo
 
 logger = logging.getLogger(__name__)
 
@@ -139,18 +138,20 @@ def _parse_avatar(author: dict) -> str:
     return ''
 
 
-# ─── Upsert profile ───────────────────────────────────────────────────────────
+# ─── Parse profile ────────────────────────────────────────────────────────────
 
-def upsert_profile_from_author(author: dict, profile: Optional[TikTokProfile] = None) -> Optional[TikTokProfile]:
-    """Upsert TikTokProfile từ author object của TikHub response."""
+def parse_tiktok_author(author: dict) -> Optional[dict]:
+    """Parse author object của TikHub response thành dict thông tin profile — thuần parse."""
     unique_id = author.get('unique_id', '')
-    uid = str(author.get('uid', '') or '')
-    sec_uid = author.get('sec_uid', '') or ''
-
     if not unique_id:
         return None
 
-    updates = {
+    uid = str(author.get('uid', '') or '')
+    sec_uid = author.get('sec_uid', '') or ''
+
+    return {
+        'profile_id': uid,
+        'username': unique_id,
         'sec_uid': sec_uid,
         'nickname': author.get('nickname') or '',
         'url': f'https://www.tiktok.com/@{unique_id}',
@@ -162,68 +163,18 @@ def upsert_profile_from_author(author: dict, profile: Optional[TikTokProfile] = 
         'videos_count': int(author.get('aweme_count') or 0),
     }
 
-    if profile is None:
-        profile = TikTokProfile.objects.filter(username=unique_id).first()
-        if not profile and uid:
-            profile = TikTokProfile.objects.filter(profile_id=uid).first()
-        if not profile and sec_uid:
-            profile = TikTokProfile.objects.filter(sec_uid=sec_uid).first()
 
-    if profile:
-        if uid and not profile.profile_id:
-            profile.profile_id = uid
-        for k, v in updates.items():
-            setattr(profile, k, v)
-        profile.save()
-        logger.info(f"[TT-PROFILE-TH] Updated profile: @{unique_id} sec_uid={'set' if sec_uid else 'missing'}")
-    else:
-        profile = TikTokProfile.objects.create(
-            profile_id=uid,
-            username=unique_id,
-            **updates,
-        )
-        logger.info(f"[TT-PROFILE-TH] Created profile: @{unique_id}")
+# ─── Parse videos ─────────────────────────────────────────────────────────────
 
-    return profile
+def parse_tiktok_profile_videos(items: list, username: str = '') -> list:
+    """Parse TikHub aweme_list thành list dict sẵn sàng để BE upsert vào TikTokProfileVideo.
 
-
-# ─── Ingest ───────────────────────────────────────────────────────────────────
-
-def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
-    """Parse TikHub aweme_list và lưu vào TikTokProfileVideo.
-
-    - Upload thumbnail lên Drive cho video mới
-    - video.duration là milliseconds → chia 1000 để ra giây
+    Thuần parse — không đụng DB. video.duration từ TikHub là milliseconds → chia 1000 để ra giây.
     """
-    if not items:
-        return {'profile_id': profile.id, 'created': 0, 'updated': 0, 'skipped': 0}
-
-    # Cập nhật profile từ author của item đầu tiên
-    first_author = items[0].get('author') or {}
-    if first_author:
-        upsert_profile_from_author(first_author, profile=profile)
-
-    def _is_drive_url(url: str) -> bool:
-        return 'drive.google.com' in (url or '') or 'googleusercontent.com' in (url or '')
-
-    # Pre-fetch existing video IDs + cover_image để tránh ghi đè Drive URL
-    batch_ids = [str(item.get('aweme_id', '')) for item in items if item.get('aweme_id')]
-    existing_data: dict[str, str] = {
-        row['video_id']: row['cover_image']
-        for row in TikTokProfileVideo.objects.filter(
-            profile=profile, video_id__in=batch_ids
-        ).values('video_id', 'cover_image')
-    }
-    existing_ids = set(existing_data.keys())
-
-    created = 0
-    updated = 0
-    skipped = 0
-
+    parsed = []
     for item in items:
         aweme_id = str(item.get('aweme_id') or '')
         if not aweme_id:
-            skipped += 1
             continue
 
         create_time = item.get('create_time') or 0
@@ -233,7 +184,6 @@ def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
         hashtags = [c.get('cha_name', '') for c in cha_list if c.get('cha_name')]
 
         video_obj = item.get('video') or {}
-        # duration từ TikHub là milliseconds → đổi sang giây
         duration_ms = int(video_obj.get('duration') or 0)
         duration_sec = round(duration_ms / 1000) if duration_ms else 0
 
@@ -241,18 +191,13 @@ def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
         share_info = item.get('share_info') or {}
         stats = item.get('statistics') or {}
 
-        cover_url = _parse_cover(video_obj)
-        existing_cover = existing_data.get(aweme_id, '')
-        has_drive = _is_drive_url(existing_cover)
-
-        defaults = {
-            'profile': profile,
+        parsed.append({
+            'video_id': aweme_id,
             'shortcode': aweme_id,
-            'url': share_info.get('share_url') or f'https://www.tiktok.com/@{profile.username}/video/{aweme_id}',
+            'url': share_info.get('share_url') or f'https://www.tiktok.com/@{username}/video/{aweme_id}',
             'description': item.get('desc') or '',
             'hashtags': hashtags,
-            # Giữ nguyên Drive URL nếu đã có, không ghi đè bằng CDN URL
-            'cover_image': existing_cover if has_drive else cover_url,
+            'thumbnail_url': _parse_cover(video_obj),
             'video_duration': duration_sec,
             'region': item.get('region') or '',
             'post_type': 'video',
@@ -263,18 +208,8 @@ def ingest_tikhub_profile_posts(items: list, profile: TikTokProfile) -> dict:
             'favorites_count': int(stats.get('collect_count') or 0),
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            'date_posted': date_posted,
-        }
+            'date_posted': date_posted.isoformat(),
+        })
 
-        obj, was_created = TikTokProfileVideo.objects.update_or_create(
-            video_id=aweme_id,
-            defaults=defaults,
-        )
-        if was_created:
-            created += 1
-            existing_data[aweme_id] = cover_url
-        else:
-            updated += 1
-
-    logger.info(f"[TT-PROFILE-TH] @{profile.username}: +{created} new, ~{updated} updated, {skipped} skipped")
-    return {'profile_id': profile.id, 'created': created, 'updated': updated, 'skipped': skipped}
+    logger.info(f"[TT-PROFILE-TH] Parsed {len(parsed)} videos for @{username}")
+    return parsed

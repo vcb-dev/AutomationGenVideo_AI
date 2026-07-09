@@ -1,7 +1,8 @@
-"""TikHub TikTok video search client + DB ingest logic.
+"""TikHub TikTok video search client + parse (fetch-only, không đụng DB).
 
 Thay thế BrightData cho flow search TikTok video by keyword.
 TikHub API trả data realtime, không cần polling.
+BE (Prisma) là nơi upsert vào scraper_tiktok_videos.
 """
 
 import logging
@@ -10,8 +11,6 @@ from datetime import datetime, timezone as tz
 from typing import Optional
 from django.conf import settings
 from django.utils import timezone
-
-from ..models_scraper import TikTokVideo
 
 logger = logging.getLogger(__name__)
 
@@ -114,87 +113,45 @@ def _parse_avatar_url(author: dict) -> str:
     return url_list[0] if url_list else ''
 
 
-def _is_drive_url(url: str) -> bool:
-    return 'drive.google.com' in (url or '') or 'googleusercontent.com' in (url or '')
+def parse_tiktok_videos(videos: list, search_keyword: str = '') -> list:
+    """Parse TikHub aweme_info list thành list dict sẵn sàng để BE upsert.
 
-
-def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
-    """Parse TikHub aweme_info list and save to TikTokVideo DB.
-
-    Xử lý dedup bằng update_or_create trên post_id.
-    Returns: {'created': int, 'updated': int, 'skipped': int}
+    Thuần parse — không đụng DB. Field 'search_keyword' luôn là keyword của lần
+    fetch hiện tại; BE tự quyết định giữ nguyên keyword cũ nếu video đã tồn tại
+    (không ghi đè), và giữ nguyên Drive URL nếu preview_image đã là Drive URL.
     """
-    if not videos:
-        return {'created': 0, 'updated': 0, 'skipped': 0}
-
-    # Pre-fetch existing records kèm preview_image + search_keyword để tránh ghi đè
-    # Drive URL và ghi đè keyword cũ (video cào lại bởi keyword khác vẫn phải lọc được
-    # theo keyword gốc đã tìm ra nó)
-    batch_ids = [str(v.get('aweme_id', '')) for v in videos if v.get('aweme_id')]
-    existing_data: dict[str, dict] = {
-        row['post_id']: row
-        for row in TikTokVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image', 'search_keyword')
-    }
-    existing_ids = set(existing_data.keys())
-
-    created = 0
-    updated = 0
-    skipped = 0
-
+    parsed = []
     for v in videos:
         aweme_id = v.get('aweme_id') or ''
         if not aweme_id:
-            skipped += 1
             continue
 
-        # Parse create_time (Unix timestamp)
         create_time = v.get('create_time', 0)
-        if create_time:
-            date_posted = datetime.fromtimestamp(create_time, tz=tz.utc)
-        else:
-            date_posted = timezone.now()
+        date_posted = datetime.fromtimestamp(create_time, tz=tz.utc) if create_time else timezone.now()
 
-        # Hashtags
         cha_list = v.get('cha_list') or []
         hashtags = [c.get('cha_name', '') for c in cha_list if c.get('cha_name')]
 
-        # Author
         author = v.get('author', {})
-
-        # Statistics
         stats = v.get('statistics', {})
-
-        # Music
         music = v.get('music', {})
-
-        # Video info
         video_info = v.get('video', {})
 
-        # Share URL
         share_info = v.get('share_info', {})
         share_url = share_info.get('share_url', '')
         unique_id = author.get('unique_id', '')
-        url = share_url or f"https://www.tiktok.com/@{unique_id}/video/{aweme_id}"
-
-        cdn_thumb = _parse_cover_url(video_info)
         post_id_str = str(aweme_id)
-        existing_row = existing_data.get(post_id_str) or {}
-        existing_preview = existing_row.get('preview_image', '')
-        has_drive = _is_drive_url(existing_preview)
-        existing_keyword = existing_row.get('search_keyword', '')
+        url = share_url or f"https://www.tiktok.com/@{unique_id}/video/{post_id_str}"
 
-        defaults = {
+        parsed.append({
+            'post_id': post_id_str,
             'shortcode': post_id_str,
             'url': url,
             'description': v.get('desc') or '',
             'hashtags': hashtags,
-            'video_url': '',
-            'cdn_url': '',
-            # Giữ nguyên Drive URL nếu đã có, không ghi đè bằng CDN URL
-            'preview_image': existing_preview if has_drive else cdn_thumb,
+            'thumbnail_url': _parse_cover_url(video_info),
             'video_duration': round((video_info.get('duration', 0) or 0) / 1000),
             'region': v.get('region') or '',
-            # Author
             'author_id': str(author.get('uid') or ''),
             'author_username': unique_id,
             'author_display_name': author.get('nickname') or '',
@@ -202,30 +159,16 @@ def ingest_tikhub_videos(videos: list, search_keyword: str = '') -> dict:
             'author_url': f"https://www.tiktok.com/@{unique_id}" if unique_id else '',
             'author_followers': author.get('follower_count', 0) or 0,
             'author_is_verified': bool(author.get('custom_verify') or author.get('enterprise_verify_reason')),
-            # Metrics
             'play_count': stats.get('play_count', 0) or 0,
             'digg_count': stats.get('digg_count', 0) or 0,
             'comment_count': stats.get('comment_count', 0) or 0,
             'share_count': stats.get('share_count', 0) or 0,
             'collect_count': stats.get('collect_count', 0) or 0,
-            # Music
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            # Discovery — giữ nguyên keyword gốc đã tìm ra video này, không ghi đè
-            # bằng keyword của lần search hiện tại nếu video đã tồn tại
-            'search_keyword': existing_keyword or search_keyword,
-            'date_posted': date_posted,
-        }
+            'search_keyword': search_keyword,
+            'date_posted': date_posted.isoformat(),
+        })
 
-        obj, was_created = TikTokVideo.objects.update_or_create(
-            post_id=post_id_str,
-            defaults=defaults,
-        )
-        if was_created:
-            created += 1
-            existing_data[post_id_str] = {'preview_image': cdn_thumb, 'search_keyword': search_keyword}
-        else:
-            updated += 1
-
-    logger.info(f"[TIKHUB] Ingest: +{created} new, ~{updated} updated, {skipped} skipped")
-    return {'created': created, 'updated': updated, 'skipped': skipped}
+    logger.info(f"[TIKHUB] Parsed {len(parsed)} videos (keyword='{search_keyword}')")
+    return parsed

@@ -1,13 +1,14 @@
-"""TikHub Xiaohongshu video search + user profile scraping + DB ingest."""
+"""TikHub Xiaohongshu video search + user profile fetch + parse (no DB access).
+
+BE (Prisma) sở hữu toàn bộ việc ghi ScraperXiaohongshuVideo/ScraperXiaohongshuProfile.
+AI chỉ gọi TikHub + parse dữ liệu, trả dict thô cho BE tự lưu.
+"""
 
 import logging
 import requests
 from datetime import datetime, timezone as _tz
 from typing import Optional
 from django.conf import settings
-from django.utils import timezone
-
-from ..models_scraper import XiaohongshuVideo, XiaohongshuProfile
 
 logger = logging.getLogger(__name__)
 
@@ -106,20 +107,18 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
     return items[:count]
 
 
-def ingest_xiaohongshu_videos(notes: list, keyword: str = '') -> dict:
-    """Parse TikHub Xiaohongshu notes và upsert vào DB.
+def parse_xiaohongshu_videos(notes: list) -> list:
+    """Parse TikHub Xiaohongshu search notes thành list dict thô (không ghi DB).
 
-    Returns: {'created': int, 'updated': int, 'skipped': int}
+    Returns: list of {'note_id', 'url', 'title', 'description', 'thumbnail_url',
+    'author_id', 'author_name', 'author_avatar', 'duration_seconds', 'liked_count',
+    'collected_count', 'comments_count', 'shared_count', 'date_posted'}
     """
-    if not notes:
-        return {'created': 0, 'updated': 0, 'skipped': 0}
-
-    created = updated = skipped = 0
+    parsed = []
 
     for note in notes:
         note_id = note.get('id') or ''
         if not note_id:
-            skipped += 1
             continue
 
         xsec_token = note.get('xsec_token') or ''
@@ -133,11 +132,12 @@ def ingest_xiaohongshu_videos(notes: list, keyword: str = '') -> dict:
             try:
                 date_posted = datetime.fromtimestamp(int(ts), tz=_tz.utc)
             except (ValueError, TypeError):
-                date_posted = timezone.now()
+                date_posted = datetime.now(tz=_tz.utc)
         else:
-            date_posted = timezone.now()
+            date_posted = datetime.now(tz=_tz.utc)
 
-        defaults = {
+        parsed.append({
+            'note_id': note_id,
             'url': url,
             'title': (note.get('title') or '')[:1000],
             'description': note.get('desc') or '',
@@ -150,27 +150,11 @@ def ingest_xiaohongshu_videos(notes: list, keyword: str = '') -> dict:
             'collected_count': int(note.get('collected_count') or 0),
             'comments_count': int(note.get('comments_count') or 0),
             'shared_count': int(note.get('shared_count') or 0),
-            'date_posted': date_posted,
-        }
+            'date_posted': date_posted.isoformat(),
+        })
 
-        obj, was_created = XiaohongshuVideo.objects.update_or_create(
-            note_id=note_id,
-            defaults=defaults,
-        )
-
-        # Append keyword nếu chưa có
-        if keyword and keyword not in obj.keywords:
-            obj.keywords = list(set(obj.keywords + [keyword]))
-            obj.save(update_fields=['keywords', 'updated_at'])
-
-        if was_created:
-            created += 1
-        else:
-            updated += 1
-
-
-    logger.info(f'[XHS] keyword="{keyword}": +{created} new, ~{updated} updated, {skipped} skipped')
-    return {'created': created, 'updated': updated, 'skipped': skipped}
+    logger.info(f'[XHS] parsed {len(parsed)}/{len(notes)} video notes')
+    return parsed
 
 
 # ═══════════════════════════════════════════════════════════
@@ -232,8 +216,8 @@ def fetch_xhs_user_video_notes(user_id: str, count: int = 100) -> list:
     return notes[:count]
 
 
-def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dict:
-    """Parse user-posted notes và upsert vào XiaohongshuVideo.
+def parse_xhs_profile_videos(notes: list) -> list:
+    """Parse user-posted notes thành list dict thô (không ghi DB).
 
     User notes dùng field names khác search notes:
     - likes (không phải liked_count)
@@ -242,15 +226,11 @@ def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dic
     - duration: video_info_v2.capa.duration (int seconds, không cần parse string)
     - URL: không có xsec_token
     """
-    if not notes:
-        return {'created': 0, 'updated': 0, 'skipped': 0}
-
-    created = updated = skipped = 0
+    parsed = []
 
     for note in notes:
         note_id = note.get('id') or ''
         if not note_id:
-            skipped += 1
             continue
 
         url = f'https://www.xiaohongshu.com/explore/{note_id}'
@@ -263,9 +243,9 @@ def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dic
             try:
                 date_posted = datetime.fromtimestamp(int(ts), tz=_tz.utc)
             except (ValueError, TypeError):
-                date_posted = timezone.now()
+                date_posted = datetime.now(tz=_tz.utc)
         else:
-            date_posted = timezone.now()
+            date_posted = datetime.now(tz=_tz.utc)
 
         # Duration từ video_info_v2.capa.duration (int seconds)
         vi = note.get('video_info_v2') or {}
@@ -280,7 +260,8 @@ def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dic
 
         title = (note.get('title') or note.get('display_title') or '')[:1000]
 
-        defaults = {
+        parsed.append({
+            'note_id': note_id,
             'url': url,
             'title': title,
             'description': note.get('desc') or '',
@@ -293,37 +274,22 @@ def ingest_xhs_profile_videos(notes: list, profile: 'XiaohongshuProfile') -> dic
             'collected_count': int(note.get('collected_count') or 0),
             'comments_count': int(note.get('comments_count') or 0),
             'shared_count': int(note.get('share_count') or note.get('shared_count') or 0),
-            'date_posted': date_posted,
-            'profile': profile,
-        }
+            'date_posted': date_posted.isoformat(),
+        })
 
-        obj, was_created = XiaohongshuVideo.objects.update_or_create(
-            note_id=note_id,
-            defaults=defaults,
-        )
-
-        if was_created:
-            created += 1
-        else:
-            updated += 1
+    logger.info(f'[XHS-PROFILE] parsed {len(parsed)}/{len(notes)} video notes')
+    return parsed
 
 
-    logger.info(f'[XHS-PROFILE] user_id={profile.user_id}: +{created} new, ~{updated} updated, {skipped} skipped')
-    return {'created': created, 'updated': updated, 'skipped': skipped}
+def parse_xhs_author(first_note_user: dict) -> dict:
+    """Parse user object trong note trả về thành dict thô cho profile (không ghi DB).
 
-
-def upsert_xhs_profile(user_id: str, first_note_user: dict) -> 'XiaohongshuProfile':
-    """Upsert XiaohongshuProfile từ user object trong note trả về."""
-    defaults = {}
-    if first_note_user.get('nickname'):
-        defaults['nickname'] = first_note_user['nickname'][:500]
-    if first_note_user.get('images'):
-        defaults['avatar_url'] = first_note_user['images']
+    nickname/avatar_url để '' nếu thiếu — BE tự quyết định có ghi đè hay không
+    (khớp hành vi update_or_create defaults cũ: chỉ set key khi có giá trị).
+    """
     verify_type = first_note_user.get('red_official_verify_type', 0)
-    defaults['is_verified'] = bool(verify_type)
-
-    profile, _ = XiaohongshuProfile.objects.update_or_create(
-        user_id=user_id,
-        defaults=defaults,
-    )
-    return profile
+    return {
+        'nickname': (first_note_user.get('nickname') or '')[:500],
+        'avatar_url': first_note_user.get('images') or '',
+        'is_verified': bool(verify_type),
+    }

@@ -407,59 +407,20 @@ TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 
 # Celery Beat Schedule — Facebook 3-Phase Scraper
-from celery.schedules import crontab
-
 CELERY_BEAT_SCHEDULE = {
     'cleanup-cache-daily': {
         'task': 'video_management.cleanup_old_cache',
         'schedule': 86400.0,
     },
-    # GĐ0: Tự phát hiện page mới (mỗi ngày lúc 6h sáng VN = 23h UTC ngày trước)
-    'facebook-auto-import-pages': {
-        'task': 'video_management.auto_import_pages',
-        'schedule': crontab(minute=0, hour=23),
-    },
-    # GĐ1: Backfill page chưa cào lịch sử (1 lần/ngày lúc 6:30 VN = 23:30 UTC)
-    'facebook-backfill-new-pages': {
-        'task': 'video_management.backfill_all_pages',
-        'schedule': crontab(minute=30, hour=23),
-    },
-    # GĐ2: Delta sync bài mới (mỗi ngày lúc 7h sáng VN = 0h UTC)
-    'facebook-delta-sync-daily': {
-        'task': 'video_management.delta_sync_all_pages',
-        'schedule': crontab(minute=0, hour=0),
-    },
-    # GĐ3: Refresh metrics video 7 ngày gần đây (mỗi ngày lúc 12h trưa VN = 5h UTC)
-    'facebook-refresh-metrics-daily': {
-        'task': 'video_management.refresh_recent_metrics',
-        'schedule': crontab(minute=0, hour=5),
-        'kwargs': {'days': 7},
-    },
-    # Scraper: Cào reels mới cho pages đánh dấu (mỗi ngày lúc 6h sáng VN = 23h UTC)
-    'scraper-periodic-reels': {
-        'task': 'video_management.periodic_scrape_marked_pages',
-        'schedule': crontab(minute=0, hour=23),
-    },
-    # TikTok: Cào posts mới cho profiles theo dõi (mỗi ngày lúc 5h30 sáng VN = 22h30 UTC)
-    'tiktok-periodic-profile-posts': {
-        'task': 'video_management.periodic_scrape_tiktok_profiles',
-        'schedule': crontab(minute=30, hour=22),
-    },
-    # Instagram: Cào reels mới + cập nhật metrics 7 ngày (mỗi ngày lúc 7h30 sáng VN = 0h30 UTC)
-    'instagram-periodic-profile-reels': {
-        'task': 'video_management.periodic_scrape_instagram_profiles',
-        'schedule': crontab(minute=30, hour=0),
-    },
-    # Douyin: Cào video mới cho profiles theo dõi (mỗi ngày lúc 8h sáng VN = 1h UTC)
-    'douyin-periodic-profile-videos': {
-        'task': 'video_management.periodic_scrape_douyin_profiles',
-        'schedule': crontab(minute=0, hour=1),
-    },
-    # Xiaohongshu: Cào video mới cho profiles theo dõi (mỗi ngày lúc 8h sáng VN = 1h UTC)
-    'xhs-periodic-profile-videos': {
-        'task': 'video_management.periodic_scrape_xhs_profiles',
-        'schedule': crontab(minute=0, hour=1),
-    },
+    # GĐ0-GĐ3 (import/backfill/delta-sync/refresh-metrics cho ManagedFacebookPage) đã
+    # chuyển sang BE (@Cron trong FacebookOwnedPagesCronService) — BE giờ sở hữu DB, AI
+    # chỉ còn expose fetch-only endpoints (facebook_fetch_views.py).
+    # Facebook external (fanpages đối thủ): đã chuyển sang BE
+    # (@Cron trong FacebookExternalScraperCronService, 6h sáng VN)
+    # TikTok: đã chuyển sang BE (@Cron trong TiktokScraperCronService, 5h30 sáng VN)
+    # Instagram: đã chuyển sang BE (@Cron trong InstagramScraperCronService, 7h30 sáng VN)
+    # Douyin: đã chuyển sang BE (@Cron trong DouyinScraperCronService, 8h sáng VN)
+    # Xiaohongshu: đã chuyển sang BE (@Cron trong XiaohongshuScraperCronService, 8h sáng VN)
 }
 
 
