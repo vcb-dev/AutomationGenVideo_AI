@@ -45,7 +45,10 @@ from .views import (
     pregen_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
-from .views.voice_views import list_voices_api, clone_voice_api, voice_tts_api
+from .views.voice_views import (
+    list_voices_api, clone_voice_api, voice_tts_api,
+    clone_voice_start_api, clone_voice_job_status_api,
+)
 from .views.facebook_views import facebook_sync, facebook_import, facebook_backfill, get_managed_pages, get_synced_videos
 from .views.scraper_views import (
     all_external_videos,
@@ -138,6 +141,8 @@ urlpatterns = [
     # Minimax Voice Cloning & TTS
     path('voice/list/', list_voices_api, name='voice-list'),
     path('voice/clone/', clone_voice_api, name='voice-clone'),
+    path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
+    path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
     path('voice/tts/', voice_tts_api, name='voice-tts'),
 
 

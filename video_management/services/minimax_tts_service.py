@@ -19,7 +19,12 @@ class MinimaxTTSService:
     """
     
     BASE_URL = "https://api.minimax.io/v1/t2a_v2"
-    
+
+    # speech-2.8-hd: model HD mới nhất (01/2026), chất lượng + độ giống giọng clone
+    # cao nhất. Nếu giọng clone nghe chưa giống, thử "speech-2.6-hd" (được MiniMax
+    # ghi nhận "excellent cloning similarity") qua env MINIMAX_TTS_MODEL.
+    DEFAULT_MODEL = "speech-2.8-hd"
+
     def __init__(self, api_key: Optional[str] = None, group_id: Optional[str] = None):
         """
         Initialize Minimax TTS Service.
@@ -29,14 +34,17 @@ class MinimaxTTSService:
             group_id: Minimax Group ID
         """
         self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
+        # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
+        # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
+        # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
         self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
-        
+        self.model = os.getenv('MINIMAX_TTS_MODEL', self.DEFAULT_MODEL)
+
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
-        if not self.group_id:
-            raise ValueError("MINIMAX_GROUP_ID is required")
-        
-        logger.info(f"✅ Minimax TTS Service initialized (Group: {self.group_id[:20]}...)")
+
+        group_note = f"Group: {self.group_id[:20]}..." if self.group_id else "Group: (none — sk-api key)"
+        logger.info(f"✅ Minimax TTS Service initialized ({group_note}, Model: {self.model})")
     
     def generate_audio(
         self,
@@ -45,7 +53,7 @@ class MinimaxTTSService:
         speed: float = 1.0,
         vol: float = 1.0,
         pitch: int = 0,
-        emotion: str = "happy",
+        emotion: Optional[str] = None,
         language_boost: Optional[str] = None,
         output_path: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -58,7 +66,9 @@ class MinimaxTTSService:
             speed: Speech speed (0.5 - 2.0), default 1.0
             vol: Volume (0.1 - 10.0), default 1.0
             pitch: Pitch adjustment (-12 to 12), default 0
-            emotion: Emotion type ("happy", "sad", "angry", "neutral", etc.)
+            emotion: Emotion type ("happy", "sad", "calm", ...). Bỏ trống để MiniMax
+                     tự chọn cảm xúc tự nhiên theo nội dung văn bản (khuyên dùng —
+                     ép cứng 1 emotion cho mọi câu dễ làm giọng đọc bị "kịch"/méo).
             language_boost: Minimax language hint (e.g. "Vietnamese", "English", "auto")
             output_path: Optional local path to save audio file
 
@@ -76,20 +86,27 @@ class MinimaxTTSService:
             logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Text: {len(text)} chars")
             
             # Build request payload
+            voice_setting = {
+                "voice_id": voice_id,
+                "speed": speed,
+                "vol": vol,
+                "pitch": pitch,
+            }
+            # Chỉ gửi emotion khi caller chỉ định — bỏ trống để MiniMax tự chọn
+            # cảm xúc tự nhiên theo văn bản (docs: "automatically selects the most
+            # natural emotion based on text").
+            if emotion:
+                voice_setting["emotion"] = emotion
+
             payload = {
-                "model": "speech-02-turbo",  # Updated to latest model
+                "model": self.model,
                 "text": text,
                 "stream": False,
-                "voice_setting": {
-                    "voice_id": voice_id,
-                    "speed": speed,
-                    "vol": vol,
-                    "pitch": pitch,
-                    "emotion": emotion
-                },
+                "voice_setting": voice_setting,
+                # Chất lượng cao nhất cho MP3: 44.1kHz / 256kbps
                 "audio_setting": {
-                    "sample_rate": 32000,
-                    "bitrate": 128000,
+                    "sample_rate": 44100,
+                    "bitrate": 256000,
                     "format": "mp3",
                     "channel": 1
                 }
@@ -103,20 +120,29 @@ class MinimaxTTSService:
                 "Content-Type": "application/json"
             }
             
-            # Build URL with group_id
-            url = f"{self.BASE_URL}?GroupId={self.group_id}"
+            # Chỉ gắn GroupId khi có (key JWT cũ); key sk-api không cần
+            url = f"{self.BASE_URL}?GroupId={self.group_id}" if self.group_id else self.BASE_URL
             
             logger.info(f"📡 Calling Minimax API: {url[:50]}...")
-            
-            # Make request
+
+            # Make request — retry khi lỗi tầng mạng. Kết nối tới api.minimax.io
+            # chập chờn (cả 2 IP load-balancer, xác nhận 2026-07-07): 1 request treo
+            # 300s vượt luôn quota chờ của BE. Thay bằng 5 lần thử x 45s (~225s max,
+            # dưới trần 300s của BE); TTS thật chỉ mất 3-10s nên 45s/lần là quá đủ.
             start_time = time.time()
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=300  # 5 minutes for long text
-            )
-            
+            last_network_error = None
+            response = None
+            for attempt in range(1, 6):
+                try:
+                    response = requests.post(url, headers=headers, json=payload, timeout=45)
+                    last_network_error = None
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+                    last_network_error = net_err
+                    logger.warning(f"📡 Minimax TTS attempt {attempt}/5 failed (network): {net_err}")
+            if response is None:
+                raise last_network_error if last_network_error else RuntimeError("TTS retry loop exited without result")
+
             elapsed = time.time() - start_time
             logger.info(f"📡 Minimax Response: Status={response.status_code} in {elapsed:.1f}s")
             
