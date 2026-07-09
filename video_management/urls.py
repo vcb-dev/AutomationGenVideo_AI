@@ -49,22 +49,11 @@ from .views.voice_views import (
     list_voices_api, clone_voice_api, voice_tts_api,
     clone_voice_start_api, clone_voice_job_status_api,
 )
-from .views.facebook_views import facebook_sync, facebook_import, facebook_backfill, get_managed_pages, get_synced_videos
-from .views.scraper_views import (
-    all_external_videos,
-    keyword_suggest, keyword_hit, keyword_list, keyword_create,
-    discovered_fanpages, fanpage_detail, fanpage_toggle,
-    search_reels, trigger_scrape_reels, fanpage_scrape_by_url,
-    tiktok_search, tiktok_videos, tiktok_keyword_suggest,
-    tiktok_profile_scrape, tiktok_profiles_list, tiktok_profile_detail,
-    tiktok_profile_videos, tiktok_profile_toggle,
-    instagram_profile_scrape, instagram_profiles_list, instagram_profile_detail,
-    instagram_profile_reels, instagram_profile_toggle,
-    douyin_keyword_search, douyin_videos_list, douyin_keyword_suggest,
-    douyin_profile_scrape, douyin_profiles_list,
-    douyin_profile_detail, douyin_profile_toggle, douyin_profile_videos,
-    owned_channel_videos,
+from .views.facebook_fetch_views import (
+    fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
 )
+from .views.facebook_external_fetch_views import fetch_facebook_page_reels
+from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
     analyze_facebook_url,
@@ -78,12 +67,11 @@ from .views.channel_analysis_generic_views import (
     channel_metrics_generic,
     channel_analysis_unified_generic,
 )
-from .views.xiaohongshu_search_views import (
-    search_xiaohongshu_notes, list_xiaohongshu_videos, xiaohongshu_keyword_suggest,
-    xhs_profile_scrape, xhs_profiles_list, xhs_profile_detail, xhs_profile_videos,
-)
+from .views.xiaohongshu_fetch_views import fetch_xiaohongshu_search, fetch_xiaohongshu_profile_videos
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
+from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
+from .views.instagram_fetch_views import fetch_instagram_profile_reels
 from .views.product_views import (
     upload_product_catalog,
     list_product_catalogs,
@@ -196,75 +184,51 @@ urlpatterns = [
     path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
     path('facebook/competitor-insights/', analyze_facebook_competitor, name='facebook-competitor-insights'),
     path('facebook/channel-metrics/', facebook_channel_metrics, name='facebook-channel-metrics'),
-    path('facebook/import/', facebook_import, name='facebook-import'),
-    path('facebook/sync/', facebook_sync, name='facebook-sync'),
-    path('facebook/backfill/', facebook_backfill, name='facebook-backfill'),
-    path('facebook/manage-pages/', get_managed_pages, name='facebook-pages-list'),
-    path('facebook/page-videos/<str:page_id>/', get_synced_videos, name='facebook-videos-list'),
+    # facebook/import, /sync, /backfill, /manage-pages, /page-videos giờ do BE xử lý
+    # native (FacebookOwnedPagesController) — AI không còn route đọc nào cho owned pages.
 
-    # Scraper — All videos (gom tất cả nền tảng)
-    path('scraper/all-videos/', all_external_videos, name='scraper-all-videos'),
-    path('scraper/owned/videos/', owned_channel_videos, name='scraper-owned-videos'),
+    # Facebook owned-pages — fetch-only (BE sở hữu DB, gọi các endpoint này để lấy data thô)
+    path('facebook/fetch/managed-pages/', fetch_managed_pages, name='facebook-fetch-managed-pages'),
+    path('facebook/fetch/sync/', fetch_page_sync, name='facebook-fetch-sync'),
+    path('facebook/fetch/backfill/', fetch_page_backfill, name='facebook-fetch-backfill'),
+    path('facebook/fetch/metrics-refresh/', fetch_metrics_refresh, name='facebook-fetch-metrics-refresh'),
 
-    # Scraper — Keyword Search, Discovery & Fanpages
-    path('scraper/reels/search/', search_reels, name='scraper-reels-search'),
-    path('scraper/keywords/suggest/', keyword_suggest, name='scraper-keyword-suggest'),
-    path('scraper/keywords/hit/', keyword_hit, name='scraper-keyword-hit'),
-    path('scraper/keywords/', keyword_list, name='scraper-keyword-list'),
-    path('scraper/keywords/create/', keyword_create, name='scraper-keyword-create'),
-    path('scraper/fanpages/', discovered_fanpages, name='scraper-fanpages'),
-    path('scraper/fanpages/<int:fanpage_id>/', fanpage_detail, name='scraper-fanpage-detail'),
-    path('scraper/fanpages/<int:fanpage_id>/toggle/', fanpage_toggle, name='scraper-fanpage-toggle'),
-    path('scraper/fanpages/scrape-reels/', trigger_scrape_reels, name='scraper-scrape-reels'),
-    path('scraper/fanpages/scrape-by-url/', fanpage_scrape_by_url, name='scraper-fanpage-scrape-by-url'),
+    # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
+    # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.
 
-    # TikTok (keyword search)
-    path('scraper/tiktok/search/', tiktok_search, name='scraper-tiktok-search'),
-    path('scraper/tiktok/videos/', tiktok_videos, name='scraper-tiktok-videos'),
-    path('scraper/tiktok/keywords/suggest/', tiktok_keyword_suggest, name='scraper-tiktok-keyword-suggest'),
+    # Scraper — Keyword bookkeeping (autocomplete/hit tracking) đã chuyển sang BE
+    # (SearchKeywordsController) — AI không còn đụng SearchKeyword nữa.
 
-    # TikTok (profile posts)
-    path('scraper/tiktok/profiles/', tiktok_profiles_list, name='scraper-tiktok-profiles'),
-    path('scraper/tiktok/profiles/scrape/', tiktok_profile_scrape, name='scraper-tiktok-profile-scrape'),
-    path('scraper/tiktok/profiles/<int:profile_id>/', tiktok_profile_detail, name='scraper-tiktok-profile-detail'),
-    path('scraper/tiktok/profiles/<int:profile_id>/videos/', tiktok_profile_videos, name='scraper-tiktok-profile-videos'),
-    path('scraper/tiktok/profiles/<int:profile_id>/toggle/', tiktok_profile_toggle, name='scraper-tiktok-profile-toggle'),
+    # Fanpages — toggle/scrape-reels/scrape-by-url VÀ list/detail/reels-search đều đã
+    # chuyển sang BE (FacebookExternalScraperController/FacebookReelsSearchController).
 
-    # Instagram (profile reels)
-    path('scraper/instagram/profiles/', instagram_profiles_list, name='scraper-instagram-profiles'),
-    path('scraper/instagram/profiles/scrape/', instagram_profile_scrape, name='scraper-instagram-profile-scrape'),
-    path('scraper/instagram/profiles/<int:profile_id>/', instagram_profile_detail, name='scraper-instagram-profile-detail'),
-    path('scraper/instagram/profiles/<int:profile_id>/reels/', instagram_profile_reels, name='scraper-instagram-profile-reels'),
-    path('scraper/instagram/profiles/<int:profile_id>/toggle/', instagram_profile_toggle, name='scraper-instagram-profile-toggle'),
+    # Fanpages — fetch-only (BE sở hữu DB, gọi endpoint này để lấy data thô)
+    path('scraper/fanpages/fetch/reels/', fetch_facebook_page_reels, name='scraper-fanpages-fetch-reels'),
+
+    # TikTok — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển sang BE
+    # (TiktokScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/tiktok/fetch/search/', fetch_tiktok_search, name='scraper-tiktok-fetch-search'),
+    path('scraper/tiktok/fetch/profile-posts/', fetch_tiktok_profile_posts, name='scraper-tiktok-fetch-profile-posts'),
+
+    # Instagram — profiles/scrape/toggle VÀ list/detail/reels đều đã chuyển sang BE
+    # (InstagramScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/instagram/fetch/profile-reels/', fetch_instagram_profile_reels, name='scraper-instagram-fetch-profile-reels'),
 
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
     path('channel/analysis-unified/', channel_analysis_unified_generic, name='channel-analysis-unified'),
-    
-    # Douyin Scraper (lưu DB, giống TikTok)
-    path('scraper/douyin/search/', douyin_keyword_search, name='scraper-douyin-search'),
-    path('scraper/douyin/videos/', douyin_videos_list, name='scraper-douyin-videos'),
-    path('scraper/douyin/keywords/suggest/', douyin_keyword_suggest, name='scraper-douyin-keyword-suggest'),
-    path('scraper/douyin/profile/scrape/', douyin_profile_scrape, name='scraper-douyin-profile-scrape'),
-    path('scraper/douyin/profiles/', douyin_profiles_list, name='scraper-douyin-profiles'),
-    path('scraper/douyin/profiles/<int:pk>/', douyin_profile_detail, name='scraper-douyin-profile-detail'),
-    path('scraper/douyin/profiles/<int:pk>/toggle/', douyin_profile_toggle, name='scraper-douyin-profile-toggle'),
-    path('scraper/douyin/profiles/<int:pk>/videos/', douyin_profile_videos, name='scraper-douyin-profile-videos'),
 
-    # Xiaohongshu Search (TikHub)
-    path('scraper/xiaohongshu/search/', search_xiaohongshu_notes, name='scraper-xiaohongshu-search'),
-    path('scraper/xiaohongshu/videos/', list_xiaohongshu_videos, name='scraper-xiaohongshu-videos'),
-    path('scraper/xiaohongshu/keywords/suggest/', xiaohongshu_keyword_suggest, name='scraper-xiaohongshu-keyword-suggest'),
-    # Legacy (redirect-in-place: keep old path working)
-    path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
+    # Douyin — search/profile/scrape/toggle VÀ list/detail/videos đều đã chuyển sang BE
+    # (DouyinScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/douyin/fetch/search/', fetch_douyin_search, name='scraper-douyin-fetch-search'),
+    path('scraper/douyin/fetch/profile-videos/', fetch_douyin_profile_videos, name='scraper-douyin-fetch-profile-videos'),
 
-    # Xiaohongshu Profiles (TikHub)
-    path('scraper/xiaohongshu/profiles/', xhs_profiles_list, name='scraper-xhs-profiles'),
-    path('scraper/xiaohongshu/profiles/scrape/', xhs_profile_scrape, name='scraper-xhs-profile-scrape'),
-    path('scraper/xiaohongshu/profiles/<int:profile_id>/', xhs_profile_detail, name='scraper-xhs-profile-detail'),
-    path('scraper/xiaohongshu/profiles/<int:profile_id>/videos/', xhs_profile_videos, name='scraper-xhs-profile-videos'),
-    
+    # Xiaohongshu — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển
+    # sang BE (XiaohongshuScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/xiaohongshu/fetch/search/', fetch_xiaohongshu_search, name='scraper-xiaohongshu-fetch-search'),
+    path('scraper/xiaohongshu/fetch/profile-videos/', fetch_xiaohongshu_profile_videos, name='scraper-xiaohongshu-fetch-profile-videos'),
+
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
     

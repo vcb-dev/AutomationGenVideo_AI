@@ -1,16 +1,16 @@
-"""TikHub Douyin video search client + DB ingest.
+"""TikHub Douyin video search client + parse (fetch-only, không đụng DB).
 
-Flow: keyword → TikHub fetch_video_search_v2 (cursor pagination) → upsert DouyinVideo.
+Flow: keyword → TikHub fetch_video_search_v2 (cursor pagination) → parse thành dict.
 Pagination dùng 3 tham số: cursor + search_id + backtrace.
+BE (Prisma) là nơi upsert vào scraper_douyin_videos/scraper_douyin_profiles.
 """
 
 import logging
 import requests
 from datetime import datetime, timezone as tz
+from typing import Optional
 from django.conf import settings
 from django.utils import timezone
-
-from ..models_scraper import DouyinVideo
 
 logger = logging.getLogger(__name__)
 
@@ -224,37 +224,16 @@ def fetch_douyin_user_videos(sec_user_id: str, count: int = 30) -> list:
     return all_items[:count]
 
 
-def _is_drive_url(url: str) -> bool:
-    return 'drive.google.com' in (url or '') or 'googleusercontent.com' in (url or '')
+def parse_douyin_videos(items: list, search_keyword: str = '') -> list:
+    """Parse TikHub Douyin aweme_info list thành list dict sẵn sàng để BE upsert.
 
-
-def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
-    """Parse TikHub Douyin aweme_info list và upsert vào DouyinVideo.
-
-    - Lưu CDN cover URL trước, Drive upload chạy async qua Celery task.
-    - video.duration là milliseconds → chia 1000 để ra giây.
+    Thuần parse — không đụng DB. BE tự quyết định giữ nguyên search_keyword/Drive URL
+    cũ nếu video đã tồn tại (đúng business rule trước đây nằm trong ingest_douyin_videos).
     """
-    if not items:
-        return {'created': 0, 'updated': 0, 'skipped': 0}
-
-    # Pre-fetch existing records kèm preview_image + search_keyword để tránh ghi đè
-    # Drive URL và ghi đè keyword cũ (video cào lại bởi keyword khác vẫn phải lọc được
-    # theo keyword gốc đã tìm ra nó)
-    batch_ids = [str(item.get('aweme_id', '')) for item in items if item.get('aweme_id')]
-    existing_data: dict[str, dict] = {
-        row['post_id']: row
-        for row in DouyinVideo.objects.filter(post_id__in=batch_ids).values('post_id', 'preview_image', 'search_keyword')
-    }
-    existing_ids = set(existing_data.keys())
-
-    created = 0
-    updated = 0
-    skipped = 0
-
+    parsed = []
     for item in items:
         aweme_id = str(item.get('aweme_id') or '')
         if not aweme_id:
-            skipped += 1
             continue
 
         create_time = item.get('create_time') or 0
@@ -270,23 +249,17 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
         duration_sec = round(duration_ms / 1000) if duration_ms else 0
 
         hashtags = [c.get('cha_name', '') for c in cha_list if c.get('cha_name')]
-        cover_url = _parse_cover(video_obj)
 
         uid = str(author.get('uid') or '')
         short_id = author.get('short_id') or author.get('unique_id') or ''
         nickname = author.get('nickname') or ''
 
-        existing_row = existing_data.get(aweme_id) or {}
-        existing_preview = existing_row.get('preview_image', '')
-        has_drive = _is_drive_url(existing_preview)
-        existing_keyword = existing_row.get('search_keyword', '')
-
-        defaults = {
+        parsed.append({
+            'post_id': aweme_id,
             'url': item.get('share_url') or f'https://www.douyin.com/video/{aweme_id}',
             'description': item.get('desc') or '',
             'hashtags': hashtags,
-            # Giữ nguyên Drive URL nếu đã có, không ghi đè bằng CDN URL
-            'preview_image': existing_preview if has_drive else cover_url,
+            'thumbnail_url': _parse_cover(video_obj),
             'video_duration': duration_sec,
             'region': item.get('region') or author.get('region') or '',
             'author_id': uid,
@@ -301,23 +274,31 @@ def ingest_douyin_videos(items: list, search_keyword: str) -> dict:
             'collect_count': int(stats.get('collect_count') or 0),
             'music_title': music.get('title') or '',
             'music_author': music.get('author') or '',
-            # Giữ nguyên keyword gốc đã tìm ra video này, không ghi đè bằng keyword
-            # của lần search/cào hiện tại nếu video đã tồn tại
-            'search_keyword': existing_keyword or search_keyword,
-            'date_posted': date_posted,
-        }
+            'search_keyword': search_keyword,
+            'date_posted': date_posted.isoformat(),
+        })
 
-        obj, was_created = DouyinVideo.objects.update_or_create(
-            post_id=aweme_id,
-            defaults=defaults,
-        )
-
-        if was_created:
-            created += 1
-            existing_data[aweme_id] = {'preview_image': cover_url, 'search_keyword': search_keyword}
-        else:
-            updated += 1
+    logger.info(f"[DOUYIN] Parsed {len(parsed)} videos (keyword='{search_keyword}')")
+    return parsed
 
 
-    logger.info(f"[DOUYIN] Ingest '{search_keyword}': +{created} new, ~{updated} updated, {skipped} skipped")
-    return {'created': created, 'updated': updated, 'skipped': skipped}
+def parse_douyin_author(author: dict) -> Optional[dict]:
+    """Parse author object (từ video đầu tiên) thành dict thông tin profile — thuần parse."""
+    if not author:
+        return None
+
+    avatar_obj = author.get('avatar_medium') or author.get('avatar_larger') or {}
+    avatar_urls = avatar_obj.get('url_list') or []
+    avatar_url = avatar_urls[-1] if avatar_urls else ''
+
+    followers = author.get('follower_count') or author.get('followers_count')
+
+    return {
+        'uid': str(author.get('uid') or ''),
+        'username': author.get('unique_id') or '',
+        'nickname': author.get('nickname') or '',
+        'biography': author.get('signature') or '',
+        'is_verified': bool(author.get('is_verified')),
+        'avatar_url': avatar_url,
+        'followers_count': int(followers) if followers is not None else None,
+    }
