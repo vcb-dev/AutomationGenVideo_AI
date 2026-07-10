@@ -103,8 +103,8 @@ def clone_voice_api(request):
                 temp_f.write(chunk)
 
         try:
-            # Initialize minimax clone service
-            clone_service = get_voice_clone_service()
+            # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
+            clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
 
             # Call Minimax clone API (uploads to minimax + clones voice)
             clone_result = clone_service.clone_voice_from_file(
@@ -185,6 +185,9 @@ def clone_voice_start_api(request):
             for chunk in audio_file.chunks():
                 temp_f.write(chunk)
 
+        # Bắt key ra biến TRƯỚC khi spawn thread — request object không dùng được an toàn trong thread nền
+        minimax_key = request.headers.get('X-Minimax-Key')
+
         job_id = uuid.uuid4().hex
         job_key = f"{_CLONE_JOB_PREFIX}{job_id}"
         progress_set(job_key, {
@@ -196,7 +199,7 @@ def clone_voice_start_api(request):
         def _run_clone_job():
             progress_update(job_key, {'status': 'running', 'message': 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'})
             try:
-                clone_service = get_voice_clone_service()
+                clone_service = get_voice_clone_service(api_key=minimax_key)
                 clone_result = clone_service.clone_voice_from_file(audio_path=temp_path, voice_name=voice_name)
 
                 voice_id = clone_result.get('voice_id')
@@ -304,8 +307,8 @@ def voice_tts_api(request):
         filename = f"tts_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(audio_dir, filename)
 
-        # Call Minimax service
-        tts_service = get_minimax_service()
+        # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
+        tts_service = get_minimax_service(api_key=request.headers.get('X-Minimax-Key'))
         result = tts_service.generate_audio(
             text=text,
             voice_id=voice_id,

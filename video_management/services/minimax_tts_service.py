@@ -224,9 +224,18 @@ class MinimaxTTSService:
 _minimax_service = None
 
 
-def get_minimax_service() -> MinimaxTTSService:
-    """Get or create Minimax service instance."""
+def get_minimax_service(api_key: Optional[str] = None) -> MinimaxTTSService:
+    """
+    Get or create Minimax service instance.
+
+    api_key: key do BE gửi kèm từng request qua header X-Minimax-Key — key MiniMax
+    lưu ở .env của BE, không còn lưu ở .env AI. Có api_key thì tạo instance riêng
+    (không cache vào singleton để key của request này không rò sang request khác);
+    singleton + env chỉ còn là fallback cho management command chạy tay.
+    """
     global _minimax_service
+    if api_key:
+        return MinimaxTTSService(api_key=api_key)
     if _minimax_service is None:
         _minimax_service = MinimaxTTSService()
     return _minimax_service

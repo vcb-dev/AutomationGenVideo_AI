@@ -314,9 +314,18 @@ class MinimaxVoiceCloneService:
 _voice_clone_service = None
 
 
-def get_voice_clone_service() -> MinimaxVoiceCloneService:
-    """Get or create Voice Clone service instance."""
+def get_voice_clone_service(api_key: Optional[str] = None) -> MinimaxVoiceCloneService:
+    """
+    Get or create Voice Clone service instance.
+
+    api_key: key do BE gửi kèm từng request qua header X-Minimax-Key — key MiniMax
+    lưu ở .env của BE, không còn lưu ở .env AI. Có api_key thì tạo instance riêng
+    (không cache vào singleton để key của request này không rò sang request khác);
+    singleton + env chỉ còn là fallback cho management command chạy tay (clone_koc_voice).
+    """
     global _voice_clone_service
+    if api_key:
+        return MinimaxVoiceCloneService(api_key=api_key)
     if _voice_clone_service is None:
         _voice_clone_service = MinimaxVoiceCloneService()
     return _voice_clone_service
