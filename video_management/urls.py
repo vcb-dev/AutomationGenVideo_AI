@@ -45,6 +45,10 @@ from .views import (
     pregen_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
+from .views.voice_views import (
+    list_voices_api, clone_voice_api, voice_tts_api,
+    clone_voice_start_api, clone_voice_job_status_api,
+)
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
 )
@@ -124,6 +128,13 @@ urlpatterns = [
     # Media fetch (bypass CORS; avoid "image-proxy" name which triggers ad blockers)
     path('image-proxy/', ImageProxyView.as_view(), name='image-proxy'),  # legacy
     path('media/', ImageProxyView.as_view(), name='media'),
+
+    # Minimax Voice Cloning & TTS
+    path('voice/list/', list_voices_api, name='voice-list'),
+    path('voice/clone/', clone_voice_api, name='voice-clone'),
+    path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
+    path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
+    path('voice/tts/', voice_tts_api, name='voice-tts'),
 
 
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
