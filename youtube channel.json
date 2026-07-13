@@ -1,0 +1,101 @@
+{
+  "code": 200,
+  "request_id": "c0aadb03-af6d-4240-8833-c78b6cbb60cf",
+  "message": "Request successful. This request will incur a charge.",
+  "message_zh": "请求成功，本次请求将被计费。",
+  "support": "Discord: https://discord.gg/aMEAS8Xsvz",
+  "time": "2026-07-07 19:33:55",
+  "time_stamp": 1783478035,
+  "time_zone": "America/Los_Angeles",
+  "docs": "https://api.tikhub.io/#/YouTube-Web-API/get_channel_info_api_v1_youtube_web_get_channel_info_get",
+  "cache_message": "This response is cached and accessible via the URL below for 24 hours at no extra cost. The cache is for request tracing only — it doesn't affect the API's data freshness and won't be returned through the API again.",
+  "cache_message_zh": "本次响应已缓存，可通过下方 URL 直接查看，有效期 24 小时，访问缓存链接无额外费用。缓存仅用于请求溯源，不影响接口数据的时效性，也不会再次通过接口返回。",
+  "cache_url": "https://cache.tikhub.io/api/v1/cache/public/c0aadb03-af6d-4240-8833-c78b6cbb60cf?sign=baf538f95002feefa4f9a7846718e565567bf60b39c2c481735e4bc1f14a6b36",
+  "router": "/api/v1/youtube/web/get_channel_info",
+  "params": {
+    "channel_id": "UCNAS2uH1JMM5AaqGAMctPrg"
+  },
+  "data": {
+    "channel_id": "UCNAS2uH1JMM5AaqGAMctPrg",
+    "title": "Phong Max Official",
+    "description": "Chào mừng bạn đến với Kênh YouTube chính thức của Phong Max!\nWelcome to Phong Max's Official YouTube Channel !\n\n► Hãy nhấn ĐĂNG KÝ để là người đầu tiên xem CÁC SẢN PHẨM MỚI NHẤT của Phong Max. \nhttps://www.youtube.com/@PhongMaxOfficial\n\n▶ Theo dõi Phong Max: \n- Fanpage:    https://www.facebook.com/phongmaxx989/\n- Facebook: https://www.facebook.com/quangminhh.nguyen.\n- TikTok: https://www.tiktok.com/@phongmaxofficial\n\nLiên hệ: Phongmax.artist@gmail.com\n------------------------------------------\nPHONG MAX OFFICIAL YOUTUBE CHANNEL!\n\n© Bản quyền thuộc về Phong Max\n© Copyright by Phong Max\n☞ Please do not Reup\n",
+    "subscriber_count": "729K subscribers",
+    "video_count": "57 videos",
+    "links": [
+      {
+        "name": "Đăng ký ủng hộ Phong Max nhé",
+        "endpoint": "popsww.com/PhongMax"
+      },
+      {
+        "name": "Fanpage",
+        "endpoint": "facebook.com/phongmaxx989"
+      },
+      {
+        "name": "Facebook",
+        "endpoint": "facebook.com/quangminhh.nguyen."
+      },
+      {
+        "name": "TikTok",
+        "endpoint": "tiktok.com/@phongmaxofficial"
+      },
+      {
+        "name": "Email",
+        "endpoint": "Phongmax989yb@gmail.com"
+      }
+    ],
+    "avatar": [
+      {
+        "url": "https://yt3.googleusercontent.com/E4tRWn3oFn0zJIS-impXUpgWd9740FslMpxcjyEUEQz-tIORPO3ULF2jyyRKAY6GCLWqUubZeA=s72-c-k-c0x00ffffff-no-rj",
+        "width": 72,
+        "height": 72
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/E4tRWn3oFn0zJIS-impXUpgWd9740FslMpxcjyEUEQz-tIORPO3ULF2jyyRKAY6GCLWqUubZeA=s120-c-k-c0x00ffffff-no-rj",
+        "width": 120,
+        "height": 120
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/E4tRWn3oFn0zJIS-impXUpgWd9740FslMpxcjyEUEQz-tIORPO3ULF2jyyRKAY6GCLWqUubZeA=s160-c-k-c0x00ffffff-no-rj",
+        "width": 160,
+        "height": 160
+      }
+    ],
+    "banner": [
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w1060-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 1060,
+        "height": 175
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w1138-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 1138,
+        "height": 188
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w1707-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 1707,
+        "height": 283
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w2120-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 2120,
+        "height": 351
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w2276-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 2276,
+        "height": 377
+      },
+      {
+        "url": "https://yt3.googleusercontent.com/mqAiiQwIMn5XwlFE2OM19fLtCCGLzPFJu-5mC5goaGtb6uUNBeaKvuTAJboThPvN2ZJDsTB9zQ=w2560-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj",
+        "width": 2560,
+        "height": 424
+      }
+    ],
+    "verified": false,
+    "has_business_email": false,
+    "view_count": "244,909,875 views",
+    "country": "Vietnam",
+    "creation_date": "Dec 3, 2016"
+  }
+}
