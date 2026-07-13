@@ -29,14 +29,21 @@ class NestJWTAuthentication(BaseAuthentication):
             secrets_to_try.insert(0, f'{base_secret}.{boot_suffix}')
 
         payload = None
+        last_error = None
         for secret in secrets_to_try:
             try:
                 payload = jwt.decode(token, secret, algorithms=['HS256'])
                 break
-            except jwt.ExpiredSignatureError:
-                raise AuthenticationFailed('Token expired')
-            except jwt.InvalidTokenError:
+            except jwt.InvalidSignatureError:
+                # Wrong secret — try next
                 continue
+            except jwt.InvalidTokenError as e:
+                # Expired, malformed, etc. — record and stop (signature matched)
+                last_error = e
+                break
+
+        if last_error is not None:
+            raise AuthenticationFailed(str(last_error))
 
         if payload is None:
             return None
