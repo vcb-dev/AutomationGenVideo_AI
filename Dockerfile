@@ -25,5 +25,4 @@ COPY . .
 
 EXPOSE ${PORT}
 
-CMD sh -c "python manage.py migrate --noinput && \
-    gunicorn --bind 0.0.0.0:${PORT} --workers 2 --threads 4 --timeout 3600 core.wsgi:application"
+CMD ["sh", "scripts/docker-entrypoint-web.sh", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--timeout", "3600", "core.wsgi:application"]
