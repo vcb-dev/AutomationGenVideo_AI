@@ -8,7 +8,6 @@ import logging
 import re
 import requests
 import os
-import uuid
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -18,16 +17,14 @@ def _make_voice_id(voice_name: str) -> str:
     """
     Generate valid Minimax voice_id from voice_name.
     Rules: length 8-256, start with letter, only [a-zA-Z0-9_-], cannot end with - or _
-
-    A random suffix is always appended so two concurrent clone requests with the same
-    voice_name (e.g. a double-submit) don't collide on the same voice_id.
     """
     # Replace spaces/special with underscore, keep only letters digits _ -
     s = re.sub(r'[^a-zA-Z0-9_\-]', '_', voice_name.strip())
     s = re.sub(r'_+', '_', s).strip('_')
     if not s or not s[0].isalpha():
         s = 'v_' + s if s else 'voice_01'
-    s = f"{s}_{uuid.uuid4().hex[:8]}"
+    if len(s) < 8:
+        s = s + '_' + str(abs(hash(s)) % 10000)
     if len(s) > 256:
         s = s[:256]
     if s.endswith('_') or s.endswith('-'):
@@ -51,44 +48,15 @@ class MinimaxVoiceCloneService:
             group_id: Minimax Group ID
         """
         self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
-        # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
-        # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
-        # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
         self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
-
+        
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
-
-        group_note = f"Group: {self.group_id[:20]}..." if self.group_id else "Group: (none — sk-api key)"
-        logger.info(f"[Voice Clone] Minimax service initialized ({group_note})")
-
-    def _build_url(self, path: str) -> str:
-        """Build API URL; chỉ gắn GroupId khi có (key JWT cũ)."""
-        url = f"{self.BASE_URL}{path}"
-        return f"{url}?GroupId={self.group_id}" if self.group_id else url
-
-    def _post_with_retry(self, request_fn, max_attempts: int = 10):
-        """
-        Gọi request_fn() (không tham số, trả về response) với retry khi lỗi tầng
-        mạng (timeout/connection reset). Kết nối tới api.minimax.io chập chờn ở cả
-        2 IP load-balancer (đã xác nhận qua test thủ công — không phải 1 IP chết cố
-        định, mà lúc IP này lỗi lúc IP kia lỗi), nên retry với timeout ngắn hơn mỗi
-        lần để xoay vòng nhanh, tăng cơ hội trúng đường truyền đang ổn. Clone chạy
-        trong background thread (xem voice_views.clone_voice_start_api) nên không
-        còn bị giới hạn bởi timeout của BE/FE — 10 lần thử x 30s = tối đa ~5
-        phút/bước là chấp nhận được để "vượt" qua một đợt mạng xấu kéo dài.
-        """
-        last_network_error: Optional[BaseException] = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                return request_fn()
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
-                last_network_error = net_err
-                logger.warning(f"[Voice Clone] Attempt {attempt}/{max_attempts} failed (network): {net_err}")
-        if last_network_error is None:
-            raise RuntimeError("_post_with_retry: exited loop without a result or error")
-        raise last_network_error
-
+        if not self.group_id:
+            raise ValueError("MINIMAX_GROUP_ID is required")
+        
+        logger.info(f"[Voice Clone] Minimax service initialized (Group: {self.group_id[:20]}...)")
+    
     def upload_audio(self, audio_path: str, purpose: str = "voice_clone") -> str:
         """
         Upload audio file to Minimax.
@@ -114,26 +82,28 @@ class MinimaxVoiceCloneService:
             if file_size > 20 * 1024 * 1024:  # 20MB
                 raise ValueError("File size must be less than 20MB")
             
-            url = self._build_url("/files/upload")
+            # Build URL with GroupId
+            url = f"{self.BASE_URL}/files/upload?GroupId={self.group_id}"
             
             # Build headers (no Content-Type for multipart/form-data)
             headers = {
                 "Authorization": f"Bearer {self.api_key}"
             }
             
-            # Upload file. Mạng tới api.minimax.io thỉnh thoảng bị nghẽn thoáng qua
-            # (read timeout) — retry tối đa 3 lần cho lỗi tầng mạng. Upload lặp lại
-            # vô hại: tệ nhất là dư 1 file mồ côi phía MiniMax.
-            def _do_upload():
-                with open(audio_path, 'rb') as f:
-                    files = {
-                        'file': (os.path.basename(audio_path), f, 'audio/mpeg'),
-                        'purpose': (None, purpose)
-                    }
-                    return requests.post(url, headers=headers, files=files, timeout=30)
-
-            logger.info(f"[Voice Clone] Uploading to: {url[:60]}...")
-            response = self._post_with_retry(_do_upload)
+            # Upload file
+            with open(audio_path, 'rb') as f:
+                files = {
+                    'file': (os.path.basename(audio_path), f, 'audio/mpeg'),
+                    'purpose': (None, purpose)
+                }
+                
+                logger.info(f"[Voice Clone] Uploading to: {url[:60]}...")
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    timeout=120
+                )
             
             logger.info(f"[Voice Clone] Upload response: Status={response.status_code}")
             
@@ -210,7 +180,8 @@ class MinimaxVoiceCloneService:
                     "prompt_text": "Sample prompt for voice cloning."
                 }
             
-            url = self._build_url("/voice_clone")
+            # Build URL with GroupId
+            url = f"{self.BASE_URL}/voice_clone?GroupId={self.group_id}"
             
             # Build headers
             headers = {
@@ -219,10 +190,13 @@ class MinimaxVoiceCloneService:
             }
             
             logger.info(f"[Voice Clone] Calling: {url[:60]}...")
-
-            # Make request — retry khi lỗi tầng mạng, giống upload_audio ở trên.
-            response = self._post_with_retry(
-                lambda: requests.post(url, headers=headers, json=payload, timeout=30)
+            
+            # Make request
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=120
             )
             
             logger.info(f"[Voice Clone] Clone response: Status={response.status_code}")
@@ -314,18 +288,9 @@ class MinimaxVoiceCloneService:
 _voice_clone_service = None
 
 
-def get_voice_clone_service(api_key: Optional[str] = None) -> MinimaxVoiceCloneService:
-    """
-    Get or create Voice Clone service instance.
-
-    api_key: key do BE gửi kèm từng request qua header X-Minimax-Key — key MiniMax
-    lưu ở .env của BE, không còn lưu ở .env AI. Có api_key thì tạo instance riêng
-    (không cache vào singleton để key của request này không rò sang request khác);
-    singleton + env chỉ còn là fallback cho management command chạy tay (clone_koc_voice).
-    """
+def get_voice_clone_service() -> MinimaxVoiceCloneService:
+    """Get or create Voice Clone service instance."""
     global _voice_clone_service
-    if api_key:
-        return MinimaxVoiceCloneService(api_key=api_key)
     if _voice_clone_service is None:
         _voice_clone_service = MinimaxVoiceCloneService()
     return _voice_clone_service

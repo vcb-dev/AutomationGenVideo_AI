@@ -1,5 +1,4 @@
 import os
-import uuid
 import logging
 import yt_dlp
 # Lazy import moviepy to avoid startup errors if not installed
@@ -28,9 +27,8 @@ class VoiceExtractionService:
         """
         # Download best single file (usually contains both audio and video for TikTok/Shorts)
         ydl_opts = {
-            'format': 'best',
-            # uuid suffix avoids two concurrent requests for the same video colliding on the same temp filename
-            'outtmpl': os.path.join(self.output_dir, f'%(id)s_{uuid.uuid4().hex[:8]}.%(ext)s'),
+            'format': 'best', 
+            'outtmpl': os.path.join(self.output_dir, '%(id)s.%(ext)s'),
             'quiet': True,
             'no_warnings': True,
             'http_headers': {
@@ -60,15 +58,15 @@ class VoiceExtractionService:
                 # Now extract audio using MoviePy (re-using existing method)
                 try:
                     audio_path = self.extract_from_local_file(video_path)
+                    
+                    # Clean up the large video file to save space
+                    if os.path.exists(video_path):
+                        os.remove(video_path)
+                        
                     return audio_path
                 except Exception as extract_error:
                     logger.error(f"MoviePy extraction failed: {extract_error}")
                     raise extract_error
-                finally:
-                    # Clean up the large downloaded video file regardless of whether
-                    # extraction succeeded, so a failed extraction doesn't leak it.
-                    if os.path.exists(video_path):
-                        os.remove(video_path)
 
         except Exception as e:
             logger.error(f"Failed to download video for audio extraction: {str(e)}")
@@ -83,7 +81,7 @@ class VoiceExtractionService:
         try:
             filename = os.path.basename(video_path)
             name, ext = os.path.splitext(filename)
-            output_path = os.path.join(self.output_dir, f"{name}_{uuid.uuid4().hex[:8]}.mp3")
+            output_path = os.path.join(self.output_dir, f"{name}.mp3")
             
             video = VideoFileClip(video_path)
             video.audio.write_audiofile(output_path, logger=None)
@@ -116,13 +114,14 @@ class VoiceExtractionService:
         
         # Initialize service
         client = HeyGenClient()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
+        
         # Clone the voice using HeyGen
         try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             result = loop.run_until_complete(client.clone_voice(audio_path, voice_name))
-
+            loop.close()
+            
             # Map result to standard format
             return {
                 "voice_id": result.get("voice_id"),
@@ -134,11 +133,6 @@ class VoiceExtractionService:
         except Exception as e:
             logger.error(f"HeyGen Cloning Failed: {str(e)}")
             raise
-        finally:
-            # Close the client's aiohttp session and the loop regardless of outcome,
-            # otherwise every call leaks a socket/connector.
-            loop.run_until_complete(client.close())
-            loop.close()
 
     def process_koc_voice_and_clone(self, input_source: str, voice_name: str, is_url: bool = True) -> dict:
         """
@@ -160,21 +154,21 @@ class VoiceExtractionService:
         try:
             # Step 4: Clone
             result = self.create_voice_clone(clean_voice_path, voice_name)
-
+            
+             # Clean up temp file
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+                
             return {
                 "success": True,
                 **result
             }
-
+            
         except Exception as e:
             logger.error(f"Process Failed: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)
             }
-        finally:
-            # Clean up the extracted audio file whether cloning succeeded or failed
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
 
 

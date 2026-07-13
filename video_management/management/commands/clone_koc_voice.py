@@ -2,11 +2,11 @@
 Management command to clone KOC voice from audio file.
 
 Usage:
-    python manage.py clone_koc_voice <audio_file_path> <voice_name> --gender <male|female> [--voice-id <custom_id>] [--prompt <prompt_audio_path>]
+    python manage.py clone_koc_voice <audio_file_path> <voice_name> [--voice-id <custom_id>] [--prompt <prompt_audio_path>]
 
 Example:
-    python manage.py clone_koc_voice "D:\Voices\koc_nguyen_van_a.mp3" "KOC Nguyen Van A" --gender male
-    python manage.py clone_koc_voice "D:\Voices\koc.wav" "KOC Voice" --gender female --voice-id "koc_custom_001" --prompt "D:\Voices\prompt.wav"
+    python manage.py clone_koc_voice "D:\Voices\koc_nguyen_van_a.mp3" "KOC Nguyen Van A"
+    python manage.py clone_koc_voice "D:\Voices\koc.wav" "KOC Voice" --voice-id "koc_custom_001" --prompt "D:\Voices\prompt.wav"
 """
 
 from django.core.management.base import BaseCommand
@@ -44,9 +44,9 @@ class Command(BaseCommand):
         parser.add_argument(
             '--gender',
             type=str,
-            required=True,
+            default=None,
             choices=['male', 'female'],
-            help='Gender of the voice'
+            help='Gender of the voice (optional)'
         )
         parser.add_argument(
             '--language',

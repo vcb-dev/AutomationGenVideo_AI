@@ -274,8 +274,16 @@ def _build_prompt(p: Dict[str, Any]) -> str:
         )
         if needs_translation:
             lines.append(
-                "Sau đó BẮT BUỘC dịch toàn bộ content (và hashtags) sang ngôn ngữ chính thức/phổ biến được dùng trên mạng "
-                "xã hội tại thị trường đó."
+                "QUAN TRỌNG — KHÔNG ĐƯỢC NHẦM LẪN: việc bản địa hóa ở trên (đơn vị tiền tệ, ví dụ văn hóa...) vẫn phải "
+                'viết bằng TIẾNG VIỆT — trường "content" trong JSON output LUÔN LUÔN LÀ TIẾNG VIỆT, bất kể thị trường '
+                'mục tiêu là gì. TUYỆT ĐỐI KHÔNG được viết trường "content" bằng ngôn ngữ của thị trường mục tiêu.'
+            )
+            lines.append(
+                'Việc dịch sang ngôn ngữ khác CHỈ diễn ra ở một bước RIÊNG BIỆT: sau khi đã có "content" hoàn chỉnh bằng '
+                'tiếng Việt, hãy dịch toàn bộ nội dung đó (và hashtags) sang ngôn ngữ chính thức/phổ biến được dùng trên '
+                'mạng xã hội tại thị trường đó, rồi đặt kết quả dịch vào trường "translation" (không phải trường '
+                '"content"). Hai trường "content" và "translation.content" PHẢI khác ngôn ngữ nhau — nếu giống hệt nhau '
+                "nghĩa là bạn đã làm sai."
             )
         else:
             lines.append(
@@ -367,7 +375,8 @@ def _build_prompt(p: Dict[str, Any]) -> str:
     )
     lines.append(
         "{\n"
-        '  "content": "toàn bộ nội dung/lời văn hoàn chỉnh bằng tiếng Việt, viết liền mạch (có thể xuống dòng để phân đoạn '
+        '  "content": "toàn bộ nội dung/lời văn hoàn chỉnh BẮT BUỘC bằng TIẾNG VIỆT (dù thị trường mục tiêu là nước nào '
+        'cũng vậy — KHÔNG bao giờ viết trường này bằng ngôn ngữ khác), viết liền mạch (có thể xuống dòng để phân đoạn '
         'ý), KHÔNG chia cảnh, KHÔNG mô tả góc máy/hành động quay",\n'
         '  "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5"],\n'
         f'  "translation": {translation_schema}\n'
@@ -450,4 +459,60 @@ def generate_video_script(params: Dict[str, Any]) -> Dict[str, Any]:
     file_text = _read_drive_file(file_url) if file_url else None
 
     prompt = _build_prompt({**params, "fileText": file_text})
+    return _call_deepseek(prompt)
+
+
+def _build_translate_prompt(
+    content: str,
+    hashtags: list,
+    language: Optional[str] = None,
+    market: Optional[str] = None,
+) -> str:
+    hashtags_text = ", ".join(hashtags) if hashtags else "(không có)"
+
+    if language:
+        intro = f"Bạn là biên dịch viên chuyên nội dung mạng xã hội (TikTok/Reels), dịch sang ngôn ngữ: {language}."
+        language_field = f'"{language}"'
+    else:
+        intro = (
+            f"Bạn là biên dịch viên chuyên nội dung mạng xã hội (TikTok/Reels), chuẩn bị dịch nội dung cho thị "
+            f"trường: {market}. Trước tiên, hãy tự xác định ngôn ngữ chính thức/phổ biến nhất được dùng trên mạng "
+            f"xã hội tại thị trường này, rồi dịch sang đúng ngôn ngữ đó."
+        )
+        language_field = "tên ngôn ngữ bạn đã xác định cho thị trường trên, ví dụ 'Tiếng Anh (Mỹ)', 'Bahasa Indonesia'"
+
+    lines = [
+        intro,
+        "Dịch TOÀN BỘ content bên dưới sang ngôn ngữ đó, bản địa hóa phù hợp văn hóa/thị trường tương ứng "
+        "(đơn vị tiền tệ, cách xưng hô, ví dụ văn hóa, mức độ trang trọng...). "
+        "GIỮ NGUYÊN cấu trúc, nhịp điệu, giọng văn, hook, CTA của bản gốc — chỉ dịch, không sáng tác thêm ý mới, "
+        "không cắt bớt nội dung.",
+        "",
+        "═══ CONTENT GỐC (cần dịch) ═══",
+        content,
+        "",
+        f"═══ HASHTAGS GỐC ═══\n{hashtags_text}",
+        "",
+        "CHỈ trả về JSON hợp lệ (không markdown, không giải thích), đúng format sau:",
+        "{\n"
+        f'  "language": {language_field},\n'
+        '  "content": "toàn bộ nội dung đã dịch sang ngôn ngữ trên, giữ nguyên định dạng xuống dòng của bản gốc",\n'
+        '  "hashtags": ["#tag1", "#tag2", "..."]\n'
+        "}",
+    ]
+    return "\n".join(lines)
+
+
+def translate_video_script(
+    content: str,
+    hashtags: list,
+    language: Optional[str] = None,
+    market: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Dịch lại content/hashtags hiện có (vd sau khi user sửa tay), không đọc lại file nguồn,
+    không sinh script mới — chỉ dịch. Cần truyền `language` (đã biết trước, vd lần dịch lại) hoặc
+    `market` (lần dịch đầu tiên, chưa biết ngôn ngữ — để AI tự xác định)."""
+    if not language and not market:
+        raise ValueError("Cần truyền language hoặc market để xác định ngôn ngữ cần dịch")
+    prompt = _build_translate_prompt(content, hashtags, language=language, market=market)
     return _call_deepseek(prompt)

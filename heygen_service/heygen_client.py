@@ -405,8 +405,7 @@ class HeyGenClient:
                     response_data = await response.json()
                     
                     if response.status != 200:
-                        error_field = response_data.get('error', {})
-                        error_msg = error_field.get('message', 'Unknown error') if isinstance(error_field, dict) else (error_field or 'Unknown error')
+                        error_msg = response_data.get('error', {}).get('message', 'Unknown error')
                         raise Exception(f"HeyGen Voice Cloning Failed: {error_msg}")
                     
                     data = response_data.get('data', {})

@@ -11,7 +11,6 @@ Usage:
 import os
 import requests
 from django.core.management.base import BaseCommand
-from django.db import transaction
 from video_management.models import Voice
 
 
@@ -44,42 +43,39 @@ class Command(BaseCommand):
         valid_ids = {v.get('voice_id') for v in api_voices if v.get('voice_id')}
         api_map = {v['voice_id']: v for v in api_voices if v.get('voice_id')}
 
+        # 1. Remove invalid HeyGen voices from DB
+        heygen_voices = list(Voice.objects.filter(provider='heygen'))
         removed = 0
-        added = 0
-        with transaction.atomic():
-            # 1. Remove invalid HeyGen voices from DB
-            heygen_voices = list(Voice.objects.filter(provider='heygen'))
-            for v in heygen_voices:
-                if v.voice_id not in valid_ids:
-                    self.stdout.write('Removing invalid: %s' % v.voice_id)
-                    v.delete()
-                    removed += 1
+        for v in heygen_voices:
+            if v.voice_id not in valid_ids:
+                self.stdout.write('Removing invalid: %s' % v.voice_id)
+                v.delete()
+                removed += 1
 
-            # 2. Add missing valid voices (Vietnamese + Multilingual)
-            for v in api_voices:
-                vid = v.get('voice_id')
-                if not vid:
-                    continue
-                lang = (v.get('language') or '').lower()
-                # 'vietnam' already matches "Vietnamese"; a bare 'vi' substring check
-                # also matched unrelated languages like "Latvian" — dropped.
-                if 'vietnam' not in lang and 'multilingual' not in lang:
-                    continue
-                if Voice.objects.filter(voice_id=vid).exists():
-                    continue
-                gender = (v.get('gender') or 'unknown').lower()
-                if gender not in ('male', 'female'):
-                    gender = 'male'
-                Voice.objects.create(
-                    name=v.get('name', vid),
-                    voice_id=vid,
-                    provider='heygen',
-                    is_cloned=False,
-                    is_system=True,
-                    language='vi' if 'vietnam' in lang else 'mul',
-                    gender=gender
-                )
-                self.stdout.write('Added: %s' % vid)
-                added += 1
+        # 2. Add missing valid voices (Vietnamese + Multilingual)
+        added = 0
+        for v in api_voices:
+            vid = v.get('voice_id')
+            if not vid:
+                continue
+            lang = (v.get('language') or '').lower()
+            if 'vietnam' not in lang and 'vi' not in lang and 'multilingual' not in lang:
+                continue
+            if Voice.objects.filter(voice_id=vid).exists():
+                continue
+            gender = (v.get('gender') or 'unknown').lower()
+            if gender not in ('male', 'female'):
+                gender = 'male'
+            Voice.objects.create(
+                name=v.get('name', vid),
+                voice_id=vid,
+                provider='heygen',
+                is_cloned=False,
+                is_system=True,
+                language='vi' if 'vi' in lang or 'vietnam' in lang else 'mul',
+                gender=gender
+            )
+            self.stdout.write('Added: %s' % vid)
+            added += 1
 
         self.stdout.write(self.style.SUCCESS(f'Done. Removed {removed}, added {added} voice(s).'))
