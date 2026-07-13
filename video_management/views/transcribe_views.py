@@ -8,6 +8,9 @@ import uuid
 import logging
 import tempfile
 import subprocess
+import base64
+import glob
+import re
 import requests as http_requests
 
 from django.conf import settings
@@ -19,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 MAX_AUDIO_SIZE_MB = 24   # Whisper giới hạn 25MB
 DOWNLOAD_TIMEOUT  = 300  # seconds (yt-dlp) — 5 phút cho video dài hoặc kết nối chậm
+TRANSCRIBE_GLOSSARY_PROMPT = (
+    "Transcribe verbatim, keep original wording, do not summarize. "
+    "Prefer correct Vietnamese spelling and punctuation. "
+    "Domain terms to preserve: Huy Ca, Viễn Chí Bảo, bạc 925, bạc S925, "
+    "moissanite, kim cương, CZ, nhẫn, dây chuyền, lắc tay, bông tai."
+)
+NOISE_OCR_LINES = {
+    'không có chữ trong hình.',
+    'không có chữ trong hình',
+    'no text in image.',
+    'no text in image',
+}
 
 
 @api_view(['POST'])
@@ -30,13 +45,14 @@ def transcribe_video(request):
     Response: { "success": true, "transcript": "...", "char_count": N }
     """
     video_url = (request.data.get('video_url') or request.data.get('url') or '').strip()
+    language_hint = (request.data.get('language_hint') or '').strip().lower()
     if not video_url:
         logger.warning("[Transcribe] Missing video_url in request data")
         return Response({'success': False, 'error': 'video_url is required'}, status=400)
 
-    openai_key = str(getattr(settings, 'OPENAI_API_KEY', '')).strip()
-    if not openai_key:
-        return Response({'success': False, 'error': 'OPENAI_API_KEY not configured'}, status=500)
+    anthropic_key = str(getattr(settings, 'ANTHROPIC_API_KEY', '')).strip()
+    if not anthropic_key or anthropic_key.startswith('your_'):
+        return Response({'success': False, 'error': 'ANTHROPIC_API_KEY not configured'}, status=500)
 
     ffmpeg_path = _get_ffmpeg()
     if not ffmpeg_path:
@@ -45,6 +61,7 @@ def transcribe_video(request):
     tmp_dir = tempfile.gettempdir()
     uid = uuid.uuid4().hex[:8]
     audio_path = os.path.join(tmp_dir, f'vcb_audio_{uid}.mp3')
+    video_path = os.path.join(tmp_dir, f'vcb_video_{uid}.mp4')
 
     try:
         # ── Bước 1: Download + extract audio bằng yt-dlp ────────────────────
@@ -53,23 +70,33 @@ def transcribe_video(request):
         ytdlp = _get_ytdlp()
         logger.info(f"[Transcribe] Found ytdlp: {ytdlp}")
         if ytdlp:
-            # Dùng yt-dlp: vừa download vừa extract audio, output thẳng mp3
-            success, error = _download_with_ytdlp(ytdlp, ffmpeg_path, video_url, audio_path)
+            # OCR-first: luôn tải video file trước để có thể đọc text trong khung hình
+            success, error = _download_with_ytdlp(ytdlp, ffmpeg_path, video_url, audio_path, video_path)
         else:
             # Chỉ fallback download direct nếu URL có vẻ là link trực tiếp (cdn, file ext)
             logger.info(f"[Transcribe] ytdlp not found, checking if direct URL: {video_url}")
             is_direct = any(x in video_url.lower() for x in ['.mp4', '.mkv', '.mov', 'cdn', 'media'])
             if is_direct:
                 logger.warning("[Transcribe] yt-dlp not found, trying direct download fallback...")
-                success, error = _download_direct(ffmpeg_path, video_url, tmp_dir, uid, audio_path)
+                success, error = _download_direct(ffmpeg_path, video_url, video_path, audio_path)
             else:
                 logger.error("[Transcribe] No ytdlp and not a direct link.")
                 return Response({'success': False, 'error': 'Hệ thống thiếu công cụ yt-dlp để xử lý link mạng xã hội.'}, status=500)
 
         logger.info(f"[Transcribe] Download result: success={success}, error={error}")
         if not success:
-            logger.warning(f"[Transcribe] Download failed: {error}")
-            return Response({'success': False, 'error': f'Lỗi tải video: {error or "Download thất bại"}. Hãy thử đổi link khác hoặc kiểm tra lại quyền truy cập video.'}, status=400)
+            # Fallback đặc biệt cho TikTok: resolve direct media URL từ dịch vụ trung gian
+            if 'tiktok.com/' in video_url.lower():
+                logger.warning("[Transcribe] yt-dlp failed on TikTok URL, trying resolver fallback...")
+                direct_url = _resolve_tiktok_direct_url(video_url)
+                if direct_url:
+                    logger.info(f"[Transcribe] Resolved TikTok direct URL, trying direct download fallback...")
+                    success, error = _download_direct(ffmpeg_path, direct_url, video_path, audio_path)
+                    logger.info(f"[Transcribe] Direct fallback result: success={success}, error={error}")
+
+            if not success:
+                logger.warning(f"[Transcribe] Download failed: {error}")
+                return Response({'success': False, 'error': f'Lỗi tải video: {error or "Download thất bại"}. Hãy thử đổi link khác hoặc kiểm tra lại quyền truy cập video.'}, status=400)
 
         if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 500:
             logger.error(f"[Transcribe] Empty audio file at {audio_path}")
@@ -87,15 +114,22 @@ def transcribe_video(request):
         # ── Bước 2: OpenAI Whisper ───────────────────────────────────────────
         logger.info(f"[Transcribe] Sending {audio_size_mb:.2f}MB to Whisper API...")
         with open(audio_path, 'rb') as f:
+            whisper_data = {
+                'model': 'whisper-1',
+                # Không set language mặc định để giữ khả năng auto-detect.
+                # Chỉ set khi FE gửi language_hint rõ ràng (vd: 'vi').
+                'response_format': 'verbose_json',  # trả về thêm field 'language'
+                'temperature': '0',
+                'prompt': TRANSCRIBE_GLOSSARY_PROMPT,
+            }
+            if language_hint:
+                whisper_data['language'] = language_hint
+
             resp = http_requests.post(
                 'https://api.openai.com/v1/audio/transcriptions',
-                headers={'Authorization': f'Bearer {openai_key}'},
+                headers={'Authorization': f'Bearer {getattr(settings, "OPENAI_API_KEY", "")}'},
                 files={'file': ('audio.mp3', f, 'audio/mpeg')},
-                data={
-                    'model': 'whisper-1',
-                    # Không set language → Whisper tự detect ngôn ngữ gốc video
-                    'response_format': 'verbose_json',  # trả về thêm field 'language'
-                },
+                data=whisper_data,
                 timeout=120
             )
 
@@ -106,6 +140,22 @@ def transcribe_video(request):
         resp_data = resp.json()
         transcript = resp_data.get('text', '').strip()
         detected_language = resp_data.get('language', 'unknown')   # vd: 'english', 'vietnamese'
+
+        # OCR-first: đọc text trực tiếp từ frame video để giảm lỗi ASR
+        ocr_text = ''
+        if os.path.exists(video_path):
+            ocr_text = _extract_text_from_video_frames(video_path, ffmpeg_path, anthropic_key, uid, tmp_dir)
+            if ocr_text:
+                logger.info(f"[Transcribe] OCR extracted {len(ocr_text)} chars from video frames")
+                fused = _merge_ocr_and_asr(ocr_text, transcript, anthropic_key)
+                if fused:
+                    transcript = fused
+
+        # Hậu xử lý cho transcript tiếng Việt để sửa lỗi chính tả thương hiệu/thuật ngữ phổ biến.
+        if language_hint == 'vi' or detected_language in ('vi', 'vietnamese'):
+            transcript = _normalize_transcript_vi(transcript)
+            transcript = _refine_transcript_with_claude(transcript, anthropic_key) or transcript
+
         logger.info(f"[Transcribe] ✅ Done: {len(transcript)} chars | lang={detected_language}")
 
         return Response({
@@ -154,65 +204,120 @@ def _get_ytdlp() -> str:
     return found or ''
 
 
-def _download_with_ytdlp(ytdlp: str, ffmpeg: str, url: str, audio_out: str):
+def _download_with_ytdlp(ytdlp: str, ffmpeg: str, url: str, audio_out: str, video_out: str):
     """
     Dùng yt-dlp để download + extract audio thẳng ra mp3.
     Trả về (success: bool, error: str | None)
     """
     ffmpeg_dir = os.path.dirname(ffmpeg) if os.path.isabs(ffmpeg) else ''
     
-    cmd = [
+    base_cmd = [
         ytdlp,
         '--no-playlist',
-        '--format', 'bestaudio/best',
-        '--extract-audio',
-        '--audio-format', 'mp3',
-        '--audio-quality', '64K',
-        '--output', audio_out.replace('.mp3', '.%(ext)s'),
+        '--format', 'bestvideo+bestaudio/best',
+        '--merge-output-format', 'mp4',
+        '--output', video_out.replace('.mp4', '.%(ext)s'),
         '--no-warnings',
         '--no-check-certificates',
         '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         '--add-header', 'Accept-Language:vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+        '--add-header', 'Referer:https://www.tiktok.com/',
         '--socket-timeout', '30',
-        url
     ]
     if ffmpeg_dir:
-        cmd.extend(['--ffmpeg-location', ffmpeg_dir])
+        base_cmd.extend(['--ffmpeg-location', ffmpeg_dir])
 
-    logger.info(f"[Transcribe] Executing yt-dlp: {' '.join(cmd)}")
-    try:
-        # Chạy yt-dlp và lấy cả stdout để debug nếu cần
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
-        logger.info(f"[Transcribe] yt-dlp finished with return code: {result.returncode}")
-        
-        # Tìm file thực tế được tạo ra (vì yt-dlp có thể output định dạng khác trước khi convert)
-        base = audio_out.replace('.mp3', '')
-        found_file = None
-        for ext in ['.mp3', '.m4a', '.webm', '.ogg', '.opus', '.mp4']:
+    def _browser_profile_exists(browser: str) -> bool:
+        home = os.path.expanduser('~')
+        if browser == 'chrome':
+            return os.path.isdir(os.path.join(home, 'Library', 'Application Support', 'Google', 'Chrome'))
+        if browser == 'safari':
+            # Safari cookies DB thường nằm ở đây trên macOS
+            return os.path.exists(os.path.join(home, 'Library', 'Cookies', 'Cookies.binarycookies')) or \
+                os.path.exists(os.path.join(home, 'Library', 'Containers', 'com.apple.Safari'))
+        return False
+
+    # Retry profiles: TikTok thường chặn theo từng cách trích xuất
+    attempt_profiles = [
+        [],
+        ['--extractor-args', 'tiktok:api_hostname=api16-normal-useast5.us.tiktokv.com'],
+        ['--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast1a.tiktokv.com'],
+    ]
+    # IMPORTANT:
+    # Browser cookies access trên macOS thường bị chặn bởi quyền riêng tư (Operation not permitted).
+    # Mặc định TẮT để không làm hỏng luồng transcribe đang chạy ổn.
+    use_browser_cookies = bool(getattr(settings, 'YTDLP_USE_BROWSER_COOKIES', False))
+    if use_browser_cookies:
+        if _browser_profile_exists('safari'):
+            attempt_profiles.append(['--cookies-from-browser', 'safari'])
+        else:
+            logger.info("[Transcribe] Skip safari cookies profile (not found)")
+        if _browser_profile_exists('chrome'):
+            attempt_profiles.append(['--cookies-from-browser', 'chrome'])
+        else:
+            logger.info("[Transcribe] Skip chrome cookies profile (not found)")
+    else:
+        logger.info("[Transcribe] Browser cookies attempts disabled (YTDLP_USE_BROWSER_COOKIES=False)")
+
+    def _find_downloaded_file():
+        base = video_out.replace('.mp4', '')
+        for ext in ['.mp4', '.mkv', '.webm', '.mov']:
             candidate = base + ext
             if os.path.exists(candidate) and os.path.getsize(candidate) > 500:
-                found_file = candidate
-                break
+                return candidate
+        return None
 
-        if found_file:
-            if found_file != audio_out:
-                # Force convert sang mp3 chuẩn cho Whisper
-                subprocess.run(
-                    [ffmpeg, '-i', found_file, '-acodec', 'libmp3lame',
-                     '-ar', '16000', '-ac', '1', '-b:a', '64k', '-y', audio_out],
-                    capture_output=True, timeout=120
+    def _compact_error(err_text: str) -> str:
+        lines = [ln.strip() for ln in (err_text or '').splitlines() if ln.strip()]
+        # Bỏ warning về ssl/python không liên quan trực tiếp đến lỗi download
+        filtered = [
+            ln for ln in lines
+            if 'NotOpenSSLWarning' not in ln
+            and 'urllib3' not in ln
+            and 'Deprecated Feature: Support for Python version 3.9' not in ln
+            and 'warnings.warn(' not in ln
+        ]
+        return (filtered[-1] if filtered else (lines[-1] if lines else 'Unknown error')).strip()
+
+    last_error = ''
+    try:
+        for idx, extra_args in enumerate(attempt_profiles, start=1):
+            cmd = base_cmd + extra_args + [url]
+            logger.info(f"[Transcribe] Executing yt-dlp attempt {idx}/{len(attempt_profiles)}: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+            logger.info(f"[Transcribe] yt-dlp attempt {idx} return code: {result.returncode}")
+
+            found_file = _find_downloaded_file()
+            if found_file:
+                if found_file != video_out:
+                    os.replace(found_file, video_out)
+                # Tách audio từ video tải được
+                result_audio = subprocess.run(
+                    [ffmpeg, '-i', video_out, '-vn', '-acodec', 'libmp3lame',
+                     '-ar', '22050', '-ac', '1', '-b:a', '128k', '-y', audio_out],
+                    capture_output=True, text=True, timeout=120
                 )
-                if os.path.exists(found_file): os.remove(found_file)
-            return True, None
+                if result_audio.returncode != 0 or not os.path.exists(audio_out):
+                    return False, f'FFmpeg extract audio lỗi: {(result_audio.stderr or "")[-200:]}'
+                return True, None
 
-        # Lỗi chi tiết từ yt-dlp
-        err = result.stderr.strip() if result.stderr else result.stdout.strip()
-        if "blocked" in err.lower():
-            return False, 'IP server đang bị TikTok chặn. Hãy thử lại sau vài phút hoặc dùng link từ nền tảng khác.'
-        
-        logger.error(f"[Transcribe] yt-dlp failed completely. Stderr: {err}")
-        return False, f'yt-dlp không tạo được file. Chi tiết: {err[-200:]}'
+            err = result.stderr.strip() if result.stderr else result.stdout.strip()
+            compact = _compact_error(err)
+            # Không để lỗi "missing browser cookies db" ghi đè nguyên nhân thật
+            cookie_missing = 'could not find chrome cookies database' in compact.lower() or \
+                'could not find safari cookies' in compact.lower() or \
+                ('operation not permitted' in compact.lower() and 'cookies' in compact.lower())
+            if not cookie_missing:
+                last_error = compact
+            logger.warning(f"[Transcribe] yt-dlp attempt {idx} failed: {compact}")
+
+            # Nếu lỗi có tính chất chặn IP rõ ràng thì trả luôn
+            if "blocked" in err.lower() or "captcha" in err.lower():
+                return False, 'IP server đang bị TikTok chặn. Hãy thử lại sau vài phút hoặc dùng link khác.'
+
+        logger.error(f"[Transcribe] yt-dlp failed all attempts. Last error: {last_error}")
+        return False, f'yt-dlp không tạo được file. Chi tiết: {last_error or "Unable to extract video data"}'
 
     except subprocess.TimeoutExpired:
         return False, f'Tải video timeout (>{DOWNLOAD_TIMEOUT}s). Video quá dài hoặc kết nối chậm. Hãy thử đổi link khác.'
@@ -220,12 +325,11 @@ def _download_with_ytdlp(ytdlp: str, ffmpeg: str, url: str, audio_out: str):
         return False, str(e)
 
 
-def _download_direct(ffmpeg: str, url: str, tmp_dir: str, uid: str, audio_out: str):
+def _download_direct(ffmpeg: str, url: str, video_path: str, audio_out: str):
     """
     Fallback: download trực tiếp bằng HTTP rồi ffmpeg extract audio.
     Chỉ hoạt động với URL CDN trực tiếp (không phải trang web TikTok).
     """
-    video_path = os.path.join(tmp_dir, f'vcb_video_{uid}.mp4')
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -248,7 +352,7 @@ def _download_direct(ffmpeg: str, url: str, tmp_dir: str, uid: str, audio_out: s
 
         result = subprocess.run([
             ffmpeg, '-i', video_path, '-vn',
-            '-acodec', 'libmp3lame', '-ar', '16000', '-ac', '1', '-b:a', '64k',
+            '-acodec', 'libmp3lame', '-ar', '22050', '-ac', '1', '-b:a', '128k',
             '-y', audio_out
         ], capture_output=True, text=True, timeout=120)
 
@@ -261,5 +365,307 @@ def _download_direct(ffmpeg: str, url: str, tmp_dir: str, uid: str, audio_out: s
     except subprocess.TimeoutExpired:
         return False, 'FFmpeg timeout'
     finally:
-        if os.path.exists(video_path):
-            os.remove(video_path)
+        pass
+
+
+def _resolve_tiktok_direct_url(video_url: str) -> str:
+    """
+    Resolve TikTok page URL to direct video URL via public resolver APIs.
+    Return empty string if cannot resolve.
+    """
+    candidates = [
+        {
+            'name': 'tikwm',
+            'method': 'POST',
+            'url': 'https://www.tikwm.com/api/',
+        },
+        {
+            'name': 'tikwm2',
+            'method': 'POST',
+            'url': 'https://tikwm.com/api/',
+        },
+    ]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.tiktok.com/',
+    }
+
+    for c in candidates:
+        try:
+            logger.info(f"[Transcribe] Trying TikTok resolver: {c['name']}")
+            if c['method'] == 'POST':
+                resp = http_requests.post(
+                    c['url'],
+                    headers=headers,
+                    data={'url': video_url, 'hd': 1},
+                    timeout=20
+                )
+            else:
+                resp = http_requests.get(c['url'], headers=headers, timeout=20)
+
+            if resp.status_code != 200:
+                logger.warning(f"[Transcribe] Resolver {c['name']} non-200: {resp.status_code}")
+                continue
+
+            data = resp.json()
+            # tikwm response usually: {code:0, data:{play:'...', wmplay:'...'}}
+            if isinstance(data, dict):
+                inner = data.get('data') if isinstance(data.get('data'), dict) else data
+                for key in ['play', 'hdplay', 'wmplay', 'url']:
+                    v = inner.get(key) if isinstance(inner, dict) else None
+                    if isinstance(v, str) and v.startswith('http'):
+                        logger.info(f"[Transcribe] Resolver {c['name']} got direct URL via key={key}")
+                        return v
+        except Exception as e:
+            logger.warning(f"[Transcribe] Resolver {c['name']} failed: {e}")
+            continue
+
+    logger.warning("[Transcribe] Could not resolve TikTok direct URL from all resolvers")
+    return ''
+
+
+def _extract_text_from_video_frames(video_path: str, ffmpeg_path: str, anthropic_key: str, uid: str, tmp_dir: str) -> str:
+    """
+    OCR text from sampled video frames using OpenAI vision.
+    """
+    frames_dir = os.path.join(tmp_dir, f'vcb_frames_{uid}')
+    os.makedirs(frames_dir, exist_ok=True)
+    frame_pattern = os.path.join(frames_dir, 'frame_%03d.jpg')
+    try:
+        # Lấy khoảng 12 frame đầu, mỗi 2 giây/frame để bắt subtitle overlay
+        subprocess.run(
+            [ffmpeg_path, '-i', video_path, '-vf', 'fps=1/2,scale=960:-1', '-frames:v', '12', '-q:v', '3', '-y', frame_pattern],
+            capture_output=True, text=True, timeout=120
+        )
+        frames = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.jpg')))
+        if not frames:
+            return ''
+
+        extracted_lines = []
+        for frame in frames:
+            txt = _ocr_frame_with_openai(frame, openai_key)
+            if txt:
+                extracted_lines.extend([ln.strip() for ln in txt.split('\n') if ln.strip()])
+
+        # dedupe preserve order
+        seen = set()
+        deduped = []
+        for line in extracted_lines:
+            key = re.sub(r'\s+', ' ', line.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(line)
+
+        return ' '.join(deduped).strip()
+    except Exception as e:
+        logger.warning(f"[Transcribe] OCR frame extraction failed: {e}")
+        return ''
+    finally:
+        for p in glob.glob(os.path.join(frames_dir, '*')):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+        try:
+            os.rmdir(frames_dir)
+        except Exception:
+            pass
+
+
+def _ocr_frame_with_claude(frame_path: str, anthropic_key: str) -> str:
+    """OCR a single frame using Claude Vision."""
+    try:
+        import base64
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
+        
+        with open(frame_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode("utf-8")
+        
+        models = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"]
+        response = None
+        for m in models:
+            try:
+                response = client.messages.create(
+                    model=m,
+                    max_tokens=300,
+                    temperature=0,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": img_data,
+                                    },
+                                },
+                                {"type": "text", "text": "Trích xuất toàn bộ văn bản tiếng Việt trong ảnh này. Chỉ trả về văn bản, không giải thích."}
+                            ],
+                        }
+                    ],
+                )
+                break
+            except Exception as e:
+                if "not_found_error" in str(e).lower() and m != models[-1]:
+                    continue
+                raise e
+        return response.content[0].text.strip()
+    except Exception:
+        return ''
+
+
+def _merge_ocr_and_asr(ocr_text: str, asr_text: str, anthropic_key: str) -> str:
+    """
+    Hybrid merge: use OCR + ASR, then fuse by LLM with strict constraints.
+    """
+    ocr_text = (ocr_text or '').strip()
+    asr_text = (asr_text or '').strip()
+    ocr_text = _remove_ocr_noise_lines(ocr_text)
+    asr_text = _remove_ocr_noise_lines(asr_text)
+    if not ocr_text:
+        return asr_text
+    if not asr_text:
+        return ocr_text
+
+    fused = _fuse_transcript_with_claude(ocr_text, asr_text, anthropic_key)
+    return fused or (ocr_text if len(ocr_text) >= len(asr_text) else asr_text)
+
+
+def _remove_ocr_noise_lines(text: str) -> str:
+    lines = [ln.strip() for ln in (text or '').split('\n') if ln.strip()]
+    cleaned = []
+    for ln in lines:
+        if ln.lower() in NOISE_OCR_LINES:
+            continue
+        cleaned.append(ln)
+    return ' '.join(cleaned).strip()
+
+
+def _fuse_transcript_with_claude(ocr_text: str, asr_text: str, anthropic_key: str) -> str:
+    """
+    Fuse OCR + ASR into a higher-accuracy Vietnamese transcript.
+    Prioritize domain words and remove OCR artifacts.
+    """
+    if not ocr_text and not asr_text:
+        return ''
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
+        
+        models = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+        response = None
+        for m in models:
+            try:
+                response = client.messages.create(
+                    model=m,
+                    max_tokens=2048,
+                    temperature=0,
+                    system=(
+                        "Bạn là chuyên gia hợp nhất transcript. "
+                        "Nhiệm vụ: hợp nhất OCR và ASR thành 1 transcript tiếng Việt chính xác hơn. "
+                        "Giữ nguyên ý và thứ tự nội dung, không thêm mới. "
+                        "Ưu tiên đúng thuật ngữ/domain: Huy Ca, Viễn Chí Bảo, bạc 925, S925, CZ, moissanite. "
+                        "Loại bỏ các dòng rác như 'Không có chữ trong hình'."
+                    ),
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "OCR TEXT:\n"
+                                f"{ocr_text}\n\n"
+                                "ASR TEXT:\n"
+                                f"{asr_text}\n\n"
+                                "Trả về DUY NHẤT transcript hợp nhất."
+                            )
+                        }
+                    ],
+                )
+                break
+            except Exception as e:
+                if "not_found_error" in str(e).lower() and m != models[-1]:
+                    continue
+                raise e
+        return response.content[0].text.strip()
+    except Exception:
+        return ''
+
+
+def _normalize_transcript_vi(text: str) -> str:
+    """
+    Rule-based cleanup for frequent Vietnamese/domain transcription mistakes.
+    Keep minimal and safe (no paraphrasing).
+    """
+    import re
+    t = (text or '').strip()
+    if not t:
+        return t
+
+    replacements = {
+        'VNCHIBA': 'Viễn Chí Bảo',
+        'VNCHI BÀ': 'Viễn Chí Bảo',
+        'VNCHI BA': 'Viễn Chí Bảo',
+        'vnchiba': 'Viễn Chí Bảo',
+        'vnc hiba': 'Viễn Chí Bảo',
+        'Huy Canh': 'Huy Ca',
+        'zikim': 'đính kim',
+        'si kim': 'xi kim',
+        'hoa tự đẳng': 'hoa tử đằng',
+        'trùng hoa': 'cụm hoa',
+        'váy bóc': 'váy vóc',
+        'zz': '',
+    }
+    for k, v in replacements.items():
+        t = t.replace(k, v)
+
+    # Dọn khoảng trắng
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    return t
+
+
+def _refine_transcript_with_claude(text: str, anthropic_key: str) -> str:
+    """
+    Optional LLM post-correction for Vietnamese spelling/wording errors using Claude.
+    Strictly preserves meaning and sentence order.
+    """
+    if not text:
+        return text
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=anthropic_key)
+        
+        models = ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"]
+        response = None
+        for m in models:
+            try:
+                response = client.messages.create(
+                    model=m,
+                    max_tokens=2048,
+                    temperature=0,
+                    system=(
+                        "Bạn là biên tập viên transcript. "
+                        "Chỉ sửa lỗi chính tả/nhận diện từ sai trong tiếng Việt, "
+                        "giữ nguyên thứ tự câu và ý nghĩa, không thêm bớt nội dung."
+                    ),
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Sửa transcript dưới đây, trả về DUY NHẤT transcript đã sửa:\n\n"
+                                f"{text}"
+                            )
+                        }
+                    ],
+                )
+                break
+            except Exception as e:
+                if "not_found_error" in str(e).lower() and m != models[-1]:
+                    continue
+                raise e
+        return response.content[0].text.strip()
+    except Exception:
+        return text

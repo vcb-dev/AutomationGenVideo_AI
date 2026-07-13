@@ -45,6 +45,11 @@ from .views import (
     pregen_cancel,
 )
 from .views.collection_views import VideoCollectionViewSet
+from .views.facebook_fetch_views import (
+    fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
+)
+from .views.facebook_external_fetch_views import fetch_facebook_page_reels
+from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
     analyze_facebook_url,
@@ -58,11 +63,14 @@ from .views.channel_analysis_generic_views import (
     channel_metrics_generic,
     channel_analysis_unified_generic,
 )
-from .views.douyin_search_views import search_douyin_videos
-from .views.douyin_profile_views import fetch_douyin_channel_profile
-from .views.xiaohongshu_search_views import search_xiaohongshu_notes
+from .views.xiaohongshu_fetch_views import fetch_xiaohongshu_search, fetch_xiaohongshu_profile_videos
 from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
+from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
+from .views.instagram_fetch_views import fetch_instagram_profile_reels
+from .views.youtube_fetch_views import fetch_youtube_channel
+from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
+from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
 from .views.product_views import (
     upload_product_catalog,
     list_product_catalogs,
@@ -86,6 +94,7 @@ from .views.virtual_mix_views import (
 )
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
+from .views.task_script_views import generate_task_video_script
 
 app_name = 'video_management'
 
@@ -99,7 +108,10 @@ urlpatterns = [
     
     # Search endpoints
     path('search/', SearchView.as_view(), name='search'),
+    path('ai/search', SearchView.as_view(), name='ai-search-compat'),
+    path('ai/search/', SearchView.as_view(), name='ai-search-compat-slash'),
     path('search/status/<str:task_id>/', SearchStatusView.as_view(), name='search-status'),
+    path('ai/search/status/<str:task_id>/', SearchStatusView.as_view(), name='ai-search-status-compat'),
     path('search/history/', SearchHistoryView.as_view(), name='search-history'),
     path('search/user-videos/', UserVideosView.as_view(), name='user-videos'),
     path('videos/by-channel/', VideosByChannelView.as_view(), name='videos-by-channel'),
@@ -164,21 +176,65 @@ urlpatterns = [
     path('facebook/detect/', detect_facebook_type, name='facebook-detect'),
     path('facebook/competitor-insights/', analyze_facebook_competitor, name='facebook-competitor-insights'),
     path('facebook/channel-metrics/', facebook_channel_metrics, name='facebook-channel-metrics'),
+    # facebook/import, /sync, /backfill, /manage-pages, /page-videos giờ do BE xử lý
+    # native (FacebookOwnedPagesController) — AI không còn route đọc nào cho owned pages.
+
+    # Facebook owned-pages — fetch-only (BE sở hữu DB, gọi các endpoint này để lấy data thô)
+    path('facebook/fetch/managed-pages/', fetch_managed_pages, name='facebook-fetch-managed-pages'),
+    path('facebook/fetch/sync/', fetch_page_sync, name='facebook-fetch-sync'),
+    path('facebook/fetch/backfill/', fetch_page_backfill, name='facebook-fetch-backfill'),
+    path('facebook/fetch/metrics-refresh/', fetch_metrics_refresh, name='facebook-fetch-metrics-refresh'),
+
+    # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
+    # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.
+
+    # Scraper — Keyword bookkeeping (autocomplete/hit tracking) đã chuyển sang BE
+    # (SearchKeywordsController) — AI không còn đụng SearchKeyword nữa.
+
+    # Fanpages — toggle/scrape-reels/scrape-by-url VÀ list/detail/reels-search đều đã
+    # chuyển sang BE (FacebookExternalScraperController/FacebookReelsSearchController).
+
+    # Fanpages — fetch-only (BE sở hữu DB, gọi endpoint này để lấy data thô)
+    path('scraper/fanpages/fetch/reels/', fetch_facebook_page_reels, name='scraper-fanpages-fetch-reels'),
+
+    # TikTok — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển sang BE
+    # (TiktokScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/tiktok/fetch/search/', fetch_tiktok_search, name='scraper-tiktok-fetch-search'),
+    path('scraper/tiktok/fetch/profile-posts/', fetch_tiktok_profile_posts, name='scraper-tiktok-fetch-profile-posts'),
+
+    # Instagram — profiles/scrape/toggle VÀ list/detail/reels đều đã chuyển sang BE
+    # (InstagramScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/instagram/fetch/profile-reels/', fetch_instagram_profile_reels, name='scraper-instagram-fetch-profile-reels'),
 
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
     path('channel/analysis-unified/', channel_analysis_unified_generic, name='channel-analysis-unified'),
-    
-    # Douyin Search
-    path('douyin/search/', search_douyin_videos, name='douyin-search'),
-    
-    # Douyin Channel Profile (full: followers, avatar, engagement) — called on Update only
-    path('douyin/profile/', fetch_douyin_channel_profile, name='douyin-channel-profile'),
-    
-    # Xiaohongshu Search
-    path('xiaohongshu/search/', search_xiaohongshu_notes, name='xiaohongshu-search'),
-    
+
+    # Douyin — search/profile/scrape/toggle VÀ list/detail/videos đều đã chuyển sang BE
+    # (DouyinScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/douyin/fetch/search/', fetch_douyin_search, name='scraper-douyin-fetch-search'),
+    path('scraper/douyin/fetch/profile-videos/', fetch_douyin_profile_videos, name='scraper-douyin-fetch-profile-videos'),
+
+    # Xiaohongshu — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển
+    # sang BE (XiaohongshuScraperController) — chỉ còn fetch-only ở đây.
+    path('scraper/xiaohongshu/fetch/search/', fetch_xiaohongshu_search, name='scraper-xiaohongshu-fetch-search'),
+    path('scraper/xiaohongshu/fetch/profile-videos/', fetch_xiaohongshu_profile_videos, name='scraper-xiaohongshu-fetch-profile-videos'),
+
+    # YouTube — nền tảng mới, BE sở hữu DB hoàn toàn từ đầu (YoutubeScraperController)
+    # — AI chỉ còn fetch-only ở đây.
+    path('scraper/youtube/fetch/channel/', fetch_youtube_channel, name='scraper-youtube-fetch-channel'),
+
+    # Kuaishou — nền tảng mới, chỉ có kênh ngoài (external), BE sở hữu DB hoàn
+    # toàn từ đầu (KuaishouScraperController) — AI chỉ còn fetch-only ở đây.
+    path('scraper/kuaishou/fetch/profile/', fetch_kuaishou_profile, name='scraper-kuaishou-fetch-profile'),
+    path('scraper/kuaishou/fetch/search/', fetch_kuaishou_search, name='scraper-kuaishou-fetch-search'),
+
+    # Bilibili — nền tảng mới, chỉ có kênh ngoài (external), BE sở hữu DB hoàn
+    # toàn từ đầu (BilibiliScraperController) — AI chỉ còn fetch-only ở đây.
+    path('scraper/bilibili/fetch/profile/', fetch_bilibili_profile, name='scraper-bilibili-fetch-profile'),
+    path('scraper/bilibili/fetch/search/', fetch_bilibili_search, name='scraper-bilibili-fetch-search'),
+
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
     
@@ -194,6 +250,9 @@ urlpatterns = [
     path('products/<int:product_id>/', get_product_detail, name='product-detail'),
     path('products/find-video/', find_product_video_path, name='find-product-video'),
     
+    # Task-Auto: adapt content thắng cho sản phẩm mới (BE task-auto/tasks module)
+    path('task-auto/video-script/generate/', generate_task_video_script, name='task-auto-video-script-generate'),
+
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),

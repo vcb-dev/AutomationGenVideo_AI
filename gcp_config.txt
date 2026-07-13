@@ -1,3 +1,0 @@
-PROJECT_ID=project-bd91a0d7-ee2e-4b68-926
-REGION=asia-southeast1
-BE_SERVICE=vcb-be

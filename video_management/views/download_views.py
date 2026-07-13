@@ -27,7 +27,7 @@ class DownloadView(APIView):
             
             # Temporarily disabled
             return Response({
-                "error": "Download service is currently unavailable (Migration to Apify in progress)"
+                "error": "Download service is currently unavailable"
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
             
             # ... (Rest of logic disabled)

@@ -11,8 +11,7 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding
-from .services.apify_service import create_scraper
+from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding, ManagedFacebookPage
 try:
     from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record  # type: ignore
 except Exception:  # pragma: no cover
@@ -24,135 +23,6 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
-@shared_task(
-    bind=True,
-    name='video_management.search_videos',
-    max_retries=3,
-    default_retry_delay=60
-)
-def search_videos_task(
-    self,
-    platform: str,
-    keyword: str,
-    min_likes: int = 0,
-    min_views: int = 0,
-    min_comments: int = 0,
-    max_results: int = 30,
-    page: int = 1,
-    use_cache: bool = True,
-    search_type: str = 'posts',
-    search_mode: str = 'hashtag',
-    session_id: str = None
-) -> Dict[str, Any]:
-    """
-    Asynchronous video search task.
-    
-    Args:
-        platform: Platform to search
-        keyword: Search keyword
-        min_likes: Minimum likes filter
-        min_views: Minimum views filter
-        max_results: Maximum results
-        use_cache: Whether to use cache
-        search_type: Type of content (posts, reels)
-        
-    Returns:
-        Search result dictionary
-    """
-    try:
-        logger.info(
-            f"[Task {self.request.id}] Starting search: "
-            f"platform={platform}, type={search_type}, keyword={keyword}"
-        )
-        
-        scraper = create_scraper(platform, search_type=search_type)
-        result = scraper.execute_search(
-            keyword=keyword,
-            min_likes=min_likes,
-            min_views=min_views,
-            min_comments=min_comments,
-            max_results=max_results,
-            page=page,
-            search_mode=search_mode,
-            use_cache=use_cache,
-            save_to_db=True,
-            session_id=session_id
-        )
-        
-        logger.info(
-            f"[Task {self.request.id}] Search completed: "
-            f"found {result['count']} videos in {result['execution_time']:.2f}s"
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error(
-            f"[Task {self.request.id}] Search failed: {str(e)}",
-            exc_info=True
-        )
-        
-        # Retry with exponential backoff
-        try:
-            raise self.retry(exc=e, countdown=2 ** self.request.retries)
-        except self.MaxRetriesExceededError:
-            return {
-                'success': False,
-                'error': str(e),
-                'count': 0,
-                'results': [],
-                'execution_time': 0
-            }
-
-
-# DISABLED: Background task removed - channel checks now run synchronously via API
-# TikHub integration removed - using Apify only
-
-
-# DISABLED: Scheduled channel checks removed - use manual checks instead
-# @shared_task(name='video_management.check_all_channels')
-# def check_all_channels_task() -> Dict[str, Any]:
-#     """
-#     Check all active tracked channels.
-#     
-#     This task is scheduled to run periodically via Celery Beat.
-#     
-#     Returns:
-#         Summary of checks performed
-#     """
-#     logger.info("Starting scheduled channel checks")
-#     
-#     # Get channels that should be checked
-#     now = timezone.now()
-#     channels = TrackedChannel.objects.filter(is_active=True)
-#     
-#     checked = 0
-#     skipped = 0
-#     
-#     for channel in channels:
-#         # Check if it's time to check this channel
-#         if channel.last_checked_at:
-#             next_check = channel.last_checked_at + timedelta(
-#                 minutes=channel.check_interval_minutes
-#             )
-#             if now < next_check:
-#                 skipped += 1
-#                 continue
-#         
-#         # Start async check
-#         check_channel_task.delay(channel.id)
-#         checked += 1
-#     
-#     logger.info(
-#         f"Scheduled checks completed: {checked} started, {skipped} skipped"
-#     )
-#     
-#     return {
-#         'success': True,
-#         'checked': checked,
-#         'skipped': skipped,
-#         'total': channels.count()
-#     }
 
 
 @shared_task(name='video_management.cleanup_old_cache')
@@ -296,3 +166,11 @@ def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.exception(f"Background sync to Lark failed for report {report_id}: {e}")
         return {"success": False, "error": str(e)}
+
+
+
+# Facebook external fanpages (scrape_reels_for_page_task / periodic_scrape_marked_pages_task):
+# đã chuyển sang BE (FacebookExternalScraperCronService trong AutomationGenVideo_BE).
+
+# Xiaohongshu profile periodic scrape: đã chuyển sang BE
+# (XiaohongshuScraperCronService trong AutomationGenVideo_BE).

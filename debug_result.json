@@ -1,4 +1,0 @@
-{
-  "status": 400,
-  "body": "{\"error\":{\"message\":\"(#12) deprecate_post_aggregated_fields_for_attachement is deprecated for versions v3.3 and higher\",\"type\":\"OAuthException\",\"code\":12,\"fbtrace_id\":\"AdAa3YdcHDsRqjwPHkbOEZt\"}}"
-}
