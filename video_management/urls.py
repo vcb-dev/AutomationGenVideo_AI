@@ -72,6 +72,9 @@ from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
 from .views.instagram_fetch_views import fetch_instagram_profile_reels
+from .views.youtube_fetch_views import fetch_youtube_channel
+from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
+from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
 from .views.product_views import (
     upload_product_catalog,
     list_product_catalogs,
@@ -228,6 +231,20 @@ urlpatterns = [
     # sang BE (XiaohongshuScraperController) — chỉ còn fetch-only ở đây.
     path('scraper/xiaohongshu/fetch/search/', fetch_xiaohongshu_search, name='scraper-xiaohongshu-fetch-search'),
     path('scraper/xiaohongshu/fetch/profile-videos/', fetch_xiaohongshu_profile_videos, name='scraper-xiaohongshu-fetch-profile-videos'),
+
+    # YouTube — nền tảng mới, BE sở hữu DB hoàn toàn từ đầu (YoutubeScraperController)
+    # — AI chỉ còn fetch-only ở đây.
+    path('scraper/youtube/fetch/channel/', fetch_youtube_channel, name='scraper-youtube-fetch-channel'),
+
+    # Kuaishou — nền tảng mới, chỉ có kênh ngoài (external), BE sở hữu DB hoàn
+    # toàn từ đầu (KuaishouScraperController) — AI chỉ còn fetch-only ở đây.
+    path('scraper/kuaishou/fetch/profile/', fetch_kuaishou_profile, name='scraper-kuaishou-fetch-profile'),
+    path('scraper/kuaishou/fetch/search/', fetch_kuaishou_search, name='scraper-kuaishou-fetch-search'),
+
+    # Bilibili — nền tảng mới, chỉ có kênh ngoài (external), BE sở hữu DB hoàn
+    # toàn từ đầu (BilibiliScraperController) — AI chỉ còn fetch-only ở đây.
+    path('scraper/bilibili/fetch/profile/', fetch_bilibili_profile, name='scraper-bilibili-fetch-profile'),
+    path('scraper/bilibili/fetch/search/', fetch_bilibili_search, name='scraper-bilibili-fetch-search'),
 
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
