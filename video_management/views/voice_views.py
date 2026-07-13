@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import uuid
 import logging
 from rest_framework import status
@@ -11,8 +12,13 @@ from django.core.files.base import ContentFile
 from video_management.models import Voice
 from video_management.services.minimax_voice_clone_service import get_voice_clone_service
 from video_management.services.minimax_tts_service import get_minimax_service
+from video_management.views.mix_progress_store import progress_set, progress_get, progress_update
 
 logger = logging.getLogger(__name__)
+
+# Prefix riêng cho voice-clone job trong progress store dùng chung (tên file gốc
+# là "mix" nhưng cơ chế lưu trữ generic — key-value + TTL, không liên quan mix video).
+_CLONE_JOB_PREFIX = "voice_clone:"
 
 @api_view(['GET'])
 def list_voices_api(request):
@@ -97,8 +103,8 @@ def clone_voice_api(request):
                 temp_f.write(chunk)
 
         try:
-            # Initialize minimax clone service
-            clone_service = get_voice_clone_service()
+            # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
+            clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
 
             # Call Minimax clone API (uploads to minimax + clones voice)
             clone_result = clone_service.clone_voice_from_file(
@@ -142,6 +148,112 @@ def clone_voice_api(request):
     except Exception as e:
         logger.error(f"Error cloning voice: {e}", exc_info=True)
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+def clone_voice_start_api(request):
+    """
+    Bắt đầu clone giọng ở chế độ NỀN và trả về job_id ngay lập tức.
+
+    Lý do: mạng tới api.minimax.io có thể chập chờn 1-3 phút (2 IP load-balancer
+    của họ thỉnh thoảng không phản hồi, xác nhận qua test thủ công 2026-07-07),
+    khiến bản clone đồng bộ (clone_voice_api) dễ bị BE/FE tự timeout giữa chừng
+    dù MiniMax cuối cùng vẫn xử lý xong. Client poll qua
+    GET /api/voice/clone/status/<job_id>/ thay vì chờ 1 request treo.
+
+    POST /api/voice/clone/start/
+    Body (multipart/form-data): file, voice_name, gender (optional)
+    Response: { success, job_id }
+    """
+    try:
+        audio_file = request.FILES.get('file')
+        voice_name = request.data.get('voice_name')
+        gender = request.data.get('gender', 'female')
+
+        if not audio_file:
+            return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not voice_name:
+            return Response({'error': 'voice_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        logger.info(f"🎤 Minimax Voice Cloning (bg): name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes")
+
+        temp_dir = tempfile.gettempdir()
+        _, ext = os.path.splitext(audio_file.name)
+        temp_path = os.path.join(temp_dir, f"voice_clone_{uuid.uuid4().hex}{ext}")
+        with open(temp_path, 'wb') as temp_f:
+            for chunk in audio_file.chunks():
+                temp_f.write(chunk)
+
+        # Bắt key ra biến TRƯỚC khi spawn thread — request object không dùng được an toàn trong thread nền
+        minimax_key = request.headers.get('X-Minimax-Key')
+
+        job_id = uuid.uuid4().hex
+        job_key = f"{_CLONE_JOB_PREFIX}{job_id}"
+        progress_set(job_key, {
+            'status': 'queued',
+            'message': 'Đang chờ xử lý...',
+            'voice_name': voice_name,
+        })
+
+        def _run_clone_job():
+            progress_update(job_key, {'status': 'running', 'message': 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'})
+            try:
+                clone_service = get_voice_clone_service(api_key=minimax_key)
+                clone_result = clone_service.clone_voice_from_file(audio_path=temp_path, voice_name=voice_name)
+
+                voice_id = clone_result.get('voice_id')
+                if not voice_id:
+                    raise Exception(f"No voice_id returned from cloning: {clone_result}")
+
+                voice, _created = Voice.objects.update_or_create(
+                    voice_id=voice_id,
+                    defaults={
+                        'name': voice_name,
+                        'provider': 'minimax',
+                        'is_cloned': True,
+                        'is_system': False,
+                        'language': 'vi',
+                        'gender': gender,
+                    }
+                )
+                progress_update(job_key, {
+                    'status': 'completed',
+                    'message': 'Voice cloned successfully',
+                    'voice': {
+                        'id': voice.id,
+                        'voice_id': voice.voice_id,
+                        'name': voice.name,
+                        'provider': voice.provider,
+                        'gender': voice.gender,
+                    },
+                })
+            except Exception as e:
+                logger.error(f"[Voice Clone bg] job {job_id} failed: {e}", exc_info=True)
+                progress_update(job_key, {'status': 'error', 'message': str(e)})
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+        threading.Thread(target=_run_clone_job, name=f"voice_clone_{job_id}", daemon=True).start()
+
+        return Response({'success': True, 'job_id': job_id}, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error starting voice clone job: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+def clone_voice_job_status_api(request, job_id):
+    """
+    GET /api/voice/clone/status/<job_id>/
+    Response: { success, status: queued|running|completed|error, message, voice? }
+    """
+    data = progress_get(f"{_CLONE_JOB_PREFIX}{job_id}")
+    if data is None:
+        return Response({'error': 'job not found'}, status=status.HTTP_404_NOT_FOUND)
+    return Response({'success': True, **data}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -195,8 +307,8 @@ def voice_tts_api(request):
         filename = f"tts_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(audio_dir, filename)
 
-        # Call Minimax service
-        tts_service = get_minimax_service()
+        # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
+        tts_service = get_minimax_service(api_key=request.headers.get('X-Minimax-Key'))
         result = tts_service.generate_audio(
             text=text,
             voice_id=voice_id,
@@ -218,10 +330,14 @@ def voice_tts_api(request):
             if not audio_url or not str(audio_url).startswith('http'):
                 raise Exception('TTS succeeded but no playable audio file/URL was produced')
 
+        extra_info = result.get('extra_info') or {}
         return Response({
             'success': True,
             'audio_url': audio_url,
-            'duration': result.get('duration', 0)
+            'duration': result.get('duration', 0),
+            # Số ký tự MiniMax thực tính phí (khớp đơn vị "điểm âm thanh" của gói) —
+            # BE dùng để ghi log tiêu dùng theo user.
+            'usage_characters': extra_info.get('usage_characters', 0),
         }, status=status.HTTP_200_OK)
         
     except Exception as e:

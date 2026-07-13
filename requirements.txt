@@ -22,6 +22,9 @@ openai>=1.0.0
 google-generativeai>=0.3.0
 anthropic>=0.25.0
 
+# Document Processing
+pypdf>=4.0.0
+
 # Web Scraping
 beautifulsoup4>=4.12.0
 lxml>=4.9.0

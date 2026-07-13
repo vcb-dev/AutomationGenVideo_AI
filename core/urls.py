@@ -99,6 +99,15 @@ urlpatterns = [
     path('api/', include('video_management.urls')),
 ]
 
+# VCB Assistant Chat
+from video_management.views import chat_views
+from video_management.views.analytics_chat_views import analytics_chat
+
+urlpatterns += [
+    path('api/chat/', chat_views.chat, name='vcb-chat'),
+    path('api/chat/analytics/', analytics_chat, name='vcb-analytics-chat'),
+]
+
 # Cached audio serving endpoint
 from video_management.views.smart_mix_video_views import serve_cached_audio
 
@@ -134,6 +143,16 @@ from video_management.views import transcribe_views
 
 urlpatterns += [
     path('api/content/transcribe/', transcribe_views.transcribe_video, name='content-transcribe'),
+]
+
+# Video Downloader (Tiện ích → Tải video, dùng yt-dlp)
+from video_management.views import video_downloader_views
+
+urlpatterns += [
+    path('api/tools/video-downloader/info/', video_downloader_views.video_info, name='video-dl-info'),
+    path('api/tools/video-downloader/jobs/', video_downloader_views.start_download, name='video-dl-start'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/', video_downloader_views.download_status, name='video-dl-status'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/file/', video_downloader_views.download_file, name='video-dl-file'),
 ]
 
 # Serve media files in development
