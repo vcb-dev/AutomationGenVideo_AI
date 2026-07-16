@@ -43,11 +43,16 @@ def _extract_thumbnail(note: dict) -> str:
     return (vi.get('image') or {}).get('first_frame') or ''
 
 
-def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
+def search_xiaohongshu_videos(keyword: str, count: int = 20, cursor: Optional[dict] = None) -> tuple:
     """Tìm kiếm video notes trên Xiaohongshu qua TikHub (có pagination).
 
     Chỉ lấy video notes (note_type="视频笔记").
-    Trả về list raw note objects từ TikHub.
+
+    Nhận `cursor` = {'page': int, 'search_id': str, 'search_session_id': str}
+    để nối tiếp từ lần gọi trước — dùng khi BE dedup làm giảm số video mới
+    thực sự ingest được so với `count`.
+
+    Returns: (notes, next_cursor_dict, has_more)
     """
     api_key = getattr(settings, 'TIKHUB_API_KEY', '')
     if not api_key:
@@ -55,11 +60,14 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
 
     headers = {'Authorization': f'Bearer {api_key}'}
     items = []
-    page = 1
-    search_id: Optional[str] = None
-    search_session_id: Optional[str] = None
+    page = (cursor or {}).get('page') or 1
+    search_id: Optional[str] = (cursor or {}).get('search_id')
+    search_session_id: Optional[str] = (cursor or {}).get('search_session_id')
+    has_more = True
+    max_iterations = 20
 
-    while len(items) < count:
+    while len(items) < count and max_iterations > 0:
+        max_iterations -= 1
         params: dict = {
             'keyword': keyword,
             'page': page,
@@ -78,6 +86,7 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
         )
         if not resp.ok:
             logger.error(f'[XHS] {resp.status_code}: {resp.text[:300]}')
+            has_more = False
             break
 
         body = resp.json()
@@ -95,16 +104,19 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20) -> list:
         ]
 
         if not page_notes:
+            has_more = False
             break
 
         items.extend(page_notes)
 
         if not next_page or next_page <= page:
+            has_more = False
             break
         page = next_page
 
-    logger.info(f'[XHS] keyword="{keyword}": fetched {len(items)} video notes')
-    return items[:count]
+    logger.info(f'[XHS] keyword="{keyword}": fetched {len(items)} video notes, has_more={has_more}')
+    next_cursor_state = {'page': page, 'search_id': search_id, 'search_session_id': search_session_id}
+    return items[:count], next_cursor_state, has_more
 
 
 def parse_xiaohongshu_videos(notes: list) -> list:

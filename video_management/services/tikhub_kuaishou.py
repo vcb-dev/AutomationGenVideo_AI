@@ -94,13 +94,20 @@ def fetch_one_user_v2(eid: str) -> Optional[dict]:
         return None
 
 
-def search_kuaishou_by_keyword(keyword: str, count: int = 30) -> list:
-    """Search video theo keyword qua TikHub search_video_v2 (pcursor pagination)."""
+def search_kuaishou_by_keyword(keyword: str, count: int = 30, cursor: Optional[str] = None) -> tuple:
+    """Search video theo keyword qua TikHub search_video_v2 (pcursor pagination).
+
+    Nhận `cursor` (pcursor) để nối tiếp từ lần gọi trước — dùng khi BE dedup
+    làm giảm số video mới thực sự ingest được so với `count`.
+
+    Returns: (videos, next_cursor, has_more)
+    """
     all_items: list = []
-    pcursor: Optional[str] = None
+    pcursor: Optional[str] = cursor
+    has_more = True
     max_iterations = 20
 
-    logger.info(f"[KUAISHOU] Searching keyword='{keyword}' count={count}")
+    logger.info(f"[KUAISHOU] Searching keyword='{keyword}' count={count} start_cursor={cursor!r}")
 
     for _ in range(max_iterations):
         if len(all_items) >= count:
@@ -119,35 +126,41 @@ def search_kuaishou_by_keyword(keyword: str, count: int = 30) -> list:
             )
         except requests.RequestException as e:
             logger.error(f'[KUAISHOU] search_video_v2 request failed: {e}')
+            has_more = False
             break
 
         if not resp.ok:
             logger.error(f'[KUAISHOU] search_video_v2 {resp.status_code}: {resp.text[:300]}')
+            has_more = False
             break
 
         body = resp.json()
         if body.get('code') != 200:
             logger.error(f'[KUAISHOU] search_video_v2 API error: {body.get("message")}')
+            has_more = False
             break
 
         data = body.get('data') or {}
         mix_feeds = data.get('mixFeeds') or []
         page_items = [mf.get('feed') for mf in mix_feeds if mf.get('feed')]
         if not page_items:
+            has_more = False
             break
 
         if all_items and page_items[0].get('photo_id') == all_items[0].get('photo_id'):
+            has_more = False
             break
 
         all_items.extend(page_items)
 
         next_pcursor = data.get('pcursor')
         if not next_pcursor or next_pcursor == 'no_more':
+            has_more = False
             break
         pcursor = next_pcursor
 
-    logger.info(f"[KUAISHOU] Total: {len(all_items)} videos for keyword='{keyword}'")
-    return all_items[:count]
+    logger.info(f"[KUAISHOU] Total: {len(all_items)} videos for keyword='{keyword}', next_cursor={pcursor!r}, has_more={has_more}")
+    return all_items[:count], pcursor, has_more
 
 
 def fetch_user_hot_post(user_id: str, count: int = 20) -> list:

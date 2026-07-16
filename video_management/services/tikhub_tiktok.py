@@ -23,11 +23,19 @@ def search_tiktok_by_keyword(
     keyword: str,
     count: int = 30,
     region: str = 'VN',
-) -> list:
+    cursor: int = 0,
+) -> tuple:
     """Search TikTok videos by keyword via TikHub API.
 
     TikHub trả max ~20 video/request, dùng cursor để phân trang.
-    Hàm này tự loop cho đến khi đủ `count` hoặc hết kết quả.
+    Hàm này tự loop cho đến khi đủ `count` hoặc hết kết quả, trong nội bộ 1 lần gọi.
+
+    Nhận `cursor` để nối tiếp từ lần gọi trước — dùng khi BE dedup (video đã có
+    trong DB) làm giảm số lượng video MỚI thực sự ingest được so với `count`
+    yêu cầu; BE gọi lại với cursor này để lấy tiếp trang sau thay vì lặp lại
+    từ đầu (sẽ toàn trả video đã cào rồi).
+
+    Returns: (videos, next_cursor, has_more)
     """
     api_key = getattr(settings, 'TIKHUB_API_KEY', '')
     if not api_key:
@@ -39,10 +47,10 @@ def search_tiktok_by_keyword(
     }
 
     all_videos = []
-    cursor = 0
+    has_more = True
     max_iterations = 10  # tối đa 10 lần gọi API
 
-    logger.info(f"[TIKHUB] Searching keyword='{keyword}' count={count} region={region}")
+    logger.info(f"[TIKHUB] Searching keyword='{keyword}' count={count} region={region} start_cursor={cursor}")
 
     for iteration in range(max_iterations):
         params = {
@@ -61,15 +69,18 @@ def search_tiktok_by_keyword(
             )
         except requests.RequestException as e:
             logger.error(f"[TIKHUB] Request failed: {e}")
+            has_more = False
             break
 
         if not resp.ok:
             logger.error(f"[TIKHUB] API returned {resp.status_code}: {resp.text[:500]}")
+            has_more = False
             break
 
         body = resp.json()
         if body.get('code') != 200:
             logger.error(f"[TIKHUB] API error: {body.get('message', '')}")
+            has_more = False
             break
 
         data = body.get('data', {})
@@ -82,15 +93,16 @@ def search_tiktok_by_keyword(
 
         logger.info(f"[TIKHUB] Iteration {iteration+1}: got {len(search_items)} items, total={len(all_videos)}")
 
-        if len(all_videos) >= count:
-            break
-        if not data.get('has_more'):
-            break
-
+        has_more = bool(data.get('has_more'))
         cursor = data.get('cursor', cursor + 20)
 
-    logger.info(f"[TIKHUB] Total: {len(all_videos)} videos for keyword='{keyword}'")
-    return all_videos[:count]
+        if len(all_videos) >= count:
+            break
+        if not has_more:
+            break
+
+    logger.info(f"[TIKHUB] Total: {len(all_videos)} videos for keyword='{keyword}', next_cursor={cursor}, has_more={has_more}")
+    return all_videos[:count], cursor, has_more
 
 
 def _parse_cover_url(video_data: dict) -> str:
