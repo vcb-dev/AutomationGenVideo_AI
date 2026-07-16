@@ -37,14 +37,17 @@ def _parse_avatar(author: dict) -> str:
     return ''
 
 
-def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
+def fetch_douyin_videos(keyword: str, count: int = 30, cursor: Optional[dict] = None) -> tuple:
     """Fetch Douyin videos via TikHub keyword search (cursor pagination).
 
     Args:
         keyword: Từ khóa tìm kiếm
         count: Số lượng tối đa cần lấy
+        cursor: {'cursor': int, 'search_id': str, 'backtrace': str} để nối tiếp
+            từ lần gọi trước — dùng khi BE dedup làm giảm số video mới thực sự
+            ingest được so với `count`.
     Returns:
-        List aweme_info objects
+        (items, next_cursor_dict, has_more)
     """
     api_key = getattr(settings, 'TIKHUB_API_KEY', '')
     if not api_key:
@@ -56,18 +59,19 @@ def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
     }
 
     all_items = []
-    cursor = 0
-    search_id = ""
-    backtrace = ""
+    cursor_val = (cursor or {}).get('cursor', 0)
+    search_id = (cursor or {}).get('search_id', '')
+    backtrace = (cursor or {}).get('backtrace', '')
+    has_more = True
     max_iterations = 20
     empty_pages = 0
 
-    logger.info(f"[DOUYIN] Fetching keyword='{keyword}' count={count}")
+    logger.info(f"[DOUYIN] Fetching keyword='{keyword}' count={count} start_cursor={cursor_val}")
 
     for iteration in range(max_iterations):
         payload = {
             "keyword": keyword,
-            "cursor": cursor,
+            "cursor": cursor_val,
             "sort_type": "0",      # 0 = Tổng hợp
             "publish_time": "0",   # 0 = Không giới hạn
             "filter_duration": "0",
@@ -86,11 +90,13 @@ def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
             resp.raise_for_status()
         except requests.RequestException as e:
             logger.error(f"[DOUYIN] Request failed: {e}")
+            has_more = False
             break
 
         body = resp.json()
         if body.get('code') != 200:
             logger.error(f"[DOUYIN] API error: {body.get('message', '')}")
+            has_more = False
             break
 
         data = body.get('data', {})
@@ -136,6 +142,7 @@ def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
 
         if not has_more or next_cursor is None:
             logger.info(f"[DOUYIN] Stopping: has_more={has_more}, cursor={next_cursor!r}")
+            has_more = False
             break
 
         # Nếu page không có video nào (chỉ có quảng cáo/user entries), vẫn tiếp tục
@@ -144,12 +151,14 @@ def fetch_douyin_videos(keyword: str, count: int = 30) -> list:
             empty_pages += 1
             if empty_pages >= 3:
                 logger.warning(f"[DOUYIN] 3 consecutive empty pages, stopping.")
+                has_more = False
                 break
 
-        cursor = next_cursor
+        cursor_val = next_cursor
 
-    logger.info(f"[DOUYIN] Done: {len(all_items)} items for '{keyword}'")
-    return all_items[:count]
+    logger.info(f"[DOUYIN] Done: {len(all_items)} items for '{keyword}', has_more={has_more}")
+    next_cursor_state = {'cursor': cursor_val, 'search_id': search_id, 'backtrace': backtrace}
+    return all_items[:count], next_cursor_state, has_more
 
 
 def fetch_douyin_user_videos(sec_user_id: str, count: int = 30) -> list:

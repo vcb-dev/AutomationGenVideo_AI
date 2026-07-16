@@ -19,7 +19,9 @@ from ..services.tikhub_xiaohongshu import (
 def fetch_xiaohongshu_search(request):
     """Keyword search — fetch + parse only.
 
-    Body: { "keyword": "...", "count": 20 }
+    Body: { "keyword": "...", "count": 20, "cursor": {...} }
+    `cursor` (optional) — BE truyền lại giá trị `cursor` từ response trước để
+    lấy tiếp trang sau, dùng khi dedup phía BE làm giảm số lượng video mới.
     """
     data = request.data or {}
     keyword = (data.get('keyword') or '').strip()
@@ -27,10 +29,11 @@ def fetch_xiaohongshu_search(request):
         return Response({'error': 'keyword is required'}, status=400)
 
     count = min(100, max(1, int(data.get('count') or 20)))
+    cursor = data.get('cursor') or None
 
-    notes = search_xiaohongshu_videos(keyword=keyword, count=count)
+    notes, next_cursor, has_more = search_xiaohongshu_videos(keyword=keyword, count=count, cursor=cursor)
     videos = parse_xiaohongshu_videos(notes)
-    return Response({'videos': videos})
+    return Response({'videos': videos, 'cursor': next_cursor, 'has_more': has_more})
 
 
 @api_view(['POST'])

@@ -151,14 +151,21 @@ def fetch_user_videos(mid: str, count: int = 20) -> list:
     return all_videos[:count]
 
 
-def search_bilibili_by_keyword(keyword: str, count: int = 30) -> list:
-    """Search video theo keyword qua TikHub fetch_general_search (page-based pagination)."""
+def search_bilibili_by_keyword(keyword: str, count: int = 30, cursor: Optional[int] = None) -> tuple:
+    """Search video theo keyword qua TikHub fetch_general_search (page-based pagination).
+
+    Nhận `cursor` (số trang bắt đầu, 1-based) để nối tiếp từ lần gọi trước —
+    dùng khi BE dedup làm giảm số video mới thực sự ingest được so với `count`.
+
+    Returns: (videos, next_cursor, has_more)
+    """
     all_items: list = []
-    page = 1
+    page = cursor or 1
     page_size = 42
     max_iterations = 20
+    has_more = True
 
-    logger.info(f"[BILIBILI] Searching keyword='{keyword}' count={count}")
+    logger.info(f"[BILIBILI] Searching keyword='{keyword}' count={count} start_page={page}")
 
     for _ in range(max_iterations):
         if len(all_items) >= count:
@@ -180,33 +187,38 @@ def search_bilibili_by_keyword(keyword: str, count: int = 30) -> list:
             )
         except requests.RequestException as e:
             logger.error(f'[BILIBILI] fetch_general_search request failed: {e}')
+            has_more = False
             break
 
         if not resp.ok:
             logger.error(f'[BILIBILI] fetch_general_search {resp.status_code}: {resp.text[:300]}')
+            has_more = False
             break
 
         body = resp.json()
         data = body.get('data') or {}
         if data.get('code') != 0:
             logger.error(f'[BILIBILI] fetch_general_search API error: {data.get("message")}')
+            has_more = False
             break
 
         inner = data.get('data') or {}
         # Bỏ quảng cáo (type != 'video') lẫn trong kết quả — field gần như rỗng hết.
         page_items = [r for r in (inner.get('result') or []) if r.get('type') == 'video']
         if not page_items:
+            has_more = False
             break
 
         all_items.extend(page_items)
 
         num_pages = inner.get('numPages') or 0
-        if page >= num_pages or len(all_items) >= count:
+        has_more = page < num_pages
+        page += 1  # luôn tăng để trỏ đúng trang resume tiếp theo
+        if len(all_items) >= count or not has_more:
             break
-        page += 1
 
-    logger.info(f"[BILIBILI] Total: {len(all_items)} videos for keyword='{keyword}'")
-    return all_items[:count]
+    logger.info(f"[BILIBILI] Total: {len(all_items)} videos for keyword='{keyword}', next_page={page}, has_more={has_more}")
+    return all_items[:count], page, has_more
 
 
 # ─── Parse ────────────────────────────────────────────────────────────────────

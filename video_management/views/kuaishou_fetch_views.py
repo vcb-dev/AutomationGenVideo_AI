@@ -50,7 +50,9 @@ def fetch_kuaishou_profile(request):
 def fetch_kuaishou_search(request):
     """Search video theo keyword, fetch + parse only.
 
-    Body: { "keyword": "...", "count": 30 }
+    Body: { "keyword": "...", "count": 30, "cursor": "..." }
+    `cursor` (optional) — BE truyền lại giá trị `cursor` từ response trước để
+    lấy tiếp trang sau, dùng khi dedup phía BE làm giảm số lượng video mới.
     """
     data = request.data or {}
     keyword = (data.get('keyword') or '').strip()
@@ -58,7 +60,8 @@ def fetch_kuaishou_search(request):
         return Response({'error': 'keyword is required'}, status=400)
 
     count = int(data.get('count') or 30)
+    cursor = data.get('cursor') or None
 
-    items_raw = search_kuaishou_by_keyword(keyword, count=count)
+    items_raw, next_cursor, has_more = search_kuaishou_by_keyword(keyword, count=count, cursor=cursor)
     parsed_videos = parse_kuaishou_search_videos(items_raw, search_keyword=keyword)
-    return Response({'videos': parsed_videos})
+    return Response({'videos': parsed_videos, 'cursor': next_cursor, 'has_more': has_more})

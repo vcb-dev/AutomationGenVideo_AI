@@ -347,6 +347,12 @@ HEYGEN_API_KEY = env('HEYGEN_API_KEY', default='')
 HEYGEN_AVATAR_ID = env('HEYGEN_AVATAR_ID', default='')
 HEYGEN_API_URL = env('HEYGEN_API_URL', default='https://api.heygen.com/v2')
 HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/api/heygen/webhook')
+
+# ==========================================
+# COBALT API CONFIGURATION (dự phòng cho tải video X/Instagram/Facebook)
+# ==========================================
+# Instance tự host, xem c:/WorkSpace/VienChiBao_Dev/cobalt/docker-compose.yml
+COBALT_API_URL = env('COBALT_API_URL', default='http://localhost:9000')
 HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
 
 # ==========================================

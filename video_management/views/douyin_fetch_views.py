@@ -18,7 +18,9 @@ from ..services.tikhub_douyin import (
 def fetch_douyin_search(request):
     """Keyword search — fetch + parse only.
 
-    Body: { "keyword": "...", "count": 30 }
+    Body: { "keyword": "...", "count": 30, "cursor": {...} }
+    `cursor` (optional) — BE truyền lại giá trị `cursor` từ response trước để
+    lấy tiếp trang sau, dùng khi dedup phía BE làm giảm số lượng video mới.
     """
     data = request.data or {}
     keyword = (data.get('keyword') or '').strip()
@@ -26,10 +28,11 @@ def fetch_douyin_search(request):
         return Response({'error': 'keyword is required'}, status=400)
 
     count = min(200, max(1, int(data.get('count') or 30)))
+    cursor = data.get('cursor') or None
 
-    videos = fetch_douyin_videos(keyword=keyword, count=count)
+    videos, next_cursor, has_more = fetch_douyin_videos(keyword=keyword, count=count, cursor=cursor)
     parsed = parse_douyin_videos(videos, search_keyword=keyword)
-    return Response({'videos': parsed})
+    return Response({'videos': parsed, 'cursor': next_cursor, 'has_more': has_more})
 
 
 @api_view(['POST'])

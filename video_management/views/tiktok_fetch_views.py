@@ -17,7 +17,9 @@ from ..services.tikhub_tiktok_profile import fetch_user_posts, parse_tiktok_auth
 def fetch_tiktok_search(request):
     """Keyword search — fetch + parse only.
 
-    Body: { "keyword": "...", "count": 30, "region": "VN" }
+    Body: { "keyword": "...", "count": 30, "region": "VN", "cursor": 0 }
+    `cursor` (optional) — BE truyền lại giá trị `cursor` từ response trước để
+    lấy tiếp trang sau, dùng khi dedup phía BE làm giảm số lượng video mới.
     """
     data = request.data or {}
     keyword = (data.get('keyword') or '').strip()
@@ -26,10 +28,11 @@ def fetch_tiktok_search(request):
 
     count = min(200, max(1, int(data.get('count') or 30)))
     region = data.get('region', 'VN')
+    cursor = int(data.get('cursor') or 0)
 
-    videos = search_tiktok_by_keyword(keyword=keyword, count=count, region=region)
+    videos, next_cursor, has_more = search_tiktok_by_keyword(keyword=keyword, count=count, region=region, cursor=cursor)
     parsed = parse_tiktok_videos(videos, search_keyword=keyword)
-    return Response({'videos': parsed})
+    return Response({'videos': parsed, 'cursor': next_cursor, 'has_more': has_more})
 
 
 @api_view(['POST'])

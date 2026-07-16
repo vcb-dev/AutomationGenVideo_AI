@@ -10,17 +10,22 @@ Luồng tải chạy nền (job + polling), lý do:
 """
 import os
 import re
+import sys
 import json
+import time
 import uuid
 import glob
 import socket
+import hashlib
 import logging
 import ipaddress
 import tempfile
 import threading
 import subprocess
+import requests
 from urllib.parse import urlparse
 
+from django.conf import settings
 from django.http import FileResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
@@ -35,6 +40,12 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_TIMEOUT = 600  # 10 phút cho video dài
 INFO_TIMEOUT = 60
 MAX_FILESIZE = os.environ.get('VIDEO_DL_MAX_FILESIZE', '3G')  # chặn video/âm thanh quá khổ tốn tài nguyên
+
+# Bấm "Kiểm tra" (video_info) rồi bấm tải chỉ vài giây sau — nếu tái dùng luôn kết quả
+# trích xuất đó (--load-info-json) thì job tải khỏi phải trích xuất lại từ đầu (đỡ hẳn
+# bước gọi trang/API của nền tảng, phần thường chiếm nhiều giây nhất trước khi có % tải
+# thật). TTL ngắn để tránh dùng phải link CDN đã hết hạn chữ ký trên các nền tảng ký URL.
+INFO_CACHE_TTL_SECONDS = 90
 
 _DL_MAX_CONCURRENT = 3
 _dl_semaphore = threading.Semaphore(_DL_MAX_CONCURRENT)
@@ -51,6 +62,237 @@ COMMON_HEADERS = [
     '--add-header', 'Accept-Language:vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
 ]
 
+# X/Instagram/Facebook chặn kiểu truy cập không giống trình duyệt thật (không cookie/phiên
+# đăng nhập) — yt-dlp hay bị chặn ở đúng 3 nền tảng này. Cobalt (github.com/imputnet/cobalt,
+# tự host qua cobalt/docker-compose.yml) dùng kỹ thuật "guest token" của chính X để giả lập
+# trình duyệt chưa đăng nhập xem nội dung public, được đội ngũ của họ bảo trì sát sao vì chỉ
+# tập trung ~20 nền tảng — nên thử Cobalt TRƯỚC cho 3 nền tảng này, yt-dlp làm lưới an toàn
+# nếu Cobalt lỗi/chưa chạy. Các nền tảng khác (TikTok, YouTube, Douyin...) không đổi gì.
+COBALT_PLATFORM_HOSTS = ('twitter.com', 'x.com', 'instagram.com', 'facebook.com', 'fb.watch')
+COBALT_CONNECT_TIMEOUT = 5  # ngắn — tránh delay khi Cobalt chưa chạy/không phản hồi
+COBALT_MAX_FILESIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3G, khớp MAX_FILESIZE của yt-dlp
+
+
+def _cobalt_platform(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or '').lower().lstrip('www.')
+        return any(host == h or host.endswith('.' + h) for h in COBALT_PLATFORM_HOSTS)
+    except Exception:
+        return False
+
+
+def _try_cobalt_download(job_id: str, url: str, fmt: str, quality: str, out_base: str) -> bool:
+    """Thử tải qua Cobalt. Trả False cho MỌI lỗi (Cobalt chưa chạy, platform chưa hỗ trợ,
+    network lỗi...) để _do_download rơi về yt-dlp như cũ — không bao giờ raise ra ngoài."""
+    cobalt_url = getattr(settings, 'COBALT_API_URL', 'http://localhost:9000').rstrip('/')
+    body = {
+        'url': url,
+        'downloadMode': 'audio' if fmt == 'mp3' else 'auto',
+        'audioFormat': 'mp3' if fmt == 'mp3' else 'best',
+    }
+    if fmt != 'mp3' and quality != 'best':
+        body['videoQuality'] = quality
+
+    try:
+        resp = requests.post(
+            cobalt_url + '/', json=body,
+            headers={'Accept': 'application/json', 'Content-Type': 'application/json'},
+            timeout=COBALT_CONNECT_TIMEOUT,
+        )
+        data = resp.json()
+    except Exception as e:
+        logger.info(f"[VideoDL] Cobalt không phản hồi ({e}), rơi về yt-dlp.")
+        return False
+
+    if data.get('status') not in ('tunnel', 'redirect'):
+        logger.info(f"[VideoDL] Cobalt trả lỗi cho {url[:80]}: {data}. Rơi về yt-dlp.")
+        return False
+
+    media_url = data.get('url')
+    if not media_url:
+        return False
+
+    target = out_base + '.' + fmt
+    try:
+        progress_update(job_id, {'message': 'Đang tải qua Cobalt...', 'percent': 5})
+        with requests.get(media_url, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
+            r.raise_for_status()
+            total = int(r.headers.get('Content-Length') or 0)
+            if total and total > COBALT_MAX_FILESIZE_BYTES:
+                return False
+            received = 0
+            last_pct = 0
+            with open(target, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    received += len(chunk)
+                    if received > COBALT_MAX_FILESIZE_BYTES:
+                        raise ValueError('File vượt quá giới hạn kích thước cho phép.')
+                    if total:
+                        pct = min(99, int(received / total * 100))
+                        if pct > last_pct:
+                            last_pct = pct
+                            progress_update(job_id, {'percent': pct})
+        if not os.path.isfile(target) or os.path.getsize(target) < 1024:
+            _cleanup_job_files(out_base)
+            return False
+
+        title = os.path.splitext(data.get('filename') or 'video')[0]
+        progress_update(job_id, {
+            'status': 'done', 'percent': 100, 'message': 'Hoàn tất', 'title': title, 'error': None,
+        })
+        threading.Timer(UNCLAIMED_FILE_TTL_SECONDS, _expire_unclaimed_file, args=(job_id, out_base)).start()
+        return True
+    except Exception as e:
+        logger.warning(f"[VideoDL] Cobalt tải file thất bại ({e}), rơi về yt-dlp.")
+        _cleanup_job_files(out_base)
+        return False
+
+
+# Douyin bắt buộc chữ ký JS (a_bogus/x-secsdk-web-signature) cho MỌI request gọi API chi
+# tiết video — yt-dlp tự gọi API đó mà không tính được chữ ký nên luôn báo "Fresh cookies
+# (not necessarily logged in) are needed" (xem chính TODO trong code yt-dlp thừa nhận thiếu
+# "verification challenge code"). Né bằng cách để CHÍNH trang Douyin tự gọi API đó (tự tính
+# đúng chữ ký) trong 1 Chromium headless (Playwright, script riêng — xem lý do chạy subprocess
+# thay vì import trực tiếp trong docstring của douyin_extract.py), "nghe trộm" response thành
+# công rồi tự đọc JSON lấy link video thật — không qua yt-dlp/Cobalt cho Douyin.
+DOUYIN_PLATFORM_HOSTS = ('douyin.com',)
+DOUYIN_EXTRACT_TIMEOUT = 60  # bao gồm cả thời gian mở Chromium + tải trang + chờ API ký đúng
+DOUYIN_CACHE_TTL_SECONDS = 300  # mở Chromium khá tốn thời gian (~10-20s) — cache để vài lượt
+# tải liên tiếp (Kiểm tra rồi Video MP4) không phải mở lại trình duyệt mỗi lần
+
+
+def _douyin_platform(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or '').lower().lstrip('www.')
+        return any(host == h or host.endswith('.' + h) for h in DOUYIN_PLATFORM_HOSTS)
+    except Exception:
+        return False
+
+
+def _douyin_cache_path(url: str) -> str:
+    h = hashlib.md5(url.encode('utf-8')).hexdigest()
+    return os.path.join(tempfile.gettempdir(), f'vcb_douyin_{h}.json')
+
+
+def _take_valid_douyin_cache(url: str):
+    path = _douyin_cache_path(url)
+    if not os.path.isfile(path):
+        return None
+    try:
+        if time.time() - os.path.getmtime(path) > DOUYIN_CACHE_TTL_SECONDS:
+            os.remove(path)
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.loads(f.read())
+    except (OSError, ValueError):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+
+
+def _extract_douyin_info(url: str):
+    """Trả về dict {title, thumbnail, duration_ms, uploader, video_url} hoặc None nếu
+    thất bại (Chromium lỗi, trang chặn, timeout...). Dùng cache trước khi mở trình duyệt mới."""
+    cached = _take_valid_douyin_cache(url)
+    if cached:
+        return cached
+
+    script = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'douyin_extract.py')
+    out_path = os.path.join(tempfile.gettempdir(), f'vcb_douyin_out_{uuid.uuid4().hex}.json')
+    try:
+        proc = subprocess.run(
+            [sys.executable, script, url, out_path],
+            capture_output=True, text=True, timeout=DOUYIN_EXTRACT_TIMEOUT,
+        )
+        if proc.returncode != 0 or not os.path.isfile(out_path):
+            logger.warning(f"[VideoDL] Douyin extract thất bại: {proc.stderr[-400:]}")
+            return None
+        with open(out_path, 'r', encoding='utf-8') as f:
+            info = json.load(f)
+        _save_douyin_cache(url, info)
+        return info
+    except Exception as e:
+        logger.warning(f"[VideoDL] Douyin extract lỗi: {e}")
+        return None
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+
+def _save_douyin_cache(url: str, info: dict):
+    try:
+        with open(_douyin_cache_path(url), 'w', encoding='utf-8') as f:
+            json.dump(info, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _try_douyin_download(job_id: str, url: str, fmt: str, out_base: str) -> bool:
+    """Trả False nếu trích xuất/tải thất bại — _do_download báo lỗi rõ ràng, KHÔNG rơi về
+    yt-dlp vì đã xác nhận yt-dlp không bao giờ tải được Douyin (thiếu chữ ký JS)."""
+    info = _extract_douyin_info(url)
+    if not info or not info.get('video_url'):
+        return False
+
+    target = out_base + '.mp4'  # luôn tải video trước, mp3 sẽ tách audio bằng ffmpeg sau
+    try:
+        progress_update(job_id, {'message': 'Đang tải qua trình duyệt ẩn (Douyin)...', 'percent': 10})
+        headers = {'User-Agent': COMMON_HEADERS[1], 'Referer': 'https://www.douyin.com/'}
+        with requests.get(info['video_url'], headers=headers, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
+            r.raise_for_status()
+            total = int(r.headers.get('Content-Length') or 0)
+            if total and total > COBALT_MAX_FILESIZE_BYTES:
+                return False
+            received = 0
+            last_pct = 0
+            with open(target, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    received += len(chunk)
+                    if received > COBALT_MAX_FILESIZE_BYTES:
+                        raise ValueError('File vượt quá giới hạn kích thước cho phép.')
+                    if total:
+                        pct = min(89, 10 + int(received / total * 79))
+                        if pct > last_pct:
+                            last_pct = pct
+                            progress_update(job_id, {'percent': pct})
+        if not os.path.isfile(target) or os.path.getsize(target) < 1024:
+            _cleanup_job_files(out_base)
+            return False
+
+        final_target = target
+        if fmt == 'mp3':
+            ffmpeg = _get_ffmpeg()
+            mp3_target = out_base + '.mp3'
+            if not ffmpeg or subprocess.run(
+                [ffmpeg, '-y', '-i', target, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', mp3_target],
+                capture_output=True, timeout=120,
+            ).returncode != 0:
+                _cleanup_job_files(out_base)
+                return False
+            os.remove(target)
+            final_target = mp3_target
+
+        title = info.get('title') or 'douyin_video'
+        progress_update(job_id, {
+            'status': 'done', 'percent': 100, 'message': 'Hoàn tất', 'title': title, 'error': None,
+        })
+        threading.Timer(UNCLAIMED_FILE_TTL_SECONDS, _expire_unclaimed_file, args=(job_id, out_base)).start()
+        return bool(final_target)
+    except Exception as e:
+        logger.warning(f"[VideoDL] Douyin tải file thất bại: {e}")
+        _cleanup_job_files(out_base)
+        return False
+
 
 class VideoDownloadThrottle(SimpleRateThrottle):
     """Giới hạn số lần khởi tạo job tải/phút — thao tác nặng nên tách riêng khỏi throttle mặc định."""
@@ -61,8 +303,53 @@ class VideoDownloadThrottle(SimpleRateThrottle):
         return f'throttle_video_dl_{ident}'
 
 
+_URL_IN_TEXT_RE = re.compile(r'https?://\S+')
+
+
+def _extract_url(raw: str) -> str:
+    """Nhiều nền tảng (Douyin/TikTok...) khi bấm "Chia sẻ" copy nguyên văn bản kèm link
+    (vd "https://v.douyin.com/xxx/ 复制此链接，打开Dou音搜索...") thay vì chỉ link sạch.
+    Tách lấy URL đầu tiên trong chuỗi thay vì chỉ strip() khoảng trắng 2 đầu."""
+    raw = (raw or '').strip()
+    m = _URL_IN_TEXT_RE.search(raw)
+    url = m.group(0).rstrip('，,。.!！?？、') if m else raw
+    return _normalize_douyin_modal_url(url)
+
+
+_DOUYIN_MODAL_ID_RE = re.compile(r'^https?://(?:www\.)?douyin\.com/[^?#]*\?.*\bmodal_id=(\d+)', re.I)
+
+
+def _normalize_douyin_modal_url(url: str) -> str:
+    """Trang "Đề xuất" (jingxuan/discover...) của Douyin hiện video trong modal, dùng
+    query param modal_id thay vì đường dẫn /video/<id> — yt-dlp không nhận diện được
+    dạng này (báo "Unsupported URL"). Quy đổi về /video/<id> để nhận diện đúng làm 1
+    video (dù bản chất Douyin vẫn cần cookie sinh bằng JS, quy đổi này không giải quyết
+    được giới hạn đó — chỉ giúp báo đúng lỗi thay vì lỗi không liên quan)."""
+    m = _DOUYIN_MODAL_ID_RE.match(url)
+    return f'https://www.douyin.com/video/{m.group(1)}' if m else url
+
+
 def _validate_url(url: str) -> bool:
     return bool(url) and bool(re.match(r'^https?://', url.strip()))
+
+
+# Link trang cá nhân/kênh (không phải 1 video cụ thể) — nếu đưa thẳng cho yt-dlp, nó sẽ cố
+# liệt kê TOÀN BỘ video của trang đó (--no-playlist không chặn được việc này, chỉ chặn
+# playlist thường) — có thể treo hàng chục giây tới khi hết INFO_TIMEOUT/DOWNLOAD_TIMEOUT.
+# Xảy ra thực tế khi extension bắt nhầm link trang thay vì link video (vd rê chuột vào
+# thumbnail trên trang lưới cá nhân TikTok mà không tìm thấy đúng link video/permalink).
+_PROFILE_URL_PATTERNS = [
+    re.compile(r'^https?://(www\.)?tiktok\.com/@[^/?#]+/?$', re.I),
+    re.compile(r'^https?://(www\.)?(twitter|x)\.com/[^/?#]+/?$', re.I),
+    re.compile(r'^https?://(www\.)?instagram\.com/[^/?#]+/?$', re.I),
+    re.compile(r'^https?://(www\.)?facebook\.com/[^/?#]+/?$', re.I),
+    re.compile(r'^https?://(www\.)?douyin\.com/user/[^/?#]+/?$', re.I),
+    re.compile(r'^https?://(www\.)?youtube\.com/(@[^/?#]+|channel/[^/?#]+|c/[^/?#]+)/?$', re.I),
+]
+
+
+def _looks_like_profile_url(url: str) -> bool:
+    return any(p.match(url.strip()) for p in _PROFILE_URL_PATTERNS)
 
 
 def _is_public_url(url: str) -> bool:
@@ -111,6 +398,40 @@ def _safe_filename(title: str, ext: str) -> str:
     return f"{name[:80]}.{ext}"
 
 
+def _info_cache_path(url: str) -> str:
+    h = hashlib.md5(url.encode('utf-8')).hexdigest()
+    return os.path.join(tempfile.gettempdir(), f'vcb_infocache_{h}.json')
+
+
+def _save_info_cache(url: str, raw_json: str):
+    try:
+        with open(_info_cache_path(url), 'w', encoding='utf-8') as f:
+            f.write(raw_json)
+    except OSError:
+        pass
+
+
+def _take_valid_info_cache(url: str):
+    """Trả về path file cache hợp lệ (còn hạn + JSON không hỏng) để dùng với
+    --load-info-json, hoặc None nếu không có/hết hạn/hỏng (dọn luôn nếu vậy)."""
+    path = _info_cache_path(url)
+    if not os.path.isfile(path):
+        return None
+    try:
+        if time.time() - os.path.getmtime(path) > INFO_CACHE_TTL_SECONDS:
+            os.remove(path)
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            json.loads(f.read())  # chỉ để xác nhận file không bị ghi dở/hỏng
+        return path
+    except (OSError, ValueError):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+
+
 def _cleanup_job_files(out_base: str):
     for f in glob.glob(out_base + '.*'):
         try:
@@ -134,11 +455,29 @@ def _expire_unclaimed_file(job_id: str, out_base: str):
 @permission_classes([IsAuthenticated])
 def video_info(request):
     """Lấy metadata video (title, thumbnail, duration, uploader, độ phân giải cao nhất) qua yt-dlp -J."""
-    url = str(request.data.get('url', '')).strip()
+    url = _extract_url(str(request.data.get('url', '')))
     if not _validate_url(url):
         return Response({'success': False, 'error': 'URL không hợp lệ.'}, status=400)
     if not _is_public_url(url):
         return Response({'success': False, 'error': 'URL không được hỗ trợ.'}, status=400)
+    if _looks_like_profile_url(url):
+        return Response({'success': False, 'error': 'Đây là link trang cá nhân/kênh, không phải link 1 video cụ thể. Mở đúng video rồi copy link của video đó.'}, status=400)
+
+    if _douyin_platform(url):
+        # yt-dlp không đọc được Douyin (thiếu chữ ký JS) — dùng trình duyệt ẩn thay thế.
+        info = _extract_douyin_info(url)
+        if not info:
+            return Response({'success': False, 'error': 'Không đọc được thông tin video Douyin. Video có thể riêng tư hoặc đã bị xoá.'}, status=400)
+        return Response({
+            'success': True,
+            'title': info.get('title'),
+            'thumbnail': info.get('thumbnail'),
+            'duration': (info.get('duration_ms') or 0) / 1000 or None,
+            'uploader': info.get('uploader'),
+            'extractor': 'Douyin',
+            'best_height': None,
+            'filesize_approx': None,
+        })
 
     ytdlp = _get_ytdlp()
     if not ytdlp:
@@ -152,7 +491,9 @@ def video_info(request):
             err = (proc.stderr or b'').decode('utf-8', 'ignore')[-400:]
             logger.warning(f"[VideoDL] info failed: {err}")
             return Response({'success': False, 'error': 'Không đọc được thông tin video. Kiểm tra lại link hoặc quyền truy cập.'}, status=400)
-        info = json.loads(proc.stdout.decode('utf-8', 'ignore'))
+        raw_stdout = proc.stdout.decode('utf-8', 'ignore')
+        info = json.loads(raw_stdout)
+        _save_info_cache(url, raw_stdout)
 
         formats = info.get('formats') or []
         heights = [f.get('height') for f in formats if f.get('height')]
@@ -190,7 +531,7 @@ def start_download(request):
     Khởi tạo job tải chạy nền, trả job_id ngay (202) để tránh timeout của Cloudflare Tunnel.
     Body: {url, type: mp4|mp3, quality: best|1080|720}
     """
-    url = str(request.data.get('url', '')).strip()
+    url = _extract_url(str(request.data.get('url', '')))
     fmt = str(request.data.get('type', 'mp4')).strip().lower()
     quality = str(request.data.get('quality', 'best')).strip().lower()
     if fmt not in ('mp4', 'mp3'):
@@ -201,6 +542,8 @@ def start_download(request):
         return Response({'success': False, 'error': 'URL không hợp lệ.'}, status=400)
     if not _is_public_url(url):
         return Response({'success': False, 'error': 'URL không được hỗ trợ.'}, status=400)
+    if _looks_like_profile_url(url):
+        return Response({'success': False, 'error': 'Đây là link trang cá nhân/kênh, không phải link 1 video cụ thể. Mở đúng video rồi copy link của video đó.'}, status=400)
 
     ytdlp = _get_ytdlp()
     if not ytdlp:
@@ -275,13 +618,36 @@ def _run_download_job(job_id: str, url: str, fmt: str, quality: str):
 
 
 def _do_download(job_id: str, url: str, fmt: str, quality: str):
+    out_base = os.path.join(tempfile.gettempdir(), f'vcb_dl_{job_id}')
+
+    if _cobalt_platform(url) and _try_cobalt_download(job_id, url, fmt, quality, out_base):
+        return
+
+    if _douyin_platform(url):
+        # Không rơi về yt-dlp — đã xác nhận yt-dlp luôn thất bại với Douyin (thiếu chữ ký
+        # JS), chạy tiếp chỉ tốn thời gian chờ vô ích cho cùng 1 kết quả lỗi.
+        if not _try_douyin_download(job_id, url, fmt, out_base):
+            _cleanup_job_files(out_base)
+            progress_update(job_id, {
+                'status': 'error', 'percent': 0, 'message': '',
+                'error': 'Tải video Douyin thất bại. Video có thể riêng tư, đã bị xoá, hoặc trình duyệt ẩn gặp sự cố.',
+            })
+        return
+
     ffmpeg = _get_ffmpeg()
     ytdlp = _get_ytdlp()
-    out_base = os.path.join(tempfile.gettempdir(), f'vcb_dl_{job_id}')
 
     cmd = [ytdlp, '--no-playlist', '--no-warnings', '--no-check-certificates', '--no-color',
            '--newline', '--socket-timeout', '30', *COMMON_HEADERS,
-           '--concurrent-fragments', '8',
+           '--concurrent-fragments', '16',
+           # TikTok/Facebook/Instagram trả về 1 file HTTP thường (không fragment DASH/HLS),
+           # nên --concurrent-fragments một mình không có tác dụng với chúng.
+           # --http-chunk-size buộc yt-dlp chia file đó thành nhiều chunk tải song song
+           # qua HTTP Range request — tăng tốc thật cho các link dạng này mà không đổi
+           # format/chất lượng đã chọn. Để 1M (không phải 10M) vì clip TikTok/Reels/Shorts
+           # ngắn thường chỉ vài MB — ngưỡng 10M sẽ khiến các video đó KHÔNG được chia nhỏ
+           # chút nào (không có tác dụng đúng lúc cần nhất).
+           '--http-chunk-size', '1M',
            '--max-filesize', MAX_FILESIZE,
            '--output', out_base + '.%(ext)s',
            '--print', 'after_move:title']
@@ -295,7 +661,15 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
         else:
             vfmt = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
         cmd += ['--format', vfmt, '--merge-output-format', 'mp4']
-    cmd.append(url)
+
+    # Nếu người dùng vừa bấm "Kiểm tra" (video_info) trước đó không lâu, dùng lại luôn
+    # kết quả trích xuất đó thay vì bắt yt-dlp trích xuất lại từ đầu — đỡ hẳn bước gọi
+    # trang/API của nền tảng (thường là phần chiếm nhiều giây nhất trước khi có % tải thật).
+    info_cache = _take_valid_info_cache(url)
+    if info_cache:
+        cmd += ['--load-info-json', info_cache]
+    else:
+        cmd.append(url)
 
     progress_update(job_id, {'status': 'downloading', 'message': 'Đang tải...', 'percent': 1})
     title_lines = []
@@ -335,18 +709,17 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
         wd.join(timeout=1)
 
         files = glob.glob(out_base + '.*')
-        if returncode != 0 and not files:
+        # Chỉ nhận file đúng đuôi đã yêu cầu — trước đây có fallback "lấy đại files[0]"
+        # khi không tìm thấy đúng đuôi, dẫn tới việc lỡ nhận nhầm mảnh tạm dở dang (vd
+        # "*.fdash-AUDIO-1.m4a" khi ghép audio/video thất bại giữa chừng nhưng yt-dlp
+        # vẫn thoát mã 0) rồi báo "Hoàn tất" dù thực ra không có video hoàn chỉnh nào.
+        target = next((f for f in files if f.lower().endswith('.' + fmt)), None)
+        if returncode != 0 or not target or not os.path.isfile(target):
             _cleanup_job_files(out_base)
             progress_update(job_id, {
                 'status': 'error', 'percent': 0, 'message': '',
                 'error': 'Tải video thất bại. Video có thể bị riêng tư hoặc nền tảng chặn.',
             })
-            return
-
-        target = next((f for f in files if f.lower().endswith('.' + fmt)), files[0] if files else None)
-        if not target or not os.path.isfile(target):
-            _cleanup_job_files(out_base)
-            progress_update(job_id, {'status': 'error', 'error': 'Không tìm thấy file sau khi tải.'})
             return
 
         for other in files:
@@ -370,3 +743,9 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
                 pass
         _cleanup_job_files(out_base)
         progress_update(job_id, {'status': 'error', 'error': f'Lỗi không xác định: {e}'})
+    finally:
+        if info_cache:
+            try:
+                os.remove(info_cache)
+            except OSError:
+                pass
