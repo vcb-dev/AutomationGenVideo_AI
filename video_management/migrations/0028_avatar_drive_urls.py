@@ -8,7 +8,8 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # ManagedFacebookPage
+        # Scraper models (ScrapedFanpage, DouyinProfile, etc.) are managed=False
+        # and owned by BE/Prisma — do not alter them via Django migrations.
         migrations.AddField(
             model_name='managedfacebookpage',
             name='avatar_drive_url',
