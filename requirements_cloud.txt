@@ -54,4 +54,5 @@ pillow>=10.0.0
 # Video (lightweight only)
 aiohttp>=3.9.0
 ffmpeg-python>=0.2.0
-yt-dlp>=2023.10.0
+# Cài từ GitHub master (ghim theo commit) thay vì PyPI — xem requirements.txt để biết lý do.
+yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@aefce1eea4
