@@ -48,6 +48,7 @@ from .views.collection_views import VideoCollectionViewSet
 from .views.voice_views import (
     list_voices_api, clone_voice_api, voice_tts_api,
     clone_voice_start_api, clone_voice_job_status_api,
+     serve_minimax_tts_file,
 )
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
@@ -135,6 +136,8 @@ urlpatterns = [
     path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
     path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
     path('voice/tts/', voice_tts_api, name='voice-tts'),
+    # Serve file TTS đã sinh — thay cho /media/minimax_tts/... vốn chỉ hoạt động khi DEBUG=True
+    path('voice/tts/file/<str:filename>', serve_minimax_tts_file, name='voice-tts-file'),
 
 
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),

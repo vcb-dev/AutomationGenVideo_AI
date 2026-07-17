@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -9,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
+from django.http import FileResponse, Http404
 from video_management.models import Voice
 from video_management.services.minimax_voice_clone_service import get_voice_clone_service
 from video_management.services.minimax_tts_service import get_minimax_service
@@ -19,6 +21,42 @@ logger = logging.getLogger(__name__)
 # Prefix riêng cho voice-clone job trong progress store dùng chung (tên file gốc
 # là "mix" nhưng cơ chế lưu trữ generic — key-value + TTL, không liên quan mix video).
 _CLONE_JOB_PREFIX = "voice_clone:"
+
+# Tên file TTS do voice_tts_api sinh: tts_<uuid4 hex>.mp3 — dùng để whitelist
+# khi serve file, chặn path traversal / lấy file media tùy ý.
+_TTS_FILENAME_RE = re.compile(r'^tts_[0-9a-f]{32}\.mp3$')
+
+
+def _find_duplicate_cloned_voice(voice_name):
+    """Tìm giọng clone trùng tên (không phân biệt hoa thường) — mỗi lần clone MiniMax
+    đều tính phí và tạo voice_id mới, nên trùng tên gần như luôn là thao tác nhầm."""
+    return Voice.objects.filter(name__iexact=(voice_name or '').strip(), is_cloned=True).first()
+
+
+def _duplicate_voice_error(existing):
+    created = existing.created_at.strftime('%d/%m/%Y') if getattr(existing, 'created_at', None) else ''
+    suffix = f' (clone ngày {created})' if created else ''
+    return (
+        f'Đã có giọng clone tên "{existing.name}"{suffix}. '
+        f'Mỗi lần clone đều tính phí MiniMax — nếu vẫn muốn tạo lại, hãy đặt tên khác hoặc xoá giọng cũ trước.'
+    )
+
+
+def serve_minimax_tts_file(request, filename):
+    """
+    Serve file TTS đã sinh (media/minimax_tts/tts_*.mp3) — hoạt động cả khi DEBUG=False.
+
+    Django chỉ serve /media/ qua static() khi DEBUG=True, nên trên server production
+    link /media/minimax_tts/... luôn 404. BE proxy file này về trình duyệt qua
+    GET api/ai/voice/tts/stream/<filename> khi chưa cấu hình Google Drive.
+    Chỉ phục vụ đúng file TTS (whitelist tên tts_<hex32>.mp3), không cho lấy file khác.
+    """
+    if not _TTS_FILENAME_RE.match(filename or ''):
+        raise Http404
+    path = os.path.join(default_storage.location, 'minimax_tts', filename)
+    if not os.path.isfile(path):
+        raise Http404
+    return FileResponse(open(path, 'rb'), content_type='audio/mpeg')
 
 @api_view(['GET'])
 def list_voices_api(request):
@@ -87,7 +125,11 @@ def clone_voice_api(request):
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
         if not voice_name:
             return Response({'error': 'voice_name is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        existing = _find_duplicate_cloned_voice(voice_name)
+        if existing:
+            return Response({'error': _duplicate_voice_error(existing)}, status=status.HTTP_400_BAD_REQUEST)
+
         logger.info(f"🎤 Minimax Voice Cloning: name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes")
         
         # Save uploaded file to a temporary location to pass to Minimax service.
@@ -175,6 +217,10 @@ def clone_voice_start_api(request):
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
         if not voice_name:
             return Response({'error': 'voice_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = _find_duplicate_cloned_voice(voice_name)
+        if existing:
+            return Response({'error': _duplicate_voice_error(existing)}, status=status.HTTP_400_BAD_REQUEST)
 
         logger.info(f"🎤 Minimax Voice Cloning (bg): name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes")
 

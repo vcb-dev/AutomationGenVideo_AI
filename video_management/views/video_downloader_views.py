@@ -81,6 +81,44 @@ def _cobalt_platform(url: str) -> bool:
         return False
 
 
+_COBALT_PLATFORM_LABELS = {
+    'twitter.com': 'X (Twitter)', 'x.com': 'X (Twitter)',
+    'instagram.com': 'Instagram',
+    'facebook.com': 'Facebook', 'fb.watch': 'Facebook',
+}
+
+
+def _cobalt_platform_label(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or '').lower()
+        if host.startswith('www.'):
+            host = host[4:]
+        for h, label in _COBALT_PLATFORM_LABELS.items():
+            if host == h or host.endswith('.' + h):
+                return label
+    except Exception:
+        pass
+    return 'Video'
+
+
+def _cobalt_minimal_info_response(url: str):
+    """FB/IG/X hay chặn yt-dlp đọc metadata khi không có cookie, nhưng bước tải thật
+    đi qua Cobalt nên vẫn có thể thành công — trả info tối thiểu để người dùng bấm
+    tải được (luồng dán link tay bắt buộc qua bước info), thay vì bị chặn từ đầu."""
+    label = _cobalt_platform_label(url)
+    return Response({
+        'success': True,
+        'title': f'Video {label} — không đọc được chi tiết, vẫn có thể thử tải',
+        'thumbnail': None,
+        'duration': None,
+        'uploader': None,
+        'extractor': label,
+        'best_height': None,
+        'filesize_approx': None,
+        'limited': True,
+    })
+
+
 def _try_cobalt_download(job_id: str, url: str, fmt: str, quality: str, out_base: str) -> bool:
     """Thử tải qua Cobalt. Trả False cho MỌI lỗi (Cobalt chưa chạy, platform chưa hỗ trợ,
     network lỗi...) để _do_download rơi về yt-dlp như cũ — không bao giờ raise ra ngoài."""
@@ -490,6 +528,8 @@ def video_info(request):
         if proc.returncode != 0:
             err = (proc.stderr or b'').decode('utf-8', 'ignore')[-400:]
             logger.warning(f"[VideoDL] info failed: {err}")
+            if _cobalt_platform(url):
+                return _cobalt_minimal_info_response(url)
             return Response({'success': False, 'error': 'Không đọc được thông tin video. Kiểm tra lại link hoặc quyền truy cập.'}, status=400)
         raw_stdout = proc.stdout.decode('utf-8', 'ignore')
         info = json.loads(raw_stdout)
@@ -517,6 +557,8 @@ def video_info(request):
             'filesize_approx': filesize,
         })
     except subprocess.TimeoutExpired:
+        if _cobalt_platform(url):
+            return _cobalt_minimal_info_response(url)
         return Response({'success': False, 'error': 'Hết thời gian đọc thông tin video.'}, status=504)
     except Exception as e:
         logger.error(f"[VideoDL] info error: {e}", exc_info=True)
