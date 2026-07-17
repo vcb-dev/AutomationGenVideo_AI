@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse, StreamingHttpResponse
 from video_management.models import Voice
 from video_management.services.minimax_voice_clone_service import get_voice_clone_service
 from video_management.services.minimax_tts_service import get_minimax_service
@@ -42,6 +42,9 @@ def _duplicate_voice_error(existing):
     )
 
 
+_RANGE_RE = re.compile(r'^bytes=(\d*)-(\d*)$')
+
+
 def serve_minimax_tts_file(request, filename):
     """
     Serve file TTS đã sinh (media/minimax_tts/tts_*.mp3) — hoạt động cả khi DEBUG=False.
@@ -50,13 +53,53 @@ def serve_minimax_tts_file(request, filename):
     link /media/minimax_tts/... luôn 404. BE proxy file này về trình duyệt qua
     GET api/ai/voice/tts/stream/<filename> khi chưa cấu hình Google Drive.
     Chỉ phục vụ đúng file TTS (whitelist tên tts_<hex32>.mp3), không cho lấy file khác.
+
+    Hỗ trợ HTTP Range: FileResponse trần không set Accept-Ranges/206 — <audio> của
+    trình duyệt (đặc biệt Chrome) cần Range để đọc duration của mp3 streamed, thiếu
+    thì player kẹt ở 0:00/0:00 (cùng lỗi đã fix cho nhánh Drive ở BE, xem streamTtsAudio).
     """
     if not _TTS_FILENAME_RE.match(filename or ''):
         raise Http404
     path = os.path.join(default_storage.location, 'minimax_tts', filename)
     if not os.path.isfile(path):
         raise Http404
-    return FileResponse(open(path, 'rb'), content_type='audio/mpeg')
+
+    file_size = os.path.getsize(path)
+    range_match = _RANGE_RE.match(request.META.get('HTTP_RANGE', '').strip())
+
+    if range_match:
+        start_str, end_str = range_match.groups()
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+        end = min(end, file_size - 1)
+        if start > end or start >= file_size:
+            resp = HttpResponse(status=416)
+            resp['Content-Range'] = f'bytes */{file_size}'
+            return resp
+
+        length = end - start + 1
+
+        def stream_range():
+            with open(path, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                chunk_size = 65536
+                while remaining > 0:
+                    chunk = f.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+        resp = StreamingHttpResponse(stream_range(), status=206, content_type='audio/mpeg')
+        resp['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+        resp['Content-Length'] = str(length)
+        resp['Accept-Ranges'] = 'bytes'
+        return resp
+
+    resp = FileResponse(open(path, 'rb'), content_type='audio/mpeg')
+    resp['Accept-Ranges'] = 'bytes'
+    return resp
 
 @api_view(['GET'])
 def list_voices_api(request):
