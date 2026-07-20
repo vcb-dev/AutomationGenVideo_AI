@@ -1,0 +1,45 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.git/
+.gitignore
+.env
+.env.example
+.env.local
+.env.*.local
+node_modules/
+*.log
+*.tmp
+*.bak
+*.db
+*.sqlite3
+media/
+uploads/
+static/collected/
+# Debug/test files
+test_*.py
+check_*.py
+debug_*.py
+clear_*.py
+reset_*.py
+fix_migrations*.py
+migrate_database*.py
+setup_*.py
+list_*.py
+find_*.py
+
+# Large data files
+*.json
+avatars_dump.json
+facebook_apify_test_results.json
+instagram_instagram_data.json
+
+# Dev only
+celerybeat-schedule.*

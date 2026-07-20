@@ -1,0 +1,45 @@
+# Dockerfile dành riêng cho Railway (self-contained, KHÔNG dùng entrypoint
+# pip-install lúc chạy như flow NAS/compose). Deps được cài sẵn lúc build,
+# gunicorn bind vào $PORT động của Railway.
+#
+# NAS/compose vẫn dùng ./Dockerfile như cũ — file này chỉ cho Railway
+# (railway.toml trỏ dockerfilePath = "Dockerfile.railway").
+
+FROM python:3.11-slim-bullseye
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8000
+
+WORKDIR /app
+
+# System deps — git cần cho yt-dlp (cài từ git+https trong requirements_cloud.txt)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    ffmpeg \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cài Python deps (bản cloud nhẹ — không torch)
+COPY requirements_cloud.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && rm -rf /root/.cache
+
+# Copy toàn bộ project
+COPY . .
+
+# Gom static cho Django admin (không chặn build nếu lỗi)
+RUN python manage.py collectstatic --noinput || true
+
+EXPOSE ${PORT}
+
+# shell form để expand $PORT do Railway cấp; gunicorn phục vụ WSGI.
+CMD gunicorn core.wsgi:application \
+    --bind 0.0.0.0:${PORT} \
+    --workers 2 \
+    --threads 4 \
+    --timeout 3600 \
+    --log-level info
