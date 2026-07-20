@@ -420,9 +420,23 @@ def voice_tts_api(request):
                 raise Exception('TTS succeeded but no playable audio file/URL was produced')
 
         extra_info = result.get('extra_info') or {}
+
+        # Trả kèm bytes base64 khi file thực sự nằm trên đĩa của AI — BE dùng để
+        # upload thẳng lên Drive (hoặc nhúng data: URL) thay vì GET ngược lại route
+        # /api/voice/tts/file/<filename> bên dưới. Route đó chỉ đọc được file nếu
+        # request rơi đúng vào instance/đĩa vừa ghi — trên Railway (nhiều
+        # replica/không có volume dùng chung) GET-lại gần như luôn 404 ngay cả khi
+        # gọi lại tức thì, làm hỏng cả nhánh upload Drive lẫn nhánh phát/tải của FE.
+        audio_base64 = None
+        if os.path.exists(output_path):
+            with open(output_path, 'rb') as f:
+                import base64
+                audio_base64 = base64.b64encode(f.read()).decode('ascii')
+
         return Response({
             'success': True,
             'audio_url': audio_url,
+            'audio_base64': audio_base64,
             'duration': result.get('duration', 0),
             # Số ký tự MiniMax thực tính phí (khớp đơn vị "điểm âm thanh" của gói) —
             # BE dùng để ghi log tiêu dùng theo user.
