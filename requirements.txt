@@ -73,3 +73,4 @@ yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@aefce1eea4
 # Chromium headless để chính trang tự gọi API đó (xem video_management/scripts/douyin_extract.py).
 # Sau khi cài, chạy thêm: playwright install chromium (tải trình duyệt, ~280MB, 1 lần).
 playwright>=1.61.0
+playwright-stealth>=2.0.3

@@ -118,6 +118,11 @@ if not _db_url:
 DATABASES = {
     'default': env.db('DATABASE_URL')
 }
+# ?pgbouncer=true trong DATABASE_URL là tham số của Prisma (BE dùng chung URL Supabase);
+# django-environ >= 0.13 truyền mọi query param vào OPTIONS còn psycopg2 không nhận
+# option "pgbouncer" (lỗi "invalid dsn") — bỏ nó ra trước khi kết nối.
+if isinstance(DATABASES['default'].get('OPTIONS'), dict):
+    DATABASES['default']['OPTIONS'].pop('pgbouncer', None)
 # Optimize for multiple concurrent users by keeping DB connections open
 DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=300)
 DATABASES['default']['CONN_HEALTH_CHECKS'] = True
