@@ -14,9 +14,11 @@ import re
 import requests as http_requests
 
 from django.conf import settings
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
+from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -669,3 +671,198 @@ def _refine_transcript_with_claude(text: str, anthropic_key: str) -> str:
         return response.content[0].text.strip()
     except Exception:
         return text
+
+
+def _get_ffprobe() -> str:
+    from_settings = str(getattr(settings, 'FFPROBE_PATH', '')).strip()
+    if from_settings and os.path.isfile(from_settings):
+        return from_settings
+    ffmpeg = _get_ffmpeg()
+    if not ffmpeg:
+        import shutil
+        return shutil.which('ffprobe') or 'ffprobe'
+    if ffmpeg == 'ffmpeg':
+        return 'ffprobe'
+    base = ffmpeg.replace('ffmpeg.exe', '').replace('ffmpeg', '')
+    out = (base + 'ffprobe.exe') if '.exe' in ffmpeg else (base + 'ffprobe')
+    if os.path.isfile(out):
+        return out
+    import shutil
+    return shutil.which('ffprobe') or 'ffprobe'
+
+
+def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
+    ffprobe_path = _get_ffprobe()
+    try:
+        result = subprocess.run([
+            ffprobe_path, '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+        ], capture_output=True, text=True, timeout=15)
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception as e:
+        logger.error(f"Error getting duration via ffprobe format: {str(e)}")
+
+    try:
+        result = subprocess.run([
+            ffprobe_path, '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+        ], capture_output=True, text=True, timeout=15)
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception as e:
+        logger.error(f"Error getting duration via ffprobe stream: {str(e)}")
+
+    try:
+        from moviepy.editor import AudioFileClip
+        clip = AudioFileClip(file_path)
+        duration = clip.duration
+        clip.close()
+        return duration
+    except Exception as e:
+        logger.error(f"Error getting duration via MoviePy: {str(e)}")
+
+    return None
+
+
+def transcribe_with_gemini(file_path: str) -> str:
+    """
+    Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
+    Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
+    """
+    import google.generativeai as genai
+    import time
+
+    # 1. Validate file size on disk before upload
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if file_size_mb > 500:
+        raise ValueError(f"Dung lượng tập tin vượt quá giới hạn cho phép ({file_size_mb:.1f}MB > 500MB).")
+
+    # 2. Load settings
+    api_key = getattr(settings, 'GEMINI_API_KEY', '').strip()
+    if not api_key:
+        api_key = os.getenv('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        raise ValueError("Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.")
+
+    model_name = getattr(settings, 'GEMINI_MODEL', None)
+    if not model_name:
+        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+    model_name = str(model_name).strip()
+
+    # 3. Configure and upload
+    genai.configure(api_key=api_key)
+    logger.info(f"[Gemini Transcribe] Uploading {file_size_mb:.2f}MB file to Gemini Files API...")
+
+    gemini_file = None
+    try:
+        gemini_file = genai.upload_file(file_path)
+        logger.info(f"[Gemini Transcribe] Polling file state for: {gemini_file.name}")
+        
+        # Poll state until ACTIVE
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(2)
+            gemini_file = genai.get_file(gemini_file.name)
+
+        if gemini_file.state.name == "FAILED":
+            raise Exception("Tải file lên Gemini File API thất bại hoặc định dạng không được hỗ trợ.")
+
+        # 4. Request transcription
+        prompt = (
+            "Hãy nghe file âm thanh/video này và chuyển toàn bộ nội dung giọng nói thành văn bản tiếng Việt. "
+            "Chỉ trả về phần văn bản đã nhận diện được dưới dạng thô, giữ nguyên các đại từ và câu chữ gốc, "
+            "không thêm bất kỳ lời giải thích, tiêu đề, hay ghi chú nào khác. "
+            "Chú ý viết đúng chính tả các từ: Huy Ca, Viễn Chí Bảo, bạc 925, bạc S925, moissanite, kim cương, CZ, nhẫn, dây chuyền."
+        )
+        logger.info(f"[Gemini Transcribe] Invoking model {model_name}...")
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content([gemini_file, prompt])
+        transcript = response.text.strip()
+        return transcript
+
+    finally:
+        if gemini_file:
+            try:
+                logger.info(f"[Gemini Transcribe] Cleaning up Google server file: {gemini_file.name}")
+                genai.delete_file(gemini_file.name)
+            except Exception as e:
+                logger.error(f"[Gemini Transcribe] Failed to delete Gemini file {gemini_file.name}: {str(e)}")
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@parser_classes([MultiPartParser, FormParser])
+def transcribe_upload(request):
+    """
+    POST /api/content/transcribe-upload/
+    Form Data:
+        - file: Uploaded video/audio file
+    Response: { "success": true, "transcript": "...", "duration_seconds": N, "char_count": N }
+    """
+    uploaded_file = request.FILES.get('file')
+    if not uploaded_file:
+        return Response({'success': False, 'error_message': 'No file uploaded'}, status=400)
+
+    ffmpeg_path = _get_ffmpeg()
+    if not ffmpeg_path:
+        return Response({'success': False, 'error_message': 'FFmpeg not found on server'}, status=500)
+
+    temp_dir = tempfile.gettempdir()
+    uid = uuid.uuid4().hex[:8]
+    ext = os.path.splitext(uploaded_file.name)[1].lower() or '.mp4'
+    input_path = os.path.join(temp_dir, f'vcb_upload_{uid}{ext}')
+
+    try:
+        # Save file to disk
+        with open(input_path, 'wb+') as dest:
+            for chunk in uploaded_file.chunks():
+                dest.write(chunk)
+
+        # 1. Check duration
+        duration = _get_media_duration(input_path, ffmpeg_path)
+        if duration is None:
+            return Response({
+                'success': False,
+                'error_message': 'Không thể xác định thời lượng của file upload. Vui lòng kiểm tra lại định dạng file.'
+            }, status=400)
+
+        if duration > 600:
+            return Response({
+                'success': False,
+                'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.'
+            }, status=400)
+
+        # 2. Transcribe via Gemini Files API
+        transcript = transcribe_with_gemini(input_path)
+
+        # Vietnamese cleanups
+        transcript = _normalize_transcript_vi(transcript)
+
+        return Response({
+            'success': True,
+            'transcript': transcript,
+            'duration_seconds': round(duration, 2),
+            'char_count': len(transcript)
+        })
+
+    except ValueError as ve:
+        logger.warning(f"[Transcribe Upload] Validation error: {str(ve)}")
+        return Response({
+            'success': False,
+            'error_message': str(ve)
+        }, status=400)
+    except Exception as e:
+        logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")
+        return Response({
+            'success': False,
+            'error_message': f'Lỗi hệ thống trong quá trình xử lý: {str(e)}'
+        }, status=500)
+
+    finally:
+        try:
+            if input_path and os.path.exists(input_path):
+                os.remove(input_path)
+        except Exception as ex:
+            logger.error(f"[Transcribe Upload] Failed to delete temp file {input_path}: {str(ex)}")
+
+
