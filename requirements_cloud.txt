@@ -1,0 +1,60 @@
+# Django Core
+django>=4.2.0
+djangorestframework>=3.14.0
+# drf-spectacular>=0.27.2
+django-cors-headers>=4.0.0
+django-environ>=0.10.0
+PyJWT>=2.8.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Task Queue
+celery>=5.3.0
+redis>=5.0.0
+
+# HTTP & API
+requests>=2.31.0
+httpx>=0.27.0
+
+# AI APIs
+openai>=1.0.0
+google-generativeai>=0.3.0
+anthropic>=0.25.0
+
+# Web Scraping
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Data Validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Retry & Resilience
+tenacity>=8.2.3
+
+# Environment
+python-dotenv>=1.0.0
+
+# Server
+gunicorn>=21.2.0
+
+# Utilities
+unidecode>=1.3.0
+cryptography>=42.0.0
+python-dateutil>=2.8.2
+pytz>=2024.1
+
+# Excel Processing
+openpyxl>=3.1.0
+pandas>=2.0.0
+
+# Lightweight image processing (NO torch/torchvision - saves ~2GB)
+numpy>=1.24.0
+pillow>=10.0.0
+
+# Video (lightweight only)
+aiohttp>=3.9.0
+ffmpeg-python>=0.2.0
+# Cài từ GitHub master (ghim theo commit) thay vì PyPI — xem requirements.txt để biết lý do.
+yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@aefce1eea4
