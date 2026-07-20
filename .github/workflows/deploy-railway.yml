@@ -1,0 +1,107 @@
+name: Deploy Railway
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_docker_push:
+        description: 'Chỉ redeploy Railway (không build/push Docker)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: deploy-railway-ai-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: viejhaf/automationgenvideo-ai:latest
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_docker_push != 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.railway
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  redeploy:
+    name: Redeploy Railway
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build-and-push]
+    if: |
+      always() &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main')
+
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_WEB: ${{ secrets.RAILWAY_SERVICE_WEB }}
+      RAILWAY_SERVICE_WORKER: ${{ secrets.RAILWAY_SERVICE_WORKER }}
+      RAILWAY_SERVICE_BEAT: ${{ secrets.RAILWAY_SERVICE_BEAT }}
+
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Validate Railway secrets
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::Thiếu secret RAILWAY_TOKEN"
+            exit 1
+          fi
+          echo "RAILWAY_TOKEN OK"
+
+      - name: Redeploy Web
+        run: |
+          if [ -z "$RAILWAY_SERVICE_WEB" ]; then
+            echo "::error::Thiếu secret RAILWAY_SERVICE_WEB"
+            exit 1
+          fi
+          echo "Redeploy Web → $RAILWAY_SERVICE_WEB"
+          railway redeploy --service "$RAILWAY_SERVICE_WEB" --yes
+
+      - name: Redeploy Worker (optional)
+        run: |
+          if [ -z "$RAILWAY_SERVICE_WORKER" ]; then
+            echo "Bỏ qua worker (chưa set RAILWAY_SERVICE_WORKER)"
+            exit 0
+          fi
+          echo "Redeploy Worker → $RAILWAY_SERVICE_WORKER"
+          railway redeploy --service "$RAILWAY_SERVICE_WORKER" --yes
+
+      - name: Redeploy Beat (optional)
+        run: |
+          if [ -z "$RAILWAY_SERVICE_BEAT" ]; then
+            echo "Bỏ qua beat (chưa set RAILWAY_SERVICE_BEAT)"
+            exit 0
+          fi
+          echo "Redeploy Beat → $RAILWAY_SERVICE_BEAT"
+          railway redeploy --service "$RAILWAY_SERVICE_BEAT" --yes

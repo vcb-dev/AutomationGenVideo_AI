@@ -57,17 +57,17 @@ pillow>=10.0.0
 aiohttp>=3.9.0
 ffmpeg-python>=0.2.0
 # Cài từ GitHub (ghim theo commit) thay vì PyPI — xem requirements.txt để biết lý do.
-# Dùng tarball HTTPS (archive/<commit>.tar.gz), KHÔNG dùng git+https://... — image
-# production (Dockerfile) không cài git, cú pháp git+ sẽ làm pip install fail thẳng
-# ("Cannot find command 'git'"), tức toàn bộ build production không lên được. Tarball
-# vẫn ghim đúng commit, chỉ tải qua HTTP thường nên không cần git.
+# Dùng tarball HTTPS (archive/<commit>.tar.gz), KHÔNG dùng git+https://... — file này
+# dùng chung cho cả Dockerfile.railway (đã có git) lẫn ./Dockerfile NAS/compose (KHÔNG
+# có git) — cú pháp git+ làm pip install fail thẳng ("Cannot find command 'git'") trên
+# nhánh thiếu git. Tarball vẫn ghim đúng commit, chỉ tải qua HTTP thường nên không cần git.
 yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/aefce1eea4.tar.gz
 
 # Douyin bắt buộc Chromium headless để né chữ ký JS (xem requirements.txt +
 # video_management/scripts/douyin_extract.py). Trước bản này requirements_cloud.txt
-# (Dockerfile production dùng file này) thiếu cả 2 dòng dưới — tính năng Douyin luôn
-# lỗi ngầm trên production dù chạy đúng ở máy dev có venv cài tay. Muốn hoạt động còn
-# cần cài Chromium (`playwright install --with-deps chromium`) vào môi trường chạy —
-# chưa xử lý ở đây, xem trao đổi liên quan trước khi tự thêm vào Dockerfile.
+# thiếu cả 2 dòng dưới — tính năng Douyin luôn lỗi ngầm trên production dù chạy đúng ở
+# máy dev có venv cài tay. Muốn hoạt động còn cần cài Chromium
+# (`playwright install --with-deps chromium`) vào môi trường chạy — Dockerfile.railway
+# hiện chưa có bước này, xem trao đổi liên quan trước khi tự thêm vào.
 playwright>=1.61.0
 playwright-stealth>=2.0.3
