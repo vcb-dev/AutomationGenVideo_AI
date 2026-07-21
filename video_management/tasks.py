@@ -11,133 +11,18 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 
-from .models import TrackedChannel, SearchHistory, SearchStatus, Platform
-from .services.apify_service import create_scraper
+from .models import TrackedChannel, SearchHistory, SearchStatus, Platform, LarkReport, ReportOutstanding, ManagedFacebookPage
+try:
+    from .utils.lark_utils import get_lark_tenant_access_token, create_bitable_record  # type: ignore
+except Exception:  # pragma: no cover
+    get_lark_tenant_access_token = None  # type: ignore
+    create_bitable_record = None  # type: ignore
+import json
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(
-    bind=True,
-    name='video_management.search_videos',
-    max_retries=3,
-    default_retry_delay=60
-)
-def search_videos_task(
-    self,
-    platform: str,
-    keyword: str,
-    min_likes: int = 0,
-    min_views: int = 0,
-    max_results: int = 20,
-    use_cache: bool = True,
-    search_type: str = 'posts'
-) -> Dict[str, Any]:
-    """
-    Asynchronous video search task.
-    
-    Args:
-        platform: Platform to search
-        keyword: Search keyword
-        min_likes: Minimum likes filter
-        min_views: Minimum views filter
-        max_results: Maximum results
-        use_cache: Whether to use cache
-        search_type: Type of content (posts, reels)
-        
-    Returns:
-        Search result dictionary
-    """
-    try:
-        logger.info(
-            f"[Task {self.request.id}] Starting search: "
-            f"platform={platform}, type={search_type}, keyword={keyword}"
-        )
-        
-        scraper = create_scraper(platform, search_type=search_type)
-        result = scraper.execute_search(
-            keyword=keyword,
-            min_likes=min_likes,
-            min_views=min_views,
-            max_results=max_results,
-            use_cache=use_cache,
-            save_to_db=True
-        )
-        
-        logger.info(
-            f"[Task {self.request.id}] Search completed: "
-            f"found {result['count']} videos in {result['execution_time']:.2f}s"
-        )
-        
-        return result
-        
-    except Exception as e:
-        logger.error(
-            f"[Task {self.request.id}] Search failed: {str(e)}",
-            exc_info=True
-        )
-        
-        # Retry with exponential backoff
-        try:
-            raise self.retry(exc=e, countdown=2 ** self.request.retries)
-        except self.MaxRetriesExceededError:
-            return {
-                'success': False,
-                'error': str(e),
-                'count': 0,
-                'results': [],
-                'execution_time': 0
-            }
-
-
-# DISABLED: Background task removed - channel checks now run synchronously via API
-# TikHub integration removed - using Apify only
-
-
-# DISABLED: Scheduled channel checks removed - use manual checks instead
-# @shared_task(name='video_management.check_all_channels')
-# def check_all_channels_task() -> Dict[str, Any]:
-#     """
-#     Check all active tracked channels.
-#     
-#     This task is scheduled to run periodically via Celery Beat.
-#     
-#     Returns:
-#         Summary of checks performed
-#     """
-#     logger.info("Starting scheduled channel checks")
-#     
-#     # Get channels that should be checked
-#     now = timezone.now()
-#     channels = TrackedChannel.objects.filter(is_active=True)
-#     
-#     checked = 0
-#     skipped = 0
-#     
-#     for channel in channels:
-#         # Check if it's time to check this channel
-#         if channel.last_checked_at:
-#             next_check = channel.last_checked_at + timedelta(
-#                 minutes=channel.check_interval_minutes
-#             )
-#             if now < next_check:
-#                 skipped += 1
-#                 continue
-#         
-#         # Start async check
-#         check_channel_task.delay(channel.id)
-#         checked += 1
-#     
-#     logger.info(
-#         f"Scheduled checks completed: {checked} started, {skipped} skipped"
-#     )
-#     
-#     return {
-#         'success': True,
-#         'checked': checked,
-#         'skipped': skipped,
-#         'total': channels.count()
-#     }
 
 
 @shared_task(name='video_management.cleanup_old_cache')
@@ -191,22 +76,101 @@ def cleanup_old_cache_task() -> Dict[str, Any]:
         }
 
 
-@shared_task(name='video_management.update_video_stats')
-def update_video_stats_task(video_ids: list = None) -> Dict[str, Any]:
+@shared_task(name='video_management.push_report_to_lark')
+def push_report_to_lark_task(report_id: str) -> Dict[str, Any]:
     """
-    Update statistics for videos (optional feature for refreshing data).
-    
-    Args:
-        video_ids: List of video IDs to update (None = all recent)
+    Background task to push a report and its associated outstanding items to Lark.
+    """
+    try:
+        if get_lark_tenant_access_token is None:
+            return {
+                "success": False,
+                "error": "Missing video_management.utils.lark_utils (get_lark_tenant_access_token).",
+            }
+
+        report = LarkReport.objects.get(id=report_id)
+        logger.info(f"Starting background sync to Lark for report: {report_id}")
         
-    Returns:
-        Update summary
-    """
-    # This is a placeholder for future enhancement
-    # Could re-scrape videos to update their stats
-    logger.info("Video stats update task (not yet implemented)")
-    
-    return {
-        'success': True,
-        'message': 'Feature not yet implemented'
-    }
+        lark_token = get_lark_tenant_access_token()
+        
+        # 1. Push main report
+        sync_date = report.date or report.created_at or timezone.now()
+        lark_timestamp = int(sync_date.timestamp() * 1000)
+        lark_report_fields = {
+            "HoTen": report.name,
+            "Email": report.email,
+            "Date": lark_timestamp,
+            "Answers": json.dumps(report.answers, ensure_ascii=False) if isinstance(report.answers, dict) else (report.answers or ""),
+        }
+        
+        if report.role:
+            lark_report_fields["Role"] = report.role
+        if report.team:
+            lark_report_fields["Team"] = report.team
+        if report.employee:
+            lark_report_fields["Nhân viên"] = report.employee
+
+        try:
+            lark_resp = create_bitable_record(lark_token, lark_report_fields)
+        except Exception as e:
+            logger.error(f"Error creating bitable record for report {report_id}: {e}")
+            return {"status": "error", "message": f"Push to main report failed: {e}"}
+
+        lark_record_id = None
+        
+        if lark_resp.get("code") == 0:
+            lark_record_id = lark_resp.get("data", {}).get("record", {}).get("record_id")
+            logger.info(f"Successfully pushed report to Lark: {lark_record_id}")
+            # Note: We don't change the local report ID as it's the PK, 
+            # but we could store lark_record_id in a separate field if it existed.
+        
+        # 2. Push Outstanding items
+        # Use DD/MM/YYYY since we save it that way in the view
+        report_date_str = report.date.strftime("%d/%m/%Y") if report.date else ""
+        outstanding_items = ReportOutstanding.objects.filter(
+            email=report.email,
+            date=report_date_str,
+            name=report.name
+        )
+        
+        outstanding_table_id = getattr(settings, "LARK_OUTSTANDING_TABLE_ID", "tbluurIuf2qDCdFr")
+        
+        for item in outstanding_items:
+            try:
+                # Map fields precisely to tbluurIuf2qDCdFr schema
+                # Based on actual API check: HoTen, Email, Role, Team, Ngày tháng, Phân loại, Nội dung
+                lark_out_fields = {
+                    "HoTen": item.name,
+                    "Email": item.email,
+                    "Role": report.role if report.role else "",
+                    "Team": item.team if item.team else "",
+                    "Ngày tháng": report_date_str, # Field is type Text (1) - using user's format
+                    "Phân loại": item.category, # e.g. "KHÓ KHĂN CẦN HỖ TRỢ"
+                    "Nội dung": item.content,    # The actual answer text
+                }
+                
+                if report.employee:
+                    lark_out_fields["Nhân viên"] = report.employee
+                
+                logger.info(f"Pushing outstanding item category: {item.category} for {report.name}")
+                create_bitable_record(lark_token, lark_out_fields, table_id=outstanding_table_id)
+            except Exception as e:
+                logger.error(f"Error pushing outstanding item {item.id} to Lark: {e}")
+
+
+        return {"success": True, "lark_id": lark_record_id}
+
+    except LarkReport.DoesNotExist:
+        logger.error(f"Report {report_id} not found for background sync")
+        return {"success": False, "error": "Report not found"}
+    except Exception as e:
+        logger.exception(f"Background sync to Lark failed for report {report_id}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+
+# Facebook external fanpages (scrape_reels_for_page_task / periodic_scrape_marked_pages_task):
+# đã chuyển sang BE (FacebookExternalScraperCronService trong AutomationGenVideo_BE).
+
+# Xiaohongshu profile periodic scrape: đã chuyển sang BE
+# (XiaohongshuScraperCronService trong AutomationGenVideo_BE).

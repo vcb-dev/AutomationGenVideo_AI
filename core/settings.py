@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import base64
 from pathlib import Path
 import environ
 import os
@@ -22,6 +23,8 @@ env = environ.Env(
     DEBUG=(bool, False),
     SECRET_KEY=(str, ''),
     ALLOWED_HOSTS=(list, []),
+    LOG_LEVEL=(str, 'INFO'),
+    APP_LOG_LEVEL=(str, ''),
 )
 
 # Read .env file if it exists
@@ -31,12 +34,20 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = env('SECRET_KEY', default='django-insecure-)wz0wv9mj6oxld#%n4gm5x!cdl&d3*@yrvoh7#joy59ma&fksy')
+SECRET_KEY = env('SECRET_KEY', default='change-me-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env('DEBUG', default=True)
+DEBUG = env('DEBUG', default=False)
 
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['localhost', '127.0.0.1', '0.0.0.0'])
+
+# ── Proxy / HTTPS settings (behind Cloudflare Tunnel) ──────────────────────
+# Cloudflare Tunnel terminates SSL and forwards X-Forwarded-Proto: https
+# This tells Django to trust that header so build_absolute_uri() returns https://
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+# ───────────────────────────────────────────────────────────────────────────
+
 
 
 # Application definition
@@ -48,9 +59,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+    'django.contrib.postgres',
+
     # Third party apps
     'rest_framework',
+    'rest_framework.authtoken',
+    # 'drf_spectacular',
     'corsheaders',
     
     # Internal apps
@@ -89,24 +103,29 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 
-# Database
+# Database — PostgreSQL only (shared with BE service: video_production)
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+# DATABASE_URL must be set in .env, e.g.:
+#   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/video_production
+
+_db_url = env('DATABASE_URL', default='')
+if not _db_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set! "
+        "Add it to .env, e.g.: DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/video_production"
+    )
 
 DATABASES = {
-    'default': env.db('DATABASE_URL', default=f'sqlite:///{BASE_DIR / "db.sqlite3"}')
+    'default': env.db('DATABASE_URL')
 }
-
-# If you prefer explicit configuration without DATABASE_URL:
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': env('DB_NAME', default='automation_video_ai'),
-#         'USER': env('DB_USER', default='postgres'),
-#         'PASSWORD': env('DB_PASSWORD', default='postgres'),
-#         'HOST': env('DB_HOST', default='localhost'),
-#         'PORT': env('DB_PORT', default='5432'),
-#     }
-# }
+# ?pgbouncer=true trong DATABASE_URL là tham số của Prisma (BE dùng chung URL Supabase);
+# django-environ >= 0.13 truyền mọi query param vào OPTIONS còn psycopg2 không nhận
+# option "pgbouncer" (lỗi "invalid dsn") — bỏ nó ra trước khi kết nối.
+if isinstance(DATABASES['default'].get('OPTIONS'), dict):
+    DATABASES['default']['OPTIONS'].pop('pgbouncer', None)
+# Optimize for multiple concurrent users by keeping DB connections open
+DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=300)
+DATABASES['default']['CONN_HEALTH_CHECKS'] = True
 
 
 # Password validation
@@ -158,6 +177,10 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Logging levels (tunable by env in production)
+LOG_LEVEL = env('LOG_LEVEL', default='INFO').upper()
+APP_LOG_LEVEL = env('APP_LOG_LEVEL', default=('DEBUG' if DEBUG else 'INFO')).upper()
+
 # Logging configuration
 LOGGING = {
     'version': 1,
@@ -176,26 +199,58 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': LOG_LEVEL,
     },
     'loggers': {
         'video_management': {
             'handlers': ['console'],
-            'level': 'DEBUG',
+            'level': APP_LOG_LEVEL,
             'propagate': False,
         },
     },
 }
 
 # REST Framework settings
+JWT_SECRET = env('JWT_SECRET', default='')
+JWT_BOOT_SUFFIX = env('JWT_BOOT_SUFFIX', default='')
+
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'core.authentication.NestJWTAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
+    # 'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ] if not DEBUG else [
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ],
+    # Baseline guards for 50-100 concurrent users.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': env('DRF_THROTTLE_ANON', default='120/min'),
+        'user': env('DRF_THROTTLE_USER', default='600/min'),
+        'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
+        'transcribe_upload': env('DRF_THROTTLE_TRANSCRIBE_UPLOAD', default='10/min'),
+    },
+    # Global pagination defaults for list endpoints that use DRF pagination.
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': env.int('DRF_PAGE_SIZE', default=50),
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'AutomationGenVideo AI API',
+    'DESCRIPTION': 'Auto-generated API schema for video management and related services.',
+    'VERSION': '2.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 # Celery settings
@@ -206,24 +261,49 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
-# Local Memory Cache for Development (Fallback if Redis is missing)
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "unique-snowflake",
+# Cache: Django 4.2+ native RedisCache (dùng redis-py, không cần django-redis)
+# Shared across multiple Gunicorn/Celery workers.
+_redis_url = env('REDIS_URL', default=env('CELERY_BROKER_URL', default='redis://localhost:6379/0'))
+try:
+    import redis as _redis_lib
+    _r_test = _redis_lib.from_url(_redis_url, socket_connect_timeout=1)
+    _r_test.ping()
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _redis_url,
+            "TIMEOUT": 300,       # 5 phút mặc định
+            "KEY_PREFIX": "ai",
+            "OPTIONS": {
+                "socket_connect_timeout": env.float('REDIS_CONNECT_TIMEOUT', default=1.5),
+                "socket_timeout": env.float('REDIS_SOCKET_TIMEOUT', default=2.0),
+            },
+        }
     }
-}
+except Exception:
+    # Fallback khi Redis chưa chạy (dev local không có Redis)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ai-locmem",
+        }
+    }
+
+
 
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=True)  # Enable for development
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://localhost:3000',
+    'http://localhost:3001',
     'http://localhost:5173',
     'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
     'http://127.0.0.1:5173',
 ])
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Disposition']  # cho FE đọc tên file khi tải video
 CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -238,38 +318,83 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # ==========================================
-# APIFY CONFIGURATION (Primary Scraping Service)
+# RAPIDAPI CONFIGURATION
 # ==========================================
-APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
-
-# Apify Actor IDs for different platforms
-APIFY_ACTORS = {
-    'tiktok': env('APIFY_ACTOR_TIKTOK', default='OtzYfK1ndEGdwWFKQ'),  # TikTok Scraper with full authorMeta
-    'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
-    'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
-    'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
-    'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
-    'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
-}
-
-# Apify timeout settings (in seconds)
-APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=300)  # 5 minutes
-APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=100)
+RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
+RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
 
 # ==========================================
-# LEGACY API SETTINGS (Fallback)
+# TIKHUB API CONFIGURATION
 # ==========================================
-
-# Tikhub TikTok API settings
 TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
 TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
+
+# ==========================================
+# FACEBOOK GRAPH API CONFIGURATION
+# ==========================================
+META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
+FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
+FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
+FACEBOOK_ACCESS_TOKEN = META_ACCESS_TOKEN
+INSTAGRAM_ACCESS_TOKEN = META_ACCESS_TOKEN
+FERNET_KEY = env('FERNET_KEY', default='')
+SUPERUSER_TOKEN = env('SUPERUSER_TOKEN', default='')
+
+# ==========================================
+# TOKEN ENCRYPTION CONFIGURATION
+# ==========================================
+# Khóa mã hóa Fernet cho page_access_token.
+# Tạo key mới: từ video_management.utils.encryption import TokenEncryption; print(TokenEncryption.generate_encryption_key())
+ENCRYPTION_KEY = env('ENCRYPTION_KEY', default='')
+# ==========================================
+# HEYGEN API CONFIGURATION
+# ==========================================
+HEYGEN_API_KEY = env('HEYGEN_API_KEY', default='')
+HEYGEN_AVATAR_ID = env('HEYGEN_AVATAR_ID', default='')
+HEYGEN_API_URL = env('HEYGEN_API_URL', default='https://api.heygen.com/v2')
+HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/api/heygen/webhook')
+
+# ==========================================
+# COBALT API CONFIGURATION (dự phòng cho tải video X/Instagram/Facebook)
+# ==========================================
+# Instance tự host, xem c:/WorkSpace/VienChiBao_Dev/cobalt/docker-compose.yml
+COBALT_API_URL = env('COBALT_API_URL', default='http://localhost:9000')
+HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
+
+# ==========================================
+# LARK BITABLE (Checklist công việc)
+# ==========================================
+LARK_APP_ID = env('LARK_APP_ID', default='')
+LARK_APP_SECRET = env('LARK_APP_SECRET', default='')
+LARK_BASE_ID = env('LARK_BASE_ID', default='')   # app_token trong URL Bitable
+LARK_TABLE_ID = env('LARK_TABLE_ID', default='')
+LARK_OUTSTANDING_TABLE_ID = env('LARK_OUTSTANDING_TABLE_ID', default='tbluurIuf2qDCdFr')
+LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
+
+# ==========================================
+# OPENAI API CONFIGURATION
+# ==========================================
+OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
+ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
+
+# ==========================================
+# GOOGLE GEMINI API CONFIGURATION
+# ==========================================
+GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# ==========================================
+# ELEVENLABS API CONFIGURATION
+# ==========================================
+ELEVENLABS_API_KEY = env('ELEVENLABS_API_KEY', default='')
+
 
 # Douyin API settings
 DOUYIN_API_BASE_URL = env('DOUYIN_API_BASE_URL', default='https://api.example.com/douyin')
 DOUYIN_API_KEY = env('DOUYIN_API_KEY', default='')
 
 # RapidAPI TikTok API settings
-TIKTOK_API_KEY = env('TIKTOK_API_KEY', default='')
+TIKTOK_ACCESS_TOKEN = env('TIKTOK_ACCESS_TOKEN', default='')
 TIKTOK_API_HOST = env('TIKTOK_API_HOST', default='tiktok-scraper7.p.rapidapi.com')
 
 # ==========================================
@@ -286,22 +411,65 @@ SEARCH_CACHE_TTL = env.int('SEARCH_CACHE_TTL', default=3600)  # 1 hour
 # Proxy settings (optional, for requests through proxy)
 PROXY_URL = env('PROXY_URL', default='')
 
+# FFmpeg path for Mix Video (nếu FFmpeg không có trong PATH, đặt đường dẫn đầy đủ, ví dụ: C:/ffmpeg/bin/ffmpeg.exe)
+FFMPEG_PATH = env('FFMPEG_PATH', default='')
+# FFprobe path (nếu không đặt, sẽ suy từ FFMPEG_PATH; đặt riêng nếu ffprobe ở thư mục khác)
+FFPROBE_PATH = env('FFPROBE_PATH', default='')
+
+# Mix Video: tỉ lệ khung hình output (width px; height=0 thì tự tính theo width giữ tỉ lệ gốc)
+MIX_VIDEO_OUTPUT_WIDTH = env.int('MIX_VIDEO_OUTPUT_WIDTH', default=720)
+MIX_VIDEO_OUTPUT_HEIGHT = env.int('MIX_VIDEO_OUTPUT_HEIGHT', default=0)  # 0 = auto (scale theo width)
+
 # Telegram settings
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 
-# Celery Beat Schedule
-from celery.schedules import crontab
-
+# Celery Beat Schedule — Facebook 3-Phase Scraper
 CELERY_BEAT_SCHEDULE = {
-    'scan-channels-every-30-minutes': {
-        'task': 'video_management.tasks.scan_tracked_channels',
-        'schedule': crontab(minute='*/30'),
-    },
     'cleanup-cache-daily': {
-        'task': 'video_management.tasks.cleanup_old_cache',
-        'schedule': crontab(hour=0, minute=0),
+        'task': 'video_management.cleanup_old_cache',
+        'schedule': 86400.0,
     },
+    # GĐ0-GĐ3 (import/backfill/delta-sync/refresh-metrics cho ManagedFacebookPage) đã
+    # chuyển sang BE (@Cron trong FacebookOwnedPagesCronService) — BE giờ sở hữu DB, AI
+    # chỉ còn expose fetch-only endpoints (facebook_fetch_views.py).
+    # Facebook external (fanpages đối thủ): đã chuyển sang BE
+    # (@Cron trong FacebookExternalScraperCronService, 6h sáng VN)
+    # TikTok: đã chuyển sang BE (@Cron trong TiktokScraperCronService, 5h30 sáng VN)
+    # Instagram: đã chuyển sang BE (@Cron trong InstagramScraperCronService, 7h30 sáng VN)
+    # Douyin: đã chuyển sang BE (@Cron trong DouyinScraperCronService, 8h sáng VN)
+    # Xiaohongshu: đã chuyển sang BE (@Cron trong XiaohongshuScraperCronService, 8h sáng VN)
 }
 
 
+# ==========================================
+# VIDEO PATHS CONFIGURATION
+# ==========================================
+# Base paths for video folders (network paths hoặc ổ đĩa local đã map)
+# Ví dụ: VIDEO_BASE_PATHS=//VCB_MEDIA/MEDIA VCB folder,//192.168.1.250/MEDIA VCB folder,Z:/
+VIDEO_BASE_PATHS = env.list('VIDEO_BASE_PATHS', default=[
+    r'\\VCB_MEDIA\MEDIA VCB folder',
+    r'\\192.168.1.250\MEDIA VCB folder',
+])
+
+# Thư mục chứa video sản phẩm (dưới mỗi base path). Hệ thống tìm folder có tên chứa mã SKU trong đây.
+PRODUCT_VIDEO_SUBFOLDER = env('PRODUCT_VIDEO_SUBFOLDER', default=r'VIDEO Sản Phẩm')
+
+# (Tùy chọn) Đường dẫn ĐẦY ĐỦ để quét tìm video sản phẩm. Nếu có → dùng thay vì VIDEO_BASE_PATHS + PRODUCT_VIDEO_SUBFOLDER.
+# Ví dụ: PRODUCT_VIDEO_PATHS=//VCB_MEDIA/MEDIA VCB folder/VIDEO Sản Phẩm,Z:/VIDEO Sản Phẩm,D:/Videos/Sản phẩm
+PRODUCT_VIDEO_PATHS = env.list('PRODUCT_VIDEO_PATHS', default=[])
+
+# Manufacturing (Chế tác) folder - append dưới VIDEO_BASE_PATHS
+# Ví dụ: Chế tác sản phẩm\Việt Nam → path: Generate Video\Chế tác sản phẩm\Việt Nam\<Nhẫn>\<NM101_...>
+MANUFACTURING_FOLDER_PATH = env('MANUFACTURING_FOLDER_PATH', default=r'Chế tác sản phẩm\Việt Nam')
+
+# HuyK video folder (chứa video KOC/HuyK cho Slot 2 & 4)
+# Nếu để trống, hệ thống tự scan trong VIDEO_BASE_PATHS
+HUYK_VIDEO_PATH = env('HUYK_VIDEO_PATH', default='')
+
+# Outro folder (chứa video outro cho Slot 7)
+# Nếu để trống, hệ thống tự scan tìm folder 'outro' hoặc 'source huyk'
+OUTRO_FOLDER_PATH = env('OUTRO_FOLDER_PATH', default='')
+
+
+# Reload triggered

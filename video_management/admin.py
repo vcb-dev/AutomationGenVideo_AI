@@ -6,7 +6,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
-from .models import SearchHistory, ScrapedVideo, TrackedChannel, VideoCollection, CollectionVideo
+from .models import SearchHistory, ScrapedVideo, TrackedChannel, VideoCollection, CollectionVideo, FacebookPageCache, GeneratedContent
 
 
 @admin.register(SearchHistory)
@@ -372,6 +372,205 @@ class CollectionVideoAdmin(admin.ModelAdmin):
             obj.video.author_username
         )
     video_preview.short_description = 'Video'
+
+
+@admin.register(FacebookPageCache)
+class FacebookPageCacheAdmin(admin.ModelAdmin):
+    """Admin interface for FacebookPageCache model."""
+    
+    list_display = [
+        'username',
+        'page_name',
+        'followers_count',
+        'likes_count',
+        'cache_status',
+        'last_fetched_at',
+        'expires_at',
+    ]
+    search_fields = ['username', 'page_name']
+    readonly_fields = [
+        'last_fetched_at',
+        'created_at',
+        'updated_at',
+        'cache_age_display',
+    ]
+    fieldsets = (
+        ('Page Info', {
+            'fields': ('username', 'page_name', 'avatar_url')
+        }),
+        ('Statistics', {
+            'fields': ('followers_count', 'likes_count', 'verified')
+        }),
+        ('Additional Info', {
+            'fields': ('page_description', 'page_category'),
+            'classes': ('collapse',)
+        }),
+        ('Cache Control', {
+            'fields': ('expires_at', 'last_fetched_at', 'cache_age_display')
+        }),
+        ('Raw Data', {
+            'fields': ('raw_data',),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    date_hierarchy = 'last_fetched_at'
+    actions = ['refresh_cache', 'clear_expired']
+    
+    def cache_status(self, obj):
+        """Display cache status with badge."""
+        if obj.is_expired():
+            return format_html(
+                '<span style="color: red; font-weight: bold;">❌ Expired</span>'
+            )
+        from django.utils import timezone
+        remaining = obj.expires_at - timezone.now()
+        hours = int(remaining.total_seconds() / 3600)
+        return format_html(
+            '<span style="color: green; font-weight: bold;">✅ Valid ({} hrs left)</span>',
+            hours
+        )
+    cache_status.short_description = 'Cache Status'
+    
+    def cache_age_display(self, obj):
+        """Display how long ago data was fetched."""
+        from django.utils import timezone
+        age = timezone.now() - obj.last_fetched_at
+        hours = int(age.total_seconds() / 3600)
+        return f"{hours} hours ago"
+    cache_age_display.short_description = 'Cache Age'
+    
+    def refresh_cache(self, request, queryset):
+        """Refresh cache for selected entries."""
+        count = 0
+        for obj in queryset:
+            obj.refresh_expiry()
+            count += 1
+        self.message_user(request, f'{count} cache entry(ies) refreshed.')
+    refresh_cache.short_description = 'Refresh cache expiry'
+    
+    def clear_expired(self, request, queryset):
+        """Clear expired cache entries."""
+        count = 0
+        for obj in queryset:
+            if obj.is_expired():
+                obj.delete()
+                count += 1
+        self.message_user(request, f'{count} expired cache entry(ies) cleared.')
+    clear_expired.short_description = 'Clear expired entries'
+
+
+@admin.register(GeneratedContent)
+class GeneratedContentAdmin(admin.ModelAdmin):
+    """Admin interface for GeneratedContent model."""
+    
+    list_display = [
+        'id',
+        'content_type_badge',
+        'title_preview',
+        'source_video_link',
+        'word_count',
+        'approval_status',
+        'created_at',
+    ]
+    list_filter = ['content_type', 'is_approved', 'created_at', 'ai_model']
+    search_fields = ['title', 'script', 'source_video__title']
+    readonly_fields = [
+        'id',
+        'word_count',
+        'created_at',
+        'updated_at',
+        'source_video_preview',
+    ]
+    autocomplete_fields = ['source_video']
+    fieldsets = (
+        ('Content Info', {
+            'fields': ('source_video', 'source_video_preview', 'content_type', 'title')
+        }),
+        ('Script', {
+            'fields': ('script', 'hook', 'problem', 'solution', 'cta')
+        }),
+        ('Metadata', {
+            'fields': ('word_count', 'estimated_duration', 'ai_model', 'prompt_used')
+        }),
+        ('Status', {
+            'fields': ('is_approved', 'notes')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    actions = ['approve_contents', 'unapprove_contents']
+    date_hierarchy = 'created_at'
+    
+    def content_type_badge(self, obj):
+        """Display colored content type badge."""
+        colors = {
+            'A1': '#FF6B6B',  # Red - Traffic
+            'A2': '#4ECDC4',  # Teal - Knowledge
+            'A3': '#45B7D1',  # Blue - Credibility
+            'A4': '#96CEB4',  # Green - Conversion
+            'A5': '#FFEAA7',  # Yellow - Combined
+        }
+        color = colors.get(obj.content_type, '#95A5A6')
+        return format_html(
+            '<span style="background-color: {}; padding: 5px 10px; border-radius: 3px; color: white; font-weight: bold;">{}</span>',
+            color,
+            obj.get_content_type_display()
+        )
+    content_type_badge.short_description = 'Type'
+    
+    def title_preview(self, obj):
+        """Display title preview."""
+        title = obj.title[:60] + '...' if len(obj.title) > 60 else obj.title
+        return format_html('<strong>{}</strong>', title)
+    title_preview.short_description = 'Title'
+    
+    def source_video_link(self, obj):
+        """Display link to source video."""
+        url = reverse('admin:video_management_scrapedvideo_change', args=[obj.source_video.id])
+        return format_html(
+            '<a href="{}">{}</a>',
+            url,
+            obj.source_video.title[:40] + '...'
+        )
+    source_video_link.short_description = 'Source Video'
+    
+    def source_video_preview(self, obj):
+        """Display source video details."""
+        video = obj.source_video
+        return format_html(
+            '<strong>{}</strong><br>'
+            '<small>Platform: {} | Author: @{}</small>',
+            video.title,
+            video.platform,
+            video.author_username
+        )
+    source_video_preview.short_description = 'Source Video Details'
+    
+    def approval_status(self, obj):
+        """Display approval status."""
+        if obj.is_approved:
+            return format_html('<span style="color: green;">✅ Approved</span>')
+        return format_html('<span style="color: gray;">⏳ Pending</span>')
+    approval_status.short_description = 'Status'
+    
+    def approve_contents(self, request, queryset):
+        """Approve selected contents."""
+        count = queryset.update(is_approved=True)
+        self.message_user(request, f'{count} content(s) approved.')
+    approve_contents.short_description = 'Approve selected contents'
+    
+    def unapprove_contents(self, request, queryset):
+        """Unapprove selected contents."""
+        count = queryset.update(is_approved=False)
+        self.message_user(request, f'{count} content(s) unapproved.')
+    unapprove_contents.short_description = 'Unapprove selected contents'
+
 
 
 # Customize admin site

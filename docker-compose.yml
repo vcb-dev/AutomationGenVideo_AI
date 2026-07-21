@@ -1,50 +1,113 @@
 version: '3.8'
 
 services:
-  api:
+  redis:
+    image: redis:alpine
+    container_name: vcb_ai_redis
+    hostname: vcb_ai_redis
+    restart: always
+
+  vcb_ai_web:
     build: .
+    image: ai-server-web:latest
+    container_name: vcb_ai_web
+    hostname: vcb_ai_web
     volumes:
       - .:/app
+      - /volume1:/volume1
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/video_production_ai
-      - CELERY_BROKER_URL=redis://host.docker.internal:6379/0
-      - CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/0
-    command: python manage.py runserver 0.0.0.0:8000
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
+    command:
+      - sh
+      - scripts/docker-entrypoint-web.sh
+      - gunicorn
+      - core.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --workers
+      - "4"
+      - --worker-class
+      - gthread
+      - --threads
+      - "4"
+      - --timeout
+      - "180"
+      - --keep-alive
+      - "5"
+      - --log-level
+      - info
+    depends_on:
+      - redis
+    restart: always
 
-  worker:
+  vcb_ai_celery:
     build: .
+    image: ai-server-celery:latest
+    container_name: vcb_ai_celery
+    hostname: vcb_ai_celery
     volumes:
       - .:/app
+      - /volume1:/volume1
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/video_production_ai
-      - CELERY_BROKER_URL=redis://host.docker.internal:6379/0
-      - CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/0
-    command: celery -A core worker --loglevel=info
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
+    command:
+      - sh
+      - scripts/docker-entrypoint-worker.sh
+      - celery
+      - -A
+      - core
+      - worker
+      - --loglevel=info
+      - --pool=threads
+      - --concurrency=4
     depends_on:
-      - api
+      - redis
+      - vcb_ai_web
+    restart: always
 
-  beat:
+  vcb_ai_beat:
     build: .
+    image: ai-server-beat:latest
+    container_name: vcb_ai_beat
+    hostname: vcb_ai_beat
     volumes:
       - .:/app
+      - /volume1:/volume1
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/video_production_ai
-      - CELERY_BROKER_URL=redis://host.docker.internal:6379/0
-      - CELERY_RESULT_BACKEND=redis://host.docker.internal:6379/0
-    command: celery -A core beat --loglevel=info
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    command:
+      - sh
+      - scripts/docker-entrypoint-worker.sh
+      - celery
+      - -A
+      - core
+      - beat
+      - --loglevel=info
     depends_on:
-      - api
+      - redis
+      - vcb_ai_web
+    restart: always
+
+  vcb_ai_tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: vcb_ai_tunnel
+    hostname: vcb_ai_tunnel
+    env_file:
+      - .env
+    command: tunnel --protocol http2 --no-autoupdate --url http://vcb_ai_web:8000
+    depends_on:
+      - vcb_ai_web
+    restart: always

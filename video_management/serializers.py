@@ -8,7 +8,7 @@ validation, serialization, and deserialization of data.
 from rest_framework import serializers
 from .models import (
     SearchHistory, ScrapedVideo, TrackedChannel, Platform,
-    VideoCollection, CollectionVideo
+    VideoCollection, CollectionVideo, Product, ProductList
 )
 
 
@@ -38,9 +38,9 @@ class SearchRequestSerializer(serializers.Serializer):
     max_results = serializers.IntegerField(
         default=20,
         min_value=1,
-        max_value=100,
+        max_value=10000,
         required=False,
-        help_text="Maximum number of results (1-100)"
+        help_text="Maximum number of results (1-10000)"
     )
     use_cache = serializers.BooleanField(
         default=True,
@@ -57,7 +57,28 @@ class SearchRequestSerializer(serializers.Serializer):
         default='posts',
         help_text="Specific content type (e.g., 'reels', 'posts')"
     )
-
+    page = serializers.IntegerField(
+        default=1,
+        min_value=1,
+        required=False,
+        help_text="Page number for pagination (1-based). Page 2 = next 30 results."
+    )
+    min_comments = serializers.IntegerField(
+        default=0,
+        min_value=0,
+        required=False,
+        help_text="Minimum comments filter (OR with min_likes, min_views for Instagram)"
+    )
+    search_mode = serializers.CharField(
+        required=False,
+        default='hashtag',
+        help_text="For Instagram: 'hashtag' (search by #tag) or 'keyword' (search by keyword in caption/explore)"
+    )
+    session_id = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="Session ID to seed randomized picking on TikTok"
+    )
 
 class UserVideosRequestSerializer(serializers.Serializer):
     """Serializer for user videos request."""
@@ -76,6 +97,24 @@ class UserVideosRequestSerializer(serializers.Serializer):
         required=False,
         help_text="Maximum number of results (default: 9999 for all)"
     )
+    until_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Fetch videos from this start date (YYYY-MM-DD)"
+    )
+    start_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="Start date for filtering (YYYY-MM-DD)"
+    )
+    end_date = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        help_text="End date for filtering (YYYY-MM-DD)"
+    )
 
 
 
@@ -83,6 +122,7 @@ class VideoSerializer(serializers.ModelSerializer):
     """Serializer for scraped video data."""
     
     engagement_rate = serializers.SerializerMethodField()
+    is_video = serializers.SerializerMethodField()
     platform_display = serializers.CharField(source='get_platform_display', read_only=True)
     
     class Meta:
@@ -101,6 +141,7 @@ class VideoSerializer(serializers.ModelSerializer):
             'comments_count',
             'shares_count',
             'engagement_rate',
+            'is_video',
             'video_url',
             'download_url',
             'thumbnail_url',
@@ -116,6 +157,26 @@ class VideoSerializer(serializers.ModelSerializer):
     def get_engagement_rate(self, obj):
         """Calculate engagement rate percentage."""
         return round(obj.engagement_rate, 2)
+        
+    def get_is_video(self, obj):
+        """Determine if this is a video content."""
+        # 1. Check raw_data (injected from scraper)
+        if obj.raw_data and isinstance(obj.raw_data, dict):
+            if 'is_video_derived' in obj.raw_data:
+                return bool(obj.raw_data['is_video_derived'])
+            # Fallback for old data or other scrapers
+            if obj.raw_data.get('isVideo'):
+                return True
+                
+        # 2. Check URL presence
+        if obj.video_url or obj.download_url:
+            return True
+            
+        # 3. Platform specific
+        if obj.platform in [Platform.TIKTOK, Platform.DOUYIN]:
+            return True
+            
+        return False
 
 
 class SearchHistorySerializer(serializers.ModelSerializer):
@@ -404,4 +465,63 @@ class AddVideosToCollectionSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="Optional notes"
     )
+
+
+class ProductSerializer(serializers.ModelSerializer):
+    """Serializer for individual products."""
+    
+    class Meta:
+        model = Product
+        fields = [
+            'id',
+            'product_list',
+            'name',
+            'category',
+            'price',
+            'description',
+            'highlights',
+            'sku',
+            'raw_data',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class ProductListSerializer(serializers.ModelSerializer):
+    """Serializer for product lists with products."""
+    
+    products = ProductSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = ProductList
+        fields = [
+            'id',
+            'name',
+            'file_name',
+            'file_path',
+            'total_products',
+            'description',
+            'products',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'total_products', 'created_at', 'updated_at']
+
+
+class ProductListSummarySerializer(serializers.ModelSerializer):
+    """Lightweight serializer for product list without products."""
+    
+    class Meta:
+        model = ProductList
+        fields = [
+            'id',
+            'name',
+            'file_name',
+            'total_products',
+            'description',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'total_products', 'created_at', 'updated_at']
+
 

@@ -55,8 +55,12 @@ echo "Python version: $($PYTHON_CMD --version)"
 echo ""
 
 # Activate virtual environment if exists
-if [ -d "venv" ]; then
-    echo "Activating virtual environment..."
+if [ -d ".venv" ]; then
+    echo "Activating virtual environment (.venv)..."
+    source .venv/bin/activate
+    PYTHON_CMD="python"
+elif [ -d "venv" ]; then
+    echo "Activating virtual environment (venv)..."
     source venv/bin/activate
     PYTHON_CMD="python"
 fi
@@ -75,7 +79,9 @@ fi
 if [ "$RUN_MIGRATE" = true ]; then
     echo ""
     echo "Running migrations..."
-    $PYTHON_CMD manage.py migrate --noinput
+    # Shared DB may already contain initial Django tables.
+    # --fake-initial marks matching initial migrations as applied instead of re-creating existing tables.
+    $PYTHON_CMD manage.py migrate --noinput --fake-initial
 fi
 
 # Check if port is available

@@ -5,6 +5,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.views import APIView
 from rest_framework.response import Response
+# from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 
 class APIRootView(APIView):
@@ -16,7 +17,7 @@ class APIRootView(APIView):
             'message': 'AutomationGenVideo AI Service v2.0',
             'status': 'running',
             'version': '2.0.0',
-            'description': 'Multi-platform video scraping service using Apify',
+            'description': 'Multi-platform video scraping service',
             'platforms': ['tiktok', 'douyin', 'instagram', 'facebook'],
             'endpoints': {
                 'health': {
@@ -83,7 +84,8 @@ class APIRootView(APIView):
                     'description': 'Get system statistics and analytics'
                 }
             },
-            'documentation': 'See README.md for detailed API documentation',
+            'documentation': '/api/docs/',
+            'openapi_schema': '/api/schema/',
             'admin_panel': '/admin/'
         })
 
@@ -91,7 +93,68 @@ class APIRootView(APIView):
 urlpatterns = [
     path('', APIRootView.as_view(), name='api-root'),
     path('admin/', admin.site.urls),
+    # path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    # path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    # Trigger Reload Again for TikTok
     path('api/', include('video_management.urls')),
+]
+
+# VCB Assistant Chat
+from video_management.views import chat_views
+from video_management.views.analytics_chat_views import analytics_chat
+
+urlpatterns += [
+    path('api/chat/', chat_views.chat, name='vcb-chat'),
+    path('api/chat/analytics/', analytics_chat, name='vcb-analytics-chat'),
+]
+
+# Cached audio serving endpoint
+from video_management.views.smart_mix_video_views import serve_cached_audio
+
+urlpatterns += [
+    path('api/audio/cache/<str:filename>', serve_cached_audio, name='serve-cached-audio'),
+]
+
+# HeyGen lipsync/motion control endpoints
+from heygen_service import views as heygen_views
+
+urlpatterns += [
+    path('api/heygen/generate-video', heygen_views.generate_video, name='heygen-generate'),
+    path('api/heygen/generate-script', heygen_views.generate_script, name='heygen-generate-script'),
+    path('api/heygen/generate-and-wait', heygen_views.generate_and_wait, name='heygen-generate-wait'),
+    path('api/heygen/status/<str:video_id>', heygen_views.get_video_status, name='heygen-status'),
+    path('api/heygen/voices', heygen_views.list_voices, name='heygen-voices'),
+    path('api/heygen/clone-voice', heygen_views.clone_voice_from_video, name='heygen-clone-voice'),
+    path('api/heygen/generate-audio', heygen_views.generate_audio, name='heygen-generate-audio'),
+]
+
+# Content Generation endpoints
+from video_management.views import content_generation_views
+
+urlpatterns += [
+    path('api/content/generate/', content_generation_views.generate_content, name='content-generate'),
+    path('api/content/generate-prompt/', content_generation_views.generate_prompt, name='content-generate-prompt'),
+    path('api/content/video/<int:video_id>/', content_generation_views.get_generated_contents, name='content-by-video'),
+    path('api/content/<int:content_id>/', content_generation_views.get_content_detail, name='content-detail'),
+    path('api/ai/transform-content/', content_generation_views.transform_content, name='transform-content'),
+]
+
+# Video Transcription (Speech-to-Text via OpenAI Whisper)
+from video_management.views import transcribe_views
+
+urlpatterns += [
+    path('api/content/transcribe/', transcribe_views.transcribe_video, name='content-transcribe'),
+    path('api/content/transcribe-upload/', transcribe_views.transcribe_upload, name='content-transcribe-upload'),
+]
+
+# Video Downloader (Tiện ích → Tải video, dùng yt-dlp)
+from video_management.views import video_downloader_views
+
+urlpatterns += [
+    path('api/tools/video-downloader/info/', video_downloader_views.video_info, name='video-dl-info'),
+    path('api/tools/video-downloader/jobs/', video_downloader_views.start_download, name='video-dl-start'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/', video_downloader_views.download_status, name='video-dl-status'),
+    path('api/tools/video-downloader/jobs/<str:job_id>/file/', video_downloader_views.download_file, name='video-dl-file'),
 ]
 
 # Serve media files in development
@@ -101,3 +164,4 @@ from django.conf.urls.static import static
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+
