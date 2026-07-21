@@ -8,11 +8,18 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from ..services.apify_service import create_scraper
 from .facebook_analysis_views import _parse_insights_json, _is_placeholder
 from ..models import ChannelAnalysis
 
 logger = logging.getLogger(__name__)
+
+
+def create_scraper(platform: str):
+    """Generic multi-platform scraper — not currently available (no provider configured)."""
+    raise NotImplementedError(
+        f"Channel scraping for '{platform}' is not currently available. "
+        "Only cached results (already computed previously) can be served."
+    )
 
 
 def _get_body(request):

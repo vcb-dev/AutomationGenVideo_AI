@@ -4,6 +4,7 @@ djangorestframework>=3.14.0
 # drf-spectacular>=0.27.2
 django-cors-headers>=4.0.0
 django-environ>=0.10.0
+PyJWT>=2.8.0
 
 # Database
 psycopg2-binary>=2.9.9
@@ -18,7 +19,7 @@ httpx>=0.27.0
 
 # AI APIs
 openai>=1.0.0
-google-generativeai>=0.3.0
+google-generativeai>=0.8.0
 anthropic>=0.25.0
 
 # Apify Client for Scraping
@@ -42,6 +43,8 @@ python-dotenv>=1.0.0
 gunicorn>=21.2.0
 
 # Utilities
+unidecode>=1.3.0
+cryptography>=42.0.0
 python-dateutil>=2.8.2
 pytz>=2024.1
 
@@ -56,4 +59,18 @@ pillow>=10.0.0
 # Video (lightweight only)
 aiohttp>=3.9.0
 ffmpeg-python>=0.2.0
-yt-dlp>=2023.10.0
+# Cài từ GitHub (ghim theo commit) thay vì PyPI — xem requirements.txt để biết lý do.
+# Dùng tarball HTTPS (archive/<commit>.tar.gz), KHÔNG dùng git+https://... — file này
+# dùng chung cho cả Dockerfile.railway (đã có git) lẫn ./Dockerfile NAS/compose (KHÔNG
+# có git) — cú pháp git+ làm pip install fail thẳng ("Cannot find command 'git'") trên
+# nhánh thiếu git. Tarball vẫn ghim đúng commit, chỉ tải qua HTTP thường nên không cần git.
+yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/aefce1eea4.tar.gz
+
+# Douyin bắt buộc Chromium headless để né chữ ký JS (xem requirements.txt +
+# video_management/scripts/douyin_extract.py). Trước bản này requirements_cloud.txt
+# thiếu cả 2 dòng dưới — tính năng Douyin luôn lỗi ngầm trên production dù chạy đúng ở
+# máy dev có venv cài tay. Muốn hoạt động còn cần cài Chromium
+# (`playwright install --with-deps chromium`) vào môi trường chạy — Dockerfile.railway
+# hiện chưa có bước này, xem trao đổi liên quan trước khi tự thêm vào.
+playwright>=1.61.0
+playwright-stealth>=2.0.3

@@ -16,10 +16,17 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from ..services.facebook_hybrid_service import get_facebook_hybrid_service
 from ..models import ChannelAnalysis
 
 logger = logging.getLogger(__name__)
+
+
+def get_facebook_hybrid_service():
+    """Facebook scraping service — not currently available (no provider configured)."""
+    raise NotImplementedError(
+        "Facebook channel scraping is not currently available. "
+        "Only cached results (already computed previously) can be served."
+    )
     
 
 def _parse_insights_json(text: str, section_keys: list) -> dict:

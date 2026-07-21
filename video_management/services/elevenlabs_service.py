@@ -2,10 +2,13 @@
 import os
 import requests
 import uuid
+import logging
 from typing import Optional, Dict, Any, List
 from django.conf import settings
 from elevenlabs import ElevenLabs, save
 from elevenlabs.client import ElevenLabs
+
+logger = logging.getLogger(__name__)
 
 # Note: ElevenLabs SDK usage has changed in v1.0+
 # We will use the client class pattern
@@ -14,15 +17,15 @@ class ElevenLabsService:
     """
     Service to interact with ElevenLabs API for Voice Cloning and TTS.
     """
-    
+
     def __init__(self):
         self.api_key = settings.ELEVENLABS_API_KEY
         if not self.api_key:
             # Fallback to os.getenv just in case
             self.api_key = os.getenv("ELEVENLABS_API_KEY")
-            
+
         if not self.api_key:
-            print("WARNING: ELEVENLABS_API_KEY is missing")
+            logger.warning("ELEVENLABS_API_KEY is missing")
             
         self.client = ElevenLabs(
             api_key=self.api_key,
@@ -54,7 +57,7 @@ class ElevenLabsService:
             }
             
         except Exception as e:
-            print(f"ElevenLabs Cloning Error: {str(e)}")
+            logger.error(f"ElevenLabs Cloning Error: {str(e)}", exc_info=True)
             raise
 
     def generate_audio(self, text: str, voice_id: str, output_path: Optional[str] = None) -> str:
@@ -83,7 +86,7 @@ class ElevenLabsService:
             return output_path
             
         except Exception as e:
-            print(f"ElevenLabs TTS Error: {str(e)}")
+            logger.error(f"ElevenLabs TTS Error: {str(e)}", exc_info=True)
             raise
 
     def get_voices(self) -> List[Dict[str, Any]]:
@@ -106,7 +109,7 @@ class ElevenLabsService:
             return voices_data
             
         except Exception as e:
-            print(f"ElevenLabs Get Voices Error: {str(e)}")
+            logger.error(f"ElevenLabs Get Voices Error: {str(e)}", exc_info=True)
             return []
 
     def delete_voice(self, voice_id: str) -> bool:
@@ -114,5 +117,6 @@ class ElevenLabsService:
         try:
             self.client.voices.delete(voice_id)
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"ElevenLabs Delete Voice Error: {str(e)}", exc_info=True)
             return False

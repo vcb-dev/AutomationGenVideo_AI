@@ -1,6 +1,5 @@
 """
-TikTok Search Views - Uses Apify scraper (same as other platforms).
-TikHub has been removed from the project.
+TikTok Search Views - deprecated, kept for backward compatibility.
 """
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -16,8 +15,7 @@ logger = logging.getLogger(__name__)
 def search_tiktok_videos(request):
     """
     Search TikTok videos.
-    NOTE: TikHub removed. Use the main /api/search/ endpoint with platform=tiktok instead.
-    This endpoint is kept for backward compatibility but redirects to the Apify-based search.
+    NOTE: deprecated. Use the main /api/search/ endpoint with platform=tiktok instead.
     """
     return Response({
         'success': False,
