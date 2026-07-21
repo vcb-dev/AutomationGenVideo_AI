@@ -14,16 +14,28 @@ import re
 import requests as http_requests
 
 from django.conf import settings
-from rest_framework.decorators import api_view, permission_classes, parser_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view, permission_classes, parser_classes, throttle_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.throttling import SimpleRateThrottle
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
 MAX_AUDIO_SIZE_MB = 24   # Whisper giới hạn 25MB
 DOWNLOAD_TIMEOUT  = 300  # seconds (yt-dlp) — 5 phút cho video dài hoặc kết nối chậm
+MAX_UPLOAD_SIZE_MB = 500  # khớp giới hạn Gemini Files API (transcribe_with_gemini)
+
+
+class TranscribeUploadThrottle(SimpleRateThrottle):
+    """Giới hạn số lần upload/phút — mỗi request hợp lệ đều tốn 1 lệnh gọi Gemini
+    (tính phí) và ghi nguyên file ra đĩa server, cùng kiểu rủi ro với video-downloader."""
+    scope = 'transcribe_upload'
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated else self.get_ident(request)
+        return f'throttle_transcribe_upload_{ident}'
 TRANSCRIBE_GLOSSARY_PROMPT = (
     "Transcribe verbatim, keep original wording, do not summarize. "
     "Prefer correct Vietnamese spelling and punctuation. "
@@ -790,7 +802,8 @@ def transcribe_with_gemini(file_path: str) -> str:
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
+@throttle_classes([TranscribeUploadThrottle])
 @parser_classes([MultiPartParser, FormParser])
 def transcribe_upload(request):
     """
@@ -798,10 +811,21 @@ def transcribe_upload(request):
     Form Data:
         - file: Uploaded video/audio file
     Response: { "success": true, "transcript": "...", "duration_seconds": N, "char_count": N }
+
+    Yêu cầu đăng nhập + throttle riêng — mỗi request hợp lệ tốn 1 lệnh gọi Gemini
+    (tính phí) và ghi nguyên file ra đĩa server trước khi kiểm tra thời lượng,
+    khác transcribe_video() (AllowAny) chỉ nhận URL rồi tự tải qua yt-dlp.
     """
     uploaded_file = request.FILES.get('file')
     if not uploaded_file:
         return Response({'success': False, 'error_message': 'No file uploaded'}, status=400)
+
+    file_size_mb = uploaded_file.size / (1024 * 1024)
+    if file_size_mb > MAX_UPLOAD_SIZE_MB:
+        return Response({
+            'success': False,
+            'error_message': f'Dung lượng tập tin vượt quá giới hạn cho phép ({file_size_mb:.1f}MB > {MAX_UPLOAD_SIZE_MB}MB).'
+        }, status=400)
 
     ffmpeg_path = _get_ffmpeg()
     if not ffmpeg_path:

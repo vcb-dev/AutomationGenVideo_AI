@@ -239,6 +239,7 @@ REST_FRAMEWORK = {
         'anon': env('DRF_THROTTLE_ANON', default='120/min'),
         'user': env('DRF_THROTTLE_USER', default='600/min'),
         'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
+        'transcribe_upload': env('DRF_THROTTLE_TRANSCRIBE_UPLOAD', default='10/min'),
     },
     # Global pagination defaults for list endpoints that use DRF pagination.
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
