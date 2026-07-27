@@ -91,3 +91,4 @@ celerybeat.pid
 .pytest_cache/
 .coverage
 htmlcov/
+.gstack/

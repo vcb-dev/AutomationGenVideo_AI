@@ -18,7 +18,9 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 DEEPSEEK_BASE = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
+# DeepSeek đã bỏ tên "deepseek-chat" — API trả lỗi "The supported API model names are
+# deepseek-v4-pro or deepseek-v4-flash". Dùng -flash (rẻ/nhanh) cho tác vụ sinh script.
+DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 # MIME types đọc được thành text để đưa vào prompt (DeepSeek chỉ nhận text)
 TEXT_MIMES = {
