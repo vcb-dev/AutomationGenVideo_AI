@@ -23,9 +23,25 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
-    # Production server: single-line command to avoid sh parsing errors on NAS
-    command: >
-      sh -c "python manage.py migrate --noinput && gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 4 --worker-class gthread --threads 4 --timeout 180 --keep-alive 5 --log-level info"
+    command:
+      - sh
+      - scripts/docker-entrypoint-web.sh
+      - gunicorn
+      - core.wsgi:application
+      - --bind
+      - 0.0.0.0:8000
+      - --workers
+      - "4"
+      - --worker-class
+      - gthread
+      - --threads
+      - "4"
+      - --timeout
+      - "180"
+      - --keep-alive
+      - "5"
+      - --log-level
+      - info
     depends_on:
       - redis
     restart: always
@@ -44,8 +60,16 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - REDIS_URL=redis://redis:6379/0
-    command: >
-      sh -c "celery -A core worker --loglevel=info --pool=threads --concurrency=4"
+    command:
+      - sh
+      - scripts/docker-entrypoint-worker.sh
+      - celery
+      - -A
+      - core
+      - worker
+      - --loglevel=info
+      - --pool=threads
+      - --concurrency=4
     depends_on:
       - redis
       - vcb_ai_web
@@ -64,8 +88,14 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    command: >
-      sh -c "celery -A core beat --loglevel=info"
+    command:
+      - sh
+      - scripts/docker-entrypoint-worker.sh
+      - celery
+      - -A
+      - core
+      - beat
+      - --loglevel=info
     depends_on:
       - redis
       - vcb_ai_web

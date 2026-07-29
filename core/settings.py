@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import base64
 from pathlib import Path
 import environ
 import os
@@ -58,9 +59,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+    'django.contrib.postgres',
+
     # Third party apps
     'rest_framework',
+    'rest_framework.authtoken',
     # 'drf_spectacular',
     'corsheaders',
     
@@ -115,6 +118,11 @@ if not _db_url:
 DATABASES = {
     'default': env.db('DATABASE_URL')
 }
+# ?pgbouncer=true trong DATABASE_URL là tham số của Prisma (BE dùng chung URL Supabase);
+# django-environ >= 0.13 truyền mọi query param vào OPTIONS còn psycopg2 không nhận
+# option "pgbouncer" (lỗi "invalid dsn") — bỏ nó ra trước khi kết nối.
+if isinstance(DATABASES['default'].get('OPTIONS'), dict):
+    DATABASES['default']['OPTIONS'].pop('pgbouncer', None)
 # Optimize for multiple concurrent users by keeping DB connections open
 DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=300)
 DATABASES['default']['CONN_HEALTH_CHECKS'] = True
@@ -203,7 +211,15 @@ LOGGING = {
 }
 
 # REST Framework settings
+JWT_SECRET = env('JWT_SECRET', default='')
+JWT_BOOT_SUFFIX = env('JWT_BOOT_SUFFIX', default='')
+
 REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'core.authentication.NestJWTAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
@@ -222,6 +238,8 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'anon': env('DRF_THROTTLE_ANON', default='120/min'),
         'user': env('DRF_THROTTLE_USER', default='600/min'),
+        'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
+        'transcribe_upload': env('DRF_THROTTLE_TRANSCRIBE_UPLOAD', default='10/min'),
     },
     # Global pagination defaults for list endpoints that use DRF pagination.
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -236,8 +254,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Celery settings
-CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://redis:6379/0')
-CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://redis:6379/0')
+CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -278,11 +296,14 @@ except Exception:
 CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=True)  # Enable for development
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://localhost:3000',
+    'http://localhost:3001',
     'http://localhost:5173',
     'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
     'http://127.0.0.1:5173',
 ])
 CORS_ALLOW_CREDENTIALS = True
+CORS_EXPOSE_HEADERS = ['Content-Disposition']  # cho FE đọc tên file khi tải video
 CORS_ALLOW_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -297,57 +318,34 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # ==========================================
-# APIFY CONFIGURATION (Primary Scraping Service)
+# RAPIDAPI CONFIGURATION
 # ==========================================
-APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
-# Proxy password for Apify Residential Proxy (image-proxy cho Facebook CDN).
-# Lấy từ: https://console.apify.com/proxy - khác với API Token. Nếu không set, dùng APIFY_API_TOKEN.
-APIFY_PROXY_PASSWORD = env('APIFY_PROXY_PASSWORD', default='')
-# Country cho Residential Proxy (US, VN, ...). Phát huy khi dùng cho Image Proxy
-APIFY_PROXY_COUNTRY = env('APIFY_PROXY_COUNTRY', default='US')
-# Danh sách Country code. Hệ thống quét sẽ tự động chọn ngẫu nhiên để lách chặn IP
-APIFY_PROXY_COUNTRIES = env('APIFY_PROXY_COUNTRIES', default='VN,US,JP,SG')
-
-# Apify Actor IDs for different platforms
-APIFY_ACTORS = {
-    # TikTok
-    'tiktok': env('APIFY_ACTOR_TIKTOK', default='clockworks/free-tiktok-scraper'),
-    'tiktok_profile': env('APIFY_ACTOR_TIKTOK_PROFILE', default='apidojo/tiktok-profile-scraper'),
-    'tiktok_user': env('APIFY_ACTOR_TIKTOK_USER', default='apidojo/tiktok-user-scraper'),
-    # Instagram
-    'instagram': env('APIFY_ACTOR_INSTAGRAM', default='apify/instagram-scraper'),
-    'instagram_profile': env('APIFY_ACTOR_INSTAGRAM_PROFILE', default='apify/instagram-profile-scraper'),  # Chuyên profile + avatar
-    'instagram_reels': env('APIFY_ACTOR_INSTAGRAM_REELS', default='apify/instagram-reel-scraper'),
-    'instagram_hashtag': env('APIFY_ACTOR_INSTAGRAM_HASHTAG', default='apify/instagram-hashtag-scraper'),
-    'instagram_keyword': env('APIFY_ACTOR_INSTAGRAM_KEYWORD', default='crawlerbros/instagram-keyword-search-scraper'),  # Search by caption
-    # Facebook
-    'facebook': env('APIFY_ACTOR_FACEBOOK', default='apify/facebook-posts-scraper'),
-    'facebook_page': env('APIFY_ACTOR_FACEBOOK_PAGE', default='apify/facebook-pages-scraper'),
-    'facebook_posts_search': env('APIFY_ACTOR_FACEBOOK_POSTS_SEARCH', default='scraper_one/facebook-posts-search'),
-    'facebook_video_search': env('APIFY_ACTOR_FACEBOOK_VIDEO_SEARCH', default='apify/facebook-video-search-scraper'),  # Reels + videos by keyword
-    # Douyin
-    'douyin': env('APIFY_ACTOR_DOUYIN', default=''),  # Custom actor if available
-    # YouTube
-    'youtube': env('APIFY_ACTOR_YOUTUBE', default='apify/youtube-scraper'),
-    'youtube_channel': env('APIFY_ACTOR_YOUTUBE_CHANNEL', default='apify/youtube-scraper'),
-}
-
-# Apify timeout settings (in seconds)
-APIFY_TIMEOUT = env.int('APIFY_TIMEOUT', default=900)  # 15 minutes
-APIFY_MAX_RESULTS = env.int('APIFY_MAX_RESULTS', default=10000)
-
-# Instagram keyword search (requires login cookies - JSON array format)
-INSTAGRAM_COOKIES = env('INSTAGRAM_COOKIES', default='')
+RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
+RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
 
 # ==========================================
-# META (FACEBOOK / INSTAGRAM) GRAPH API CONFIGURATION
+# TIKHUB API CONFIGURATION
+# ==========================================
+TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
+TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
+
+# ==========================================
+# FACEBOOK GRAPH API CONFIGURATION
 # ==========================================
 META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
 FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
 FACEBOOK_ACCESS_TOKEN = META_ACCESS_TOKEN
 INSTAGRAM_ACCESS_TOKEN = META_ACCESS_TOKEN
+FERNET_KEY = env('FERNET_KEY', default='')
+SUPERUSER_TOKEN = env('SUPERUSER_TOKEN', default='')
 
+# ==========================================
+# TOKEN ENCRYPTION CONFIGURATION
+# ==========================================
+# Khóa mã hóa Fernet cho page_access_token.
+# Tạo key mới: từ video_management.utils.encryption import TokenEncryption; print(TokenEncryption.generate_encryption_key())
+ENCRYPTION_KEY = env('ENCRYPTION_KEY', default='')
 # ==========================================
 # HEYGEN API CONFIGURATION
 # ==========================================
@@ -355,6 +353,12 @@ HEYGEN_API_KEY = env('HEYGEN_API_KEY', default='')
 HEYGEN_AVATAR_ID = env('HEYGEN_AVATAR_ID', default='')
 HEYGEN_API_URL = env('HEYGEN_API_URL', default='https://api.heygen.com/v2')
 HEYGEN_WEBHOOK_URL = env('HEYGEN_WEBHOOK_URL', default='http://localhost:8000/api/heygen/webhook')
+
+# ==========================================
+# COBALT API CONFIGURATION (dự phòng cho tải video X/Instagram/Facebook)
+# ==========================================
+# Instance tự host, xem c:/WorkSpace/VienChiBao_Dev/cobalt/docker-compose.yml
+COBALT_API_URL = env('COBALT_API_URL', default='http://localhost:9000')
 HEYGEN_TEST_MODE = env.bool('HEYGEN_TEST_MODE', default=True)
 
 # ==========================================
@@ -372,6 +376,7 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 # ==========================================
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION
@@ -419,23 +424,21 @@ MIX_VIDEO_OUTPUT_HEIGHT = env.int('MIX_VIDEO_OUTPUT_HEIGHT', default=0)  # 0 = a
 TELEGRAM_BOT_TOKEN = env('TELEGRAM_BOT_TOKEN', default='')
 TELEGRAM_CHAT_ID = env('TELEGRAM_CHAT_ID', default='')
 
-# Celery Beat Schedule
+# Celery Beat Schedule — Facebook 3-Phase Scraper
 CELERY_BEAT_SCHEDULE = {
     'cleanup-cache-daily': {
         'task': 'video_management.cleanup_old_cache',
         'schedule': 86400.0,
     },
-    # Đã chuyển sang cron JS (social-sync.scheduler.js) chạy lúc 01:00 AM hàng ngày
-    # 'daily-sync-traffic-ads': {
-    #     'task': 'video_management.tasks.daily_sync',
-    #     'schedule': 86400.0,
-    #     'options': {'queue': 'default'},
-    # },
-    # 'crawl-social-insights-weekly': {
-    #     'task': 'video_management.tasks.crawl_social_insights',
-    #     'schedule': 604800.0,
-    #     'options': {'queue': 'default'},
-    # },
+    # GĐ0-GĐ3 (import/backfill/delta-sync/refresh-metrics cho ManagedFacebookPage) đã
+    # chuyển sang BE (@Cron trong FacebookOwnedPagesCronService) — BE giờ sở hữu DB, AI
+    # chỉ còn expose fetch-only endpoints (facebook_fetch_views.py).
+    # Facebook external (fanpages đối thủ): đã chuyển sang BE
+    # (@Cron trong FacebookExternalScraperCronService, 6h sáng VN)
+    # TikTok: đã chuyển sang BE (@Cron trong TiktokScraperCronService, 5h30 sáng VN)
+    # Instagram: đã chuyển sang BE (@Cron trong InstagramScraperCronService, 7h30 sáng VN)
+    # Douyin: đã chuyển sang BE (@Cron trong DouyinScraperCronService, 8h sáng VN)
+    # Xiaohongshu: đã chuyển sang BE (@Cron trong XiaohongshuScraperCronService, 8h sáng VN)
 }
 
 

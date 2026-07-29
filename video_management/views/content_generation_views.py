@@ -348,3 +348,51 @@ def get_content_detail(request, content_id):
             {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+def transform_content(request):
+    """
+    Transform raw text based on a system prompt using DeepSeek.
+    
+    POST /api/ai/transform-content/
+    Body:
+    {
+        "system_prompt": "...",
+        "input_text": "..."
+    }
+    """
+    try:
+        system_prompt = request.data.get('system_prompt')
+        input_text = request.data.get('input_text')
+        
+        if not system_prompt or not input_text:
+            return Response(
+                {'error': 'Both system_prompt and input_text are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        service = ContentGenerationService()
+        output_text = service._call_deepseek_raw(
+            prompt=input_text,
+            system_msg=system_prompt,
+            log_prefix="Content transform (DeepSeek)"
+        )
+        
+        if not output_text:
+            return Response(
+                {'error': 'Failed to generate content using DeepSeek. Please check API key configuration or logs.'},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+            
+        return Response({
+            'success': True,
+            'output_text': output_text
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in transform_content view: {str(e)}", exc_info=True)
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

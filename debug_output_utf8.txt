@@ -1,4 +1,0 @@
-﻿Testing URL: https://graph.facebook.com/v20.0/me/posts
-Token (First 10): EAAdPQBbx5...
-Status Code: 400
-Error Body: {"error":{"message":"(#12) deprecate_post_aggregated_fields_for_attachement is deprecated for versions v3.3 and higher","type":"OAuthException","code":12,"fbtrace_id":"AOt5JQJIAV6ZdUdX0BEiOd0"}}

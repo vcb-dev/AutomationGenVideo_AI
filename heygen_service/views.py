@@ -485,22 +485,31 @@ def clone_voice_from_video(request):
             
         extractor = VoiceExtractionService()
         result = extractor.process_koc_voice_and_clone(video_url, voice_name, is_url=True)
-        
-        if result.get('success'):
-            # Save to Database
-            Voice.objects.create(
-                name=voice_name,
+
+        if result.get('success') and result.get('voice_id'):
+            # Save to Database. update_or_create (not create) so a retried/duplicate
+            # voice_id updates the existing row instead of raising IntegrityError.
+            Voice.objects.update_or_create(
                 voice_id=result['voice_id'],
-                provider=result['provider'], # 'elevenlabs'
-                is_cloned=True,
-                language='vi', # Default to Vietnamese for now
-                sample_audio_url=video_url # Store source URL as reference
+                defaults={
+                    'name': voice_name,
+                    'provider': result.get('provider', 'heygen'),
+                    'is_cloned': True,
+                    'language': 'vi',  # Default to Vietnamese for now
+                    'sample_audio_url': video_url,  # Store source URL as reference
+                },
             )
-            
+
             return JsonResponse({
                 'success': True,
                 'data': result
             })
+        elif result.get('success'):
+            logger.error(f"HeyGen clone succeeded but returned no voice_id: {result}")
+            return JsonResponse({
+                'success': False,
+                'error': 'Cloning succeeded but no voice_id was returned by the provider'
+            }, status=502)
         else:
             return JsonResponse({
                 'success': False,
