@@ -212,6 +212,75 @@ def fetch_page_backfill(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def fetch_resolve_owner(request):
+    """Tra chủ sở hữu (Page) thật của 1 object_id Graph API bất kỳ (post/video/reel).
+
+    Dùng khi user dán link Reels công khai (facebook.com/reel/{id}) hoặc link
+    ?v={id} — các dạng URL không mang page handle trong path nên không tra được
+    page bằng cách parse chuỗi (id hiển thị trên link Reels và post_id nội bộ
+    Graph API là 2 định danh khác nhau, không suy ra được cái này từ cái kia).
+    Field 'from' của 1 object công khai đọc được bằng token BẤT KỲ còn hiệu lực,
+    không nhất thiết phải là token của đúng page sở hữu object đó.
+
+    Body: { "object_id": "...", "page_access_token_encrypted": "..." } (token
+    optional — nếu thiếu/giải mã lỗi thì dùng token mặc định của hệ thống)
+    """
+    data = request.data or {}
+    object_id = data.get('object_id')
+    if not object_id:
+        return Response({'error': 'object_id is required'}, status=400)
+
+    token = _decrypt_token(data.get('page_access_token_encrypted') or '')
+
+    graph = FacebookGraphService()
+    details = graph.get_page_details(object_id, fields='from,permalink_url', access_token=token or None)
+    if not details:
+        return Response({'from_id': None, 'from_name': None, 'permalink_url': None})
+
+    from_obj = details.get('from') or {}
+    return Response({
+        'from_id': from_obj.get('id'),
+        'from_name': from_obj.get('name'),
+        'permalink_url': details.get('permalink_url'),
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def fetch_video_metrics_refresh(request):
+    """Refresh view/like/comment cho 1 batch ID Video/Reels NODE THUẦN (không phải Page
+    Post ID — xem fetch_metrics_refresh() cho trường hợp đó). Dùng cho link Reels công
+    khai (/reel/{id}) user dán tay mà không tra được post_id nội bộ đã sync — object đó
+    là 1 Video node, KHÔNG hỗ trợ field shares/reactions/insights như Page Post.
+
+    Body: { "page_access_token_encrypted": "...", "video_ids": ["...", ...] }
+    """
+    data = request.data or {}
+    video_ids = data.get('video_ids') or []
+    if not video_ids:
+        return Response({'metrics': {}})
+
+    token = _decrypt_token(data.get('page_access_token_encrypted') or '')
+    if not token:
+        return Response({'error': 'Không giải mã được token'}, status=400)
+
+    graph = FacebookGraphService()
+    metrics_map = graph.update_video_node_metrics_batch(video_ids, access_token=token)
+
+    metrics = {
+        vid: {
+            'view_count': m.get('view_count', 0),
+            'like_count': m.get('like_count', 0),
+            'comment_count': m.get('comment_count', 0),
+            'share_count': m.get('share_count', 0),
+        }
+        for vid, m in metrics_map.items()
+    }
+    return Response({'metrics': metrics})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def fetch_metrics_refresh(request):
     """GĐ3: refresh view/like/comment/share cho 1 batch post_id cụ thể (đã biết token của page).
 
