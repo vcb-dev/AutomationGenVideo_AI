@@ -186,7 +186,21 @@ def fetch_xhs_user_video_notes(user_id: str, count: int = 100) -> list:
     notes = []
     cursor: Optional[str] = None
 
-    while len(notes) < count:
+    # CHẶN SỐ TRANG — thiếu cái này là chỗ tốn tiền nhất trong cả hệ thống.
+    #
+    # Điều kiện dừng cũ chỉ đếm VIDEO, trong khi Xiaohongshu vốn là nền tảng ảnh: một trang
+    # trả về ~20 note nhưng có khi chỉ 1-2 note là video. Muốn đủ 100 video thì phải lật vài
+    # chục trang, mỗi trang là một lượt TikHub tính phí.
+    #
+    # Đo trên hoá đơn thật ngày 2026-07-30: endpoint này chiếm 50/146 lượt gọi trong ngày
+    # (34%) — nhiều hơn mọi endpoint khác cộng lại theo từng cái.
+    #
+    # Hàm search_notes ngay phía trên trong chính tệp này đã có `max_iterations = 20`; chỉ
+    # riêng hàm này bị bỏ sót.
+    max_iterations = 8
+
+    while len(notes) < count and max_iterations > 0:
+        max_iterations -= 1
         params: dict = {'user_id': user_id}
         if cursor:
             params['cursor'] = cursor

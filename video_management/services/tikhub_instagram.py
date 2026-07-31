@@ -97,7 +97,13 @@ def fetch_instagram_reels(username: str, count: int = 100) -> list:
     items = []
     pagination_token = None
 
-    while len(items) < count:
+    # Chặn số trang, cùng lý do như get_user_posted_notes bên Xiaohongshu: điều kiện dừng
+    # đếm số reel lấy được, nên tài khoản ít reel mà API cứ báo còn trang sau thì vòng lặp
+    # lật mãi, mỗi trang một lượt TikHub tính phí.
+    max_iterations = 8
+
+    while len(items) < count and max_iterations > 0:
+        max_iterations -= 1
         params: dict = {'username': username}
         if pagination_token:
             params['pagination_token'] = pagination_token
