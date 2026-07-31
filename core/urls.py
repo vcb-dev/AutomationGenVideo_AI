@@ -157,6 +157,20 @@ urlpatterns += [
     path('api/tools/video-downloader/jobs/<str:job_id>/file/', video_downloader_views.download_file, name='video-dl-file'),
 ]
 
+# Chi tiết 1 video theo (platform, video_id) — làm giàu dữ liệu cho luồng đề xuất video.
+from video_management.views import video_detail_views
+
+urlpatterns += [
+    path('api/scraper/video-detail/', video_detail_views.get_video_detail, name='scraper-video-detail'),
+]
+
+# Link phát trực tiếp — BE dùng để làm trung gian phát video ngay trên web hệ thống.
+from video_management.views import play_url_views
+
+urlpatterns += [
+    path('api/scraper/play-url/', play_url_views.get_play_url, name='scraper-play-url'),
+]
+
 # Serve media files in development
 from django.conf import settings
 from django.conf.urls.static import static
