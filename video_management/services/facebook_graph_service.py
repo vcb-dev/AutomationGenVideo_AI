@@ -521,59 +521,150 @@ class FacebookGraphService:
         
     def update_video_views_batch(self, video_ids: list) -> Dict[str, Dict[str, int]]:
         """
-        Bước 2: Sử dụng URL gộp (hoặc Batch API) để lấy chính xác số view và tương tác thực tế
-        của danh sách ID vừa cào được, sửa lỗi 'views=0' của hàm get_page_posts.
+        Bước 2: Lấy reactions/comments/shares (luôn có với MỌI Page Post, kể cả bài đăng
+        không phải video — ảnh/status/link chia sẻ) + views (CHỈ áp dụng cho bài có
+        video, fetch RIÊNG). Tách 2 request vì nếu 1 bài trong batch không có video,
+        Facebook trả lỗi cứng cho field 'insights' và làm sập luôn cả batch — lỗi ở
+        bước views không được phép làm mất reactions/comments/shares đã lấy được.
         """
         if not video_ids:
             return {}
-            
+
         try:
-            # Bổ sung thêm chỉ số play của Reels để tránh bị hụt view của Reels
-            metrics = "post_video_views,post_video_reels_organic_plays"
-            # Sử dụng công thức URL gộp tối ưu mà chúng ta đã thống nhất
-            fields_str = "reactions.summary(true).limit(0),comments.summary(true).limit(0),shares,insights.metric(post_video_views){name,period,values}"
-            
+            fields_str = "reactions.summary(true).limit(0),comments.summary(true).limit(0),shares"
             params = {
                 'ids': ','.join(video_ids),
                 'fields': fields_str,
-                'access_token': self.access_token
+                'access_token': self.access_token,
             }
-            
             response = requests.get(self.BASE_URL, params=params, timeout=20)
             response.raise_for_status()
             res_data = response.json()
-            
-            metrics_map = {}
-            for p_id, p_data in res_data.items():
-                # 1. Lấy lượt xem video
-                views = 0
-                insights_list = p_data.get('insights', {}).get('data', [])
-                for metric in insights_list:
-                    m_name = metric.get('name')
-                    # 🛑 FIX: Check mảng values tránh lỗi IndexError
-                    if m_name in ['post_video_views', 'post_video_reels_organic_plays']:
-                        values_list = metric.get('values', [])
-                        if values_list:  # Nếu mảng có phần tử mới lấy
-                            views += values_list[0].get('value', 0)
-                
-                # 2. Lấy tương tác
-                likes = p_data.get('reactions', {}).get('summary', {}).get('total_count', 0)
-                comments = p_data.get('comments', {}).get('summary', {}).get('total_count', 0)
-                shares = p_data.get('shares', {}).get('count', 0)
-                
-                metrics_map[p_id] = {
-                    'view_count': views,
-                    'like_count': likes,
-                    'comment_count': comments,
-                    'share_count': shares,
-                    'raw_json': p_data # Lưu lại để ném vào trường raw_data của Model
-                }
-            return metrics_map
-            
-        except Exception as e:
-            logger.error(f"❌ Thất bại khi chạy Batch cập nhật Metrics: {str(e)}")
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.error(f"❌ Thất bại khi lấy reactions/comments/shares: {str(e)} | body: {body}")
             return {}
-        
+        except Exception as e:
+            logger.error(f"❌ Thất bại khi lấy reactions/comments/shares: {str(e)}")
+            return {}
+
+        # Views: best-effort, không chặn kết quả reactions/comments/shares nếu fail
+        # (bài không có video, hoặc metric không áp dụng cho object này).
+        views_map: Dict[str, int] = {}
+        try:
+            insights_params = {
+                'ids': ','.join(video_ids),
+                # post_video_reels_organic_plays: chỉ số play của Reels — tránh hụt view
+                # khi bài là Reels chia sẻ vào feed (post_video_views có thể rỗng/0).
+                'fields': "insights.metric(post_video_views,post_video_reels_organic_plays){name,period,values}",
+                'access_token': self.access_token,
+            }
+            insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
+            insights_resp.raise_for_status()
+            insights_data = insights_resp.json()
+            for p_id, p_data in insights_data.items():
+                views = 0
+                for metric in p_data.get('insights', {}).get('data', []):
+                    if metric.get('name') in ('post_video_views', 'post_video_reels_organic_plays'):
+                        values_list = metric.get('values', [])
+                        if values_list:
+                            views += values_list[0].get('value', 0)
+                views_map[p_id] = views
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.warning(f"⚠️ Không lấy được views (có thể bài không có video): {str(e)} | body: {body}")
+        except Exception as e:
+            logger.warning(f"⚠️ Không lấy được views: {str(e)}")
+
+        metrics_map = {}
+        for p_id, p_data in res_data.items():
+            likes = p_data.get('reactions', {}).get('summary', {}).get('total_count', 0)
+            comments = p_data.get('comments', {}).get('summary', {}).get('total_count', 0)
+            shares = p_data.get('shares', {}).get('count', 0)
+
+            metrics_map[p_id] = {
+                'view_count': views_map.get(p_id, 0),
+                'like_count': likes,
+                'comment_count': comments,
+                'share_count': shares,
+                'raw_json': p_data,  # Lưu lại để ném vào trường raw_data của Model
+            }
+        return metrics_map
+
+    def update_video_node_metrics_batch(self, video_ids: list, access_token: Optional[str] = None) -> Dict[str, Dict[str, int]]:
+        """Lấy views/likes/comments cho ID Video/Reels NODE THUẦN (vd link facebook.com/reel/{id}
+        dán tay, không sync qua /feed) — KHÁC update_video_views_batch() ở trên vốn dành cho
+        Page Post ID (dạng {page_id}_{post_id}).
+
+        Video node dùng edge "video_insights" (không phải "insights") để lấy views, và
+        KHÔNG có field "shares"/"reactions" như Post — chỉ có "likes". Gọi nhầm field Post
+        vào 1 ID Video node sẽ bị Facebook trả 400 "(#100) Tried accessing nonexisting field".
+        Views fetch riêng (best-effort) — lỗi/rỗng ở bước này không mất likes/comments.
+        """
+        if not video_ids:
+            return {}
+
+        token = access_token or self.access_token
+        try:
+            fields_str = "likes.summary(true).limit(0),comments.summary(true).limit(0)"
+            params = {
+                'ids': ','.join(video_ids),
+                'fields': fields_str,
+                'access_token': token,
+            }
+            response = requests.get(self.BASE_URL, params=params, timeout=20)
+            response.raise_for_status()
+            res_data = response.json()
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.error(f"❌ Thất bại khi lấy likes/comments Video node: {str(e)} | body: {body}")
+            return {}
+        except Exception as e:
+            logger.error(f"❌ Thất bại khi lấy likes/comments Video node: {str(e)}")
+            return {}
+
+        views_map: Dict[str, int] = {}
+        try:
+            insights_params = {
+                'ids': ','.join(video_ids),
+                # blue_reels_play_count: metric "Lượt phát" thật của Reels — total_video_views
+                # (chỉ số video thường) thường RỖNG với Reels nên phải xin cả 2, cộng dồn cái có data.
+                'fields': "video_insights.metric(total_video_views,blue_reels_play_count){name,period,values}",
+                'access_token': token,
+            }
+            insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
+            insights_resp.raise_for_status()
+            insights_data = insights_resp.json()
+            for v_id, v_data in insights_data.items():
+                views = 0
+                for metric in v_data.get('video_insights', {}).get('data', []):
+                    if metric.get('name') in ('total_video_views', 'blue_reels_play_count'):
+                        values_list = metric.get('values', [])
+                        if values_list:
+                            views += values_list[0].get('value', 0)
+                views_map[v_id] = views
+                if views == 0:
+                    logger.info(f"ℹ️ [VIDEO-INSIGHTS] {v_id} không có total_video_views/blue_reels_play_count — raw: {v_data.get('video_insights')}")
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.warning(f"⚠️ Không lấy được video_insights: {str(e)} | body: {body}")
+        except Exception as e:
+            logger.warning(f"⚠️ Không lấy được video_insights: {str(e)}")
+
+        metrics_map = {}
+        for v_id, v_data in res_data.items():
+            likes = v_data.get('likes', {}).get('summary', {}).get('total_count', 0)
+            comments = v_data.get('comments', {}).get('summary', {}).get('total_count', 0)
+
+            metrics_map[v_id] = {
+                'view_count': views_map.get(v_id, 0),
+                'like_count': likes,
+                'comment_count': comments,
+                'share_count': 0,  # Video node không có edge "shares" (chỉ Page Post mới có)
+                'raw_json': v_data,
+            }
+        return metrics_map
+
     def get_my_managed_pages(self, access_token: Optional[str] = None) -> list:
         """
         Fetch the list of pages that the user owns/manages.
