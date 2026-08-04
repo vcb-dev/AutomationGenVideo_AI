@@ -100,6 +100,17 @@ TRUST_CRITERIA = [
      "signal": "Câu chuyện founder / nhân viên / KH thật"},
 ]
 
+# Lookup nhanh theo code — dùng để enrich prompt nâng cấp (§5.5) với mô tả "signal" gốc của
+# từng tiêu chí, thay vì chỉ dựa vào evidence/suggestion do LLM sinh ra lúc phân tích (thường
+# ngắn và không đủ ngữ cảnh để viết ra câu văn tự nhiên, sát tiêu chí).
+ALL_CRITERIA_BY_CODE: Dict[str, Dict[str, str]] = {
+    defn["code"]: defn
+    for defn in (
+        PREFER_INSIGHTS + ACTION_CRITERIA + ACKNOWLEDGE_CRITERIA
+        + STICK_TEXT_DETECTABLE_CRITERIA + STICK_PRODUCTION_ONLY_CRITERIA + TRUST_CRITERIA
+    )
+}
+
 # 5 nhóm phân loại — mỗi nhóm là 1 lệnh gọi LLM riêng, chạy song song (xem _classify).
 # Tách nhỏ thay vì 1 prompt gộp cả 30 tiêu chí giúp giảm độ trễ (thời gian chờ = lệnh
 # chậm nhất trong 5 lệnh chạy song song, không phải tổng cả 5) và giảm rủi ro response
@@ -340,6 +351,47 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
         }
 
     # ------------------------------------------------------------------
+    # Verdict — đạt/chưa đạt chuẩn PAAST (business doc §1.3, §5.2/§5.3)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_verdict(scores: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Đạt chuẩn PAAST khi CẢ 5 lớp đều có ít nhất 1 tiêu chí đạt — KHÔNG dùng ngưỡng điểm
+        tổng, vì điểm cao vẫn có thể do dồn hết vào vài lớp trong khi bỏ trắng hẳn 1 lớp khác
+        (business doc §1.3/§5.2). Riêng Prefer đòi hỏi ≥1 insight `primary` — `secondary`
+        không tính (business doc §5.3, nguyên tắc Chân-Thiện-Mỹ #3).
+        """
+        passed_layers: List[str] = []
+        missing_layers: List[str] = []
+
+        if scores["prefer"]["primary_count"] >= 1:
+            passed_layers.append("prefer")
+        else:
+            missing_layers.append("prefer")
+
+        for layer in ("action", "acknowledge", "trust"):
+            if scores[layer]["pass_count"] > 0:
+                passed_layers.append(layer)
+            else:
+                missing_layers.append(layer)
+
+        # Nếu Stick không có tiêu chí nào detect được từ text (text_detectable_count == 0),
+        # không thể chấm — không tính lớp này là lý do "chưa đạt" (spec §5.2).
+        stick_detectable = scores["stick"]["text_detectable_count"]
+        stick_pass = scores["stick"]["pass_count"]
+        if stick_detectable == 0 or stick_pass > 0:
+            passed_layers.append("stick")
+        else:
+            missing_layers.append("stick")
+
+        return {
+            "passed": len(missing_layers) == 0,
+            "passed_layers": passed_layers,
+            "missing_layers": missing_layers,
+        }
+
+    # ------------------------------------------------------------------
     # CTA compliance — regex thuần, không qua LLM (business doc §9)
     # ------------------------------------------------------------------
 
@@ -360,6 +412,7 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
         raw_classification = self._classify(content)
         classification = self._normalize_classification(raw_classification)
         scores = self.compute_scores(classification)
+        verdict = self.compute_verdict(scores)
         cta = self.check_cta_compliance(content)
 
         return {
@@ -371,6 +424,7 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
                 "trust": {**scores["trust"], "criteria": classification["trust"]},
             },
             "total_score": scores["total_score"],
+            "verdict": verdict,
             "cta_warning": cta,
         }
 
@@ -389,19 +443,41 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
                 "new_analysis": new_analysis,
             }
 
-        missing_list_text = "\n".join(
-            f"- [{m['layer']}] {m['criterion']}: {m.get('suggestion', '')}" for m in missing_elements
-        )
-        prompt = f"""Nâng cấp content sau bằng cách THÊM các element còn thiếu theo hướng dẫn, giữ nguyên tone và
-văn phong tác giả gốc, không phá vỡ mạch chuyện, chỉ bổ sung — không viết lại toàn bộ.
+        def _describe_missing(m: Dict[str, str]) -> str:
+            defn = ALL_CRITERIA_BY_CODE.get(m.get("criterion", ""))
+            name_vi = defn["name_vi"] if defn else m.get("criterion", "")
+            signal = defn.get("signal", "") if defn else ""
+            suggestion = (m.get("suggestion") or "").strip()
+            line = f"- [{m.get('layer', '')}] {m.get('criterion', '')} — {name_vi}"
+            if signal:
+                line += f"\n  Bản chất tiêu chí (đọc để hiểu ĐÚNG tinh thần, không chỉ để nhét từ khoá): {signal}"
+            if suggestion:
+                line += f"\n  Gợi ý cụ thể lấy từ chính content gốc: {suggestion}"
+            return line
+
+        missing_list_text = "\n".join(_describe_missing(m) for m in missing_elements)
+        prompt = f"""Bạn là copywriter giỏi, nâng cấp đoạn content sau để đạt đủ các tiêu chí PAAST còn thiếu.
 
 Content gốc:
 \"\"\"
 {original_content}
 \"\"\"
 
-Cần thêm:
+Các tiêu chí còn THIẾU cần bổ sung:
 {missing_list_text}
+
+YÊU CẦU CHẤT LƯỢNG (bắt buộc, quan trọng hơn việc nhét đủ ý):
+1. Mỗi phần thêm là 1-3 câu VĂN THẬT — có hình ảnh/chi tiết/cảm xúc cụ thể lấy từ chính content gốc,
+   không phải câu khẩu hiệu sáo rỗng chung chung ("chúng tôi luôn tận tâm...", "chất lượng tốt nhất...").
+   TUYỆT ĐỐI không viết dạng liệt kê/gạch đầu dòng — phải hoà thành văn xuôi tự nhiên.
+2. Chèn từng phần thêm vào ĐÚNG vị trí hợp lý trong mạch chuyện gốc (không dồn hết xuống cuối bài) —
+   đọc lên phải liền mạch như được viết cùng một lúc với phần còn lại, không lộ vết ghép.
+3. Giữ nguyên 100% văn phong, ngôi xưng, nhịp câu, độ dài câu trung bình của tác giả gốc.
+4. Chỉ bổ sung — không viết lại, không rút gọn, không xoá câu nào của bản gốc.
+5. Nếu 2 tiêu chí có thể lồng tự nhiên vào chung 1 câu/đoạn, hãy gộp lại — không cần mỗi tiêu chí
+   một câu riêng nếu việc tách ra làm đoạn văn rời rạc, liệt kê máy móc.
+6. Trước khi trả lời, tự kiểm tra lại: mỗi câu vừa thêm có thật sự khớp với "bản chất tiêu chí" ở trên
+   không, hay chỉ đang nói chung chung cho có — nếu chưa khớp, viết lại câu đó.
 
 Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
 {{
@@ -409,7 +485,9 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
   "changes_added": [ {{"layer": "acknowledge", "criterion": "STORY", "text": "tóm tắt ngắn gọn phần vừa thêm"}}, ... ]
 }}"""
         system_msg = (
-            "Bạn là copywriter nâng cấp content theo khung PAAST. Chỉ bổ sung phần thiếu, không viết lại toàn bộ. "
+            "Bạn là copywriter giỏi, nâng cấp content theo khung PAAST. Ưu tiên chất lượng văn chương thật — "
+            "câu văn tự nhiên, cụ thể, có cảm xúc, hoà vào mạch gốc — hơn là chèn đủ ý cho có. "
+            "Chỉ bổ sung phần thiếu, không viết lại toàn bộ. "
             "Chỉ trả JSON hợp lệ, không markdown fence, không giải thích ngoài JSON."
         )
         raw = self._gen._call_deepseek_raw(
