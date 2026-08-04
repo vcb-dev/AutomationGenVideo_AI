@@ -139,6 +139,14 @@ urlpatterns += [
     path('api/ai/transform-content/', content_generation_views.transform_content, name='transform-content'),
 ]
 
+# PAAST Content Analyzer — phân tích & chấm điểm content theo khung PAAST
+from video_management.views import paast_analysis_views
+
+urlpatterns += [
+    path('api/ai/paast/analyze/', paast_analysis_views.analyze_content, name='paast-analyze'),
+    path('api/ai/paast/upgrade/', paast_analysis_views.upgrade_content, name='paast-upgrade'),
+]
+
 # Video Transcription (Speech-to-Text via OpenAI Whisper)
 from video_management.views import transcribe_views
 
