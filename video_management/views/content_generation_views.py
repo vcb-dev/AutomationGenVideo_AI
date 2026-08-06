@@ -365,18 +365,39 @@ def transform_content(request):
     try:
         system_prompt = request.data.get('system_prompt')
         input_text = request.data.get('input_text')
-        
+        # Tuỳ chọn — không gửi thì giữ nguyên default cũ (2048 tokens, temperature 0.1),
+        # cho phép caller (vd: chấm điểm cần JSON dài hơn) xin thêm token budget.
+        max_tokens = request.data.get('max_tokens')
+        temperature = request.data.get('temperature')
+        # BUG ĐÃ SỬA: trước đây view này không đọc timeout từ request, nên mọi lệnh gọi
+        # _call_deepseek_raw() rơi về default hard-code là 60s (xem signature của hàm đó),
+        # bất kể BE gửi timeoutMs=120000 ở phía axios client (timeout đó chỉ áp dụng cho
+        # chính request HTTP giữa BE<->AI service, không hề được BE gửi kèm trong body nên
+        # AI service không có cách nào biết để nới ra). Hệ quả: input/prompt cần >60s suy luận
+        # (reasoning_tokens của deepseek-v4-flash dao động rất lớn, đặc biệt với input dài từ
+        # khi bỏ giới hạn 2000 ký tự) sẽ bị cắt ở đúng mốc 60s, trả lỗi 502 chung chung, dù BE
+        # tưởng mình đã cho phép tới 120s. Giờ đọc đúng giá trị BE thực sự muốn, fallback 120s
+        # nếu caller không gửi (phòng trường hợp gọi từ nơi khác chưa cập nhật).
+        timeout_seconds = request.data.get('timeout_seconds')
+
         if not system_prompt or not input_text:
             return Response(
                 {'error': 'Both system_prompt and input_text are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-            
+
+        call_kwargs = {'timeout': int(timeout_seconds) if timeout_seconds is not None else 120}
+        if max_tokens is not None:
+            call_kwargs['max_tokens'] = int(max_tokens)
+        if temperature is not None:
+            call_kwargs['temperature'] = float(temperature)
+
         service = ContentGenerationService()
         output_text = service._call_deepseek_raw(
             prompt=input_text,
             system_msg=system_prompt,
-            log_prefix="Content transform (DeepSeek)"
+            log_prefix="Content transform (DeepSeek)",
+            **call_kwargs,
         )
         
         if not output_text:
