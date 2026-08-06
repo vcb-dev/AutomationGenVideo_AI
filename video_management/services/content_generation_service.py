@@ -11,6 +11,34 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional, List, Tuple, Any
 from django.conf import settings
 
+
+class DeepSeekError(RuntimeError):
+    """
+    Lỗi khi gọi DeepSeek, có PHÂN LOẠI — thay cho việc nuốt mọi lỗi thành None.
+
+    Trước đây `_call_deepseek_raw` bọc toàn bộ trong `except Exception: return None`, nên
+    timeout / 429 rate-limit / 5xx của DeepSeek / JSON hỏng đều quy về cùng một triệu chứng
+    "DeepSeek không phản hồi" → BE báo "có thể do timeout" cho MỌI trường hợp. Hệ quả là
+    không thể biết một lượt chấm PAAST hỏng vì chậm thật hay vì bị chặn rate-limit — mà 5
+    lệnh gọi song song trên cùng 1 API key thì 429 là chuyện rất thực tế.
+
+    `kind` nhận: 'timeout' | 'rate_limit' | 'server' | 'client' | 'parse' | 'network' | 'no_key'.
+    `retriable` phân biệt lỗi đáng thử lại (timeout/429/5xx/mạng) với lỗi tất định
+    (4xx khác, parse) — thử lại lỗi tất định chỉ tốn thời gian mà kết quả không đổi.
+    """
+
+    RETRIABLE_KINDS = {'timeout', 'rate_limit', 'server', 'network'}
+
+    def __init__(self, kind: str, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.kind = kind
+        self.status_code = status_code
+
+    @property
+    def retriable(self) -> bool:
+        return self.kind in self.RETRIABLE_KINDS
+
+
 # Content strategy templates
 CONTENT_TEMPLATES = {
     'A1': {
@@ -723,15 +751,55 @@ class ContentGenerationService:
         self,
         prompt: str,
         system_msg: str,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v4-flash",
         temperature: float = 0.1,
         max_tokens: int = 2048,
         timeout: int = 60,
         log_prefix: str = "DeepSeek",
     ) -> Optional[str]:
-        """Call DeepSeek API using requests."""
-        if not self.deepseek_key:
+        """
+        Call DeepSeek API using requests. Trả None khi lỗi.
+
+        GIỮ NGUYÊN contract cũ (None khi lỗi) vì hàm này có ~14 nơi gọi, nhiều nơi dựa vào
+        `if not content:` để fallback sang Claude. Bên nào cần biết LOẠI lỗi (hiện tại: PAAST)
+        thì gọi `_call_deepseek_checked` bên dưới để nhận DeepSeekError có phân loại.
+        """
+        try:
+            return self._call_deepseek_checked(
+                prompt=prompt,
+                system_msg=system_msg,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                log_prefix=log_prefix,
+            )
+        except DeepSeekError:
+            # _call_deepseek_checked đã log chi tiết loại lỗi rồi, không log lặp.
             return None
+
+    def _call_deepseek_checked(
+        self,
+        prompt: str,
+        system_msg: str,
+        model: str = "deepseek-v4-flash",
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+        timeout: int = 60,
+        log_prefix: str = "DeepSeek",
+        rate_limit_retries: int = 2,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Gọi DeepSeek và NÉM DeepSeekError có phân loại thay vì trả None.
+
+        Tự xử lý riêng 429: 5 lệnh gọi song song trên cùng 1 API key (xem PaastAnalysisService)
+        rất dễ chạm rate limit, mà 429 thì chờ một nhịp là qua — nên backoff tại chỗ (tôn trọng
+        `Retry-After` nếu server có trả) thay vì để cả lượt phân tích hỏng rồi retry từ đầu.
+        Backoff này CHỈ dành cho 429; timeout/5xx để tầng trên quyết định thử lại.
+        """
+        if not self.deepseek_key:
+            raise DeepSeekError('no_key', 'Chưa cấu hình DEEPSEEK_API_KEY')
 
         url = "https://api.deepseek.com/chat/completions"
         headers = {
@@ -747,17 +815,84 @@ class ContentGenerationService:
             "temperature": temperature,
             "max_tokens": max_tokens
         }
+        if extra_params:
+            payload.update(extra_params)
 
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            response.raise_for_status()
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            self.logger.info(f"{log_prefix}: DeepSeek {model} success")
+        for attempt in range(rate_limit_retries + 1):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            except requests.exceptions.Timeout as e:
+                self.logger.error(f"{log_prefix}: DeepSeek {model} TIMEOUT sau {timeout}s: {e}")
+                raise DeepSeekError('timeout', f'DeepSeek không trả lời trong {timeout}s') from e
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"{log_prefix}: DeepSeek {model} lỗi mạng: {e}")
+                raise DeepSeekError('network', f'Lỗi mạng khi gọi DeepSeek: {e}') from e
+
+            status = response.status_code
+
+            if status == 429:
+                if attempt < rate_limit_retries:
+                    # Ưu tiên Retry-After của server; không có thì backoff luỹ thừa 2s, 4s.
+                    try:
+                        wait_s = float(response.headers.get('Retry-After', ''))
+                    except ValueError:
+                        wait_s = 0.0
+                    if wait_s <= 0:
+                        wait_s = 2.0 * (2 ** attempt)
+                    self.logger.warning(
+                        f"{log_prefix}: DeepSeek {model} RATE LIMIT (429), "
+                        f"chờ {wait_s:.1f}s rồi thử lại ({attempt + 1}/{rate_limit_retries})"
+                    )
+                    time.sleep(wait_s)
+                    continue
+                self.logger.error(f"{log_prefix}: DeepSeek {model} RATE LIMIT (429) — hết lượt backoff")
+                raise DeepSeekError('rate_limit', 'DeepSeek đang giới hạn tần suất (429)', 429)
+
+            if 500 <= status < 600:
+                self.logger.error(f"{log_prefix}: DeepSeek {model} lỗi phía server ({status})")
+                raise DeepSeekError('server', f'DeepSeek lỗi phía server ({status})', status)
+
+            if status >= 400:
+                body = (response.text or '')[:300]
+                self.logger.error(f"{log_prefix}: DeepSeek {model} lỗi request ({status}): {body}")
+                raise DeepSeekError('client', f'DeepSeek từ chối request ({status}): {body}', status)
+
+            try:
+                result = response.json()
+                choice = result['choices'][0]
+                content = choice['message']['content']
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                self.logger.error(f"{log_prefix}: DeepSeek {model} response không đúng shape: {e}")
+                raise DeepSeekError('parse', f'Response DeepSeek không đúng shape: {e}') from e
+
+            if not content:
+                # finish_reason='length' = token suy luận nội bộ ăn hết max_tokens trước khi kịp
+                # sinh nội dung. Đây là lỗi ngân sách token, KHÔNG phải timeout — phân biệt rõ để
+                # không bị chẩn đoán nhầm thành "chậm" như trước.
+                finish_reason = choice.get('finish_reason', 'unknown')
+                usage = result.get('usage', {})
+                self.logger.error(
+                    f"{log_prefix}: DeepSeek {model} trả content RỖNG "
+                    f"(finish_reason={finish_reason}, max_tokens={max_tokens}, usage={usage})"
+                )
+                raise DeepSeekError(
+                    'server' if finish_reason == 'length' else 'parse',
+                    f'DeepSeek trả nội dung rỗng (finish_reason={finish_reason}, max_tokens={max_tokens})',
+                )
+
+            # Log finish_reason + token thực dùng ngay cả khi THÀNH CÔNG: đây là số liệu duy nhất
+            # để biết max_tokens đang cấp thừa hay đang sát trần (reasoning_tokens bị trừ vào
+            # chính max_tokens và dao động rất lớn giữa các lần gọi cùng input).
+            usage = result.get('usage', {}) or {}
+            reasoning = (usage.get('completion_tokens_details') or {}).get('reasoning_tokens')
+            self.logger.info(
+                f"{log_prefix}: DeepSeek {model} success "
+                f"(finish_reason={choice.get('finish_reason')}, max_tokens={max_tokens}, "
+                f"completion_tokens={usage.get('completion_tokens')}, reasoning_tokens={reasoning})"
+            )
             return content
-        except Exception as e:
-            self.logger.error(f"{log_prefix}: DeepSeek {model} error: {e}")
-            return None
+
+        raise DeepSeekError('rate_limit', 'DeepSeek đang giới hạn tần suất (429)', 429)
 
     def _translate_content_strict(
         self,
