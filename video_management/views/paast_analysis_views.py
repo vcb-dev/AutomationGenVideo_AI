@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from video_management.services.paast_analysis_service import PaastAnalysisService
+from video_management.services.paast_analysis_service import PaastAnalysisService, PaastAnalysisServiceV2
 
 logger = logging.getLogger(__name__)
 
@@ -98,4 +98,38 @@ def upgrade_content(request):
         return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
     except Exception as e:
         logger.error(f"Error in upgrade_content view: {str(e)}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+def analyze_content_v2(request):
+    """
+    Phân tích PAAST BẢN 2 — dùng cho video kênh nội bộ.
+
+    POST /api/ai/paast/analyze-v2/
+    Body: { "content": "..." }
+
+    Khác bản 1: bỏ thang điểm 0–100 (chỉ đếm element + kết luận đạt/chưa), thêm 16 hook gợi ý
+    trong `layers.action.hookSuggestions`, khoá JSON kiểu camelCase. Bản 1 giữ nguyên vì
+    task-auto đang chạy trên nó — xem ghi chú ở PaastAnalysisServiceV2.
+    """
+    try:
+        content = (request.data.get('content') or '').strip()
+
+        if len(content) < MIN_CONTENT_LENGTH:
+            return Response(
+                {'error': f'Content quá ngắn — cần ít nhất {MIN_CONTENT_LENGTH} ký tự'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if len(content) > MAX_CONTENT_LENGTH:
+            return Response(
+                {'error': f'Content quá dài — tối đa {MAX_CONTENT_LENGTH} ký tự'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        result = PaastAnalysisServiceV2().analyze_v2(content)
+        return Response({'success': True, **result})
+
+    except Exception as e:
+        logger.exception("[PAAST v2] Phân tích lỗi")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

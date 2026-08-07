@@ -147,6 +147,58 @@ def list_voices_api(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['DELETE'])
+def delete_voice_api(request, voice_id):
+    """
+    Xoá một giọng ĐÃ CLONE: xoá trên MiniMax trước, xoá bản ghi DB sau.
+
+    DELETE /api/voice/delete/<voice_id>/
+
+    Thứ tự MiniMax-trước-DB là có chủ đích: MiniMax lỗi thì bản ghi DB còn nguyên,
+    người dùng bấm xoá lại được. Nếu xoá DB trước rồi MiniMax lỗi thì giọng thành
+    mồ côi — vẫn chiếm slot bên MiniMax mà không còn chỗ nào trong hệ thống để xoá nó.
+
+    Chỉ xoá giọng is_cloned=True và is_system=False — giọng hệ thống (vd HuyK mặc định)
+    dùng chung cho nhiều luồng, xoá nhầm là hỏng cả tính năng khác.
+    """
+    try:
+        voice = Voice.objects.filter(voice_id=voice_id).first()
+        if not voice:
+            return Response({'error': 'Không tìm thấy giọng này'}, status=status.HTTP_404_NOT_FOUND)
+        if voice.is_system or not voice.is_cloned:
+            return Response(
+                {'error': f'Giọng "{voice.name}" là giọng hệ thống, không thể xoá'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        voice_name = voice.name
+        provider = voice.provider or 'minimax'
+        minimax_deleted = None
+
+        if provider == 'minimax':
+            clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
+            result = clone_service.delete_voice(voice_id)
+            minimax_deleted = bool(result.get('deleted'))
+
+        deleted_count, _ = Voice.objects.filter(voice_id=voice_id).delete()
+        logger.info(f"🗑️ Đã xoá giọng clone: name={voice_name}, voice_id={voice_id}, minimax_deleted={minimax_deleted}")
+
+        return Response({
+            'success': True,
+            'message': f'Đã xoá giọng "{voice_name}"',
+            'voice_id': voice_id,
+            'name': voice_name,
+            # False = giọng đã không còn trên MiniMax từ trước (hết hạn/xoá tay),
+            # None = provider khác minimax nên không gọi API xoá nào cả
+            'minimax_deleted': minimax_deleted,
+            'db_deleted': deleted_count,
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error deleting voice {voice_id}: {e}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def clone_voice_api(request):
