@@ -27,6 +27,28 @@ _CLONE_JOB_PREFIX = "voice_clone:"
 _TTS_FILENAME_RE = re.compile(r'^tts_[0-9a-f]{32}\.mp3$')
 
 
+# Lấy thẳng từ model thay vì gõ lại số: đổi max_length của cột mà quên sửa chỗ
+# kiểm thì lỗi rơi vào đúng chỗ đắt nhất (xem _kiem_dau_vao_clone).
+_TEN_GIONG_TOI_DA = Voice._meta.get_field('name').max_length
+_GIOI_TINH_HOP_LE = ('male', 'female')
+
+
+def _kiem_dau_vao_clone(voice_name, gender):
+    """Trả câu lỗi nếu đầu vào không thể ghi được vào bảng Voice, None nếu hợp lệ.
+
+    PHẢI gọi trước clone_voice_from_file(). Thứ tự trong job nền là gọi MiniMax
+    xong mới ghi DB, nên dữ liệu lọt qua đây rồi bị DB từ chối = người dùng đã bị
+    tính phí, giọng nằm lại bên MiniMax mà không có bản ghi nào để xoá nó đi.
+    """
+    if not voice_name:
+        return 'voice_name is required'
+    if len(voice_name) > _TEN_GIONG_TOI_DA:
+        return f'Tên giọng dài quá {_TEN_GIONG_TOI_DA} ký tự — hãy đặt tên ngắn hơn.'
+    if gender not in _GIOI_TINH_HOP_LE:
+        return f"Giới tính phải là một trong {'/'.join(_GIOI_TINH_HOP_LE)}."
+    return None
+
+
 def _find_duplicate_cloned_voice(voice_name):
     """Tìm giọng clone trùng tên (không phân biệt hoa thường) — mỗi lần clone MiniMax
     đều tính phí và tạo voice_id mới, nên trùng tên gần như luôn là thao tác nhầm."""
@@ -121,22 +143,12 @@ def list_voices_api(request):
                 "is_system": voice.is_system,
                 "sample_audio_url": voice.sample_audio_url
             })
-            
-        # Fallback to default HuyK if empty
-        if not voices_list:
-            voices_list = [
-                {
-                    "id": -1,
-                    "voice_id": "3f7bd9c515cb40cead3a233461c713ca",
-                    "name": "HuyK",
-                    "language": "vi",
-                    "gender": "male",
-                    "provider": "heygen",
-                    "is_cloned": True,
-                    "is_system": True
-                }
-            ]
-            
+
+        # KHÔNG bịa giọng mặc định khi bảng rỗng. Bản cũ trả về một giọng HuyK gõ
+        # cứng (id=-1, provider heygen, is_cloned=True) không hề tồn tại: FE lọc nó
+        # ra khỏi thư mục nên người dùng không thấy, nhưng trang Tổng quan Tiện ích
+        # AI đếm voices.filter(is_cloned) nên báo "1 giọng đã clone" khi thực tế
+        # chưa clone giọng nào. Rỗng thì trả rỗng — FE đã có sẵn trạng thái trống.
         return Response({
             'success': True,
             'voices': voices_list,
@@ -201,103 +213,19 @@ def delete_voice_api(request, voice_id):
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
-def clone_voice_api(request):
-    """
-    Clone a voice from uploaded sample audio.
-    
-    POST /api/voice/clone/
-    Body (multipart/form-data):
-    - file: Audio file (mp3, wav, etc.)
-    - voice_name: Friendly name for the voice (e.g. "Nguyen Van A")
-    - gender: male or female (optional)
-    """
-    try:
-        audio_file = request.FILES.get('file')
-        voice_name = request.data.get('voice_name')
-        gender = request.data.get('gender', 'female')
-        
-        if not audio_file:
-            return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
-        if not voice_name:
-            return Response({'error': 'voice_name is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-        existing = _find_duplicate_cloned_voice(voice_name)
-        if existing:
-            return Response({'error': _duplicate_voice_error(existing)}, status=status.HTTP_400_BAD_REQUEST)
-
-        logger.info(f"🎤 Minimax Voice Cloning: name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes")
-        
-        # Save uploaded file to a temporary location to pass to Minimax service.
-        # Use a uuid-based name rather than the raw uploaded filename, so concurrent
-        # uploads can't collide/overwrite each other and we don't trust user input as a path.
-        temp_dir = tempfile.gettempdir()
-        _, ext = os.path.splitext(audio_file.name)
-        temp_path = os.path.join(temp_dir, f"voice_clone_{uuid.uuid4().hex}{ext}")
-
-        # Write content
-        with open(temp_path, 'wb') as temp_f:
-            for chunk in audio_file.chunks():
-                temp_f.write(chunk)
-
-        try:
-            # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
-            clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
-
-            # Call Minimax clone API (uploads to minimax + clones voice)
-            clone_result = clone_service.clone_voice_from_file(
-                audio_path=temp_path,
-                voice_name=voice_name
-            )
-        finally:
-            # Clean up temp file even if cloning fails, not just on the success path
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-        voice_id = clone_result.get('voice_id')
-        if not voice_id:
-            raise Exception(f"No voice_id returned from cloning: {clone_result}")
-            
-        # Save/Register in Database
-        voice, created = Voice.objects.update_or_create(
-            voice_id=voice_id,
-            defaults={
-                'name': voice_name,
-                'provider': 'minimax',
-                'is_cloned': True,
-                'is_system': False,
-                'language': 'vi',
-                'gender': gender
-            }
-        )
-        
-        return Response({
-            'success': True,
-            'message': 'Voice cloned successfully',
-            'voice': {
-                'id': voice.id,
-                'voice_id': voice.voice_id,
-                'name': voice.name,
-                'provider': voice.provider,
-                'gender': voice.gender
-            }
-        }, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        logger.error(f"Error cloning voice: {e}", exc_info=True)
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['POST'])
-@parser_classes([MultiPartParser, FormParser])
 def clone_voice_start_api(request):
     """
     Bắt đầu clone giọng ở chế độ NỀN và trả về job_id ngay lập tức.
 
     Lý do: mạng tới api.minimax.io có thể chập chờn 1-3 phút (2 IP load-balancer
     của họ thỉnh thoảng không phản hồi, xác nhận qua test thủ công 2026-07-07),
-    khiến bản clone đồng bộ (clone_voice_api) dễ bị BE/FE tự timeout giữa chừng
-    dù MiniMax cuối cùng vẫn xử lý xong. Client poll qua
+    khiến bản clone đồng bộ (một request chờ tới khi xong) dễ bị BE/FE tự timeout
+    giữa chừng dù MiniMax cuối cùng vẫn xử lý xong. Client poll qua
     GET /api/voice/clone/status/<job_id>/ thay vì chờ 1 request treo.
+
+    Đây là đường clone DUY NHẤT. Bản đồng bộ POST /api/voice/clone/ đã bị gỡ
+    (2026-08-07): không client nào gọi nó nữa, mà nó giữ bản sao riêng của luật
+    chặn trùng tên + ghi DB nên sửa một bên là lệch ngay.
 
     POST /api/voice/clone/start/
     Body (multipart/form-data): file, voice_name, gender (optional)
@@ -305,13 +233,16 @@ def clone_voice_start_api(request):
     """
     try:
         audio_file = request.FILES.get('file')
-        voice_name = request.data.get('voice_name')
-        gender = request.data.get('gender', 'female')
+        # Trim tại đây: tên đem đi so trùng phải đúng là tên sẽ ghi vào DB, không
+        # thì luật chặn trùng vô nghĩa ("KOC Lan " lọt qua vì so với "KOC Lan").
+        voice_name = (request.data.get('voice_name') or '').strip()
+        gender = (request.data.get('gender') or 'female').strip().lower()
 
         if not audio_file:
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
-        if not voice_name:
-            return Response({'error': 'voice_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        loi = _kiem_dau_vao_clone(voice_name, gender)
+        if loi:
+            return Response({'error': loi}, status=status.HTTP_400_BAD_REQUEST)
 
         existing = _find_duplicate_cloned_voice(voice_name)
         if existing:

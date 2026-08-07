@@ -46,7 +46,7 @@ from .views import (
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.voice_views import (
-    list_voices_api, clone_voice_api, voice_tts_api,
+    list_voices_api, voice_tts_api,
     clone_voice_start_api, clone_voice_job_status_api,
      serve_minimax_tts_file, delete_voice_api,
 )
@@ -136,7 +136,9 @@ urlpatterns = [
 
     # Minimax Voice Cloning & TTS
     path('voice/list/', list_voices_api, name='voice-list'),
-    path('voice/clone/', clone_voice_api, name='voice-clone'),
+    # Clone chỉ còn đường nền start + status. Bản đồng bộ 'voice/clone/' gỡ ngày
+    # 2026-08-07: không client nào gọi, mà vẫn giữ bản sao riêng của luật chặn
+    # trùng tên + ghi DB.
     path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
     path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
     path('voice/tts/', voice_tts_api, name='voice-tts'),
