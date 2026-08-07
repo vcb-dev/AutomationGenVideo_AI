@@ -48,11 +48,13 @@ from .views.collection_views import VideoCollectionViewSet
 from .views.voice_views import (
     list_voices_api, clone_voice_api, voice_tts_api,
     clone_voice_start_api, clone_voice_job_status_api,
-     serve_minimax_tts_file,
+     serve_minimax_tts_file, delete_voice_api,
 )
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
-    fetch_resolve_owner, fetch_video_metrics_refresh,
+    fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
+    fetch_video_transcript,
+    fetch_token_refresh,
 )
 from .views.facebook_external_fetch_views import fetch_facebook_page_reels
 from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
@@ -138,6 +140,9 @@ urlpatterns = [
     path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
     path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
     path('voice/tts/', voice_tts_api, name='voice-tts'),
+    # Đường dẫn có tiền tố 'delete/' thay vì 'voice/<voice_id>/' — voice_id do MiniMax
+    # sinh (dạng Ten_a1b2c3d4) sẽ nuốt luôn cả 'list', 'clone'... nếu để pattern trần
+    path('voice/delete/<str:voice_id>/', delete_voice_api, name='voice-delete'),
     # Serve file TTS đã sinh — thay cho /media/minimax_tts/... vốn chỉ hoạt động khi DEBUG=True
     path('voice/tts/file/<str:filename>', serve_minimax_tts_file, name='voice-tts-file'),
 
@@ -202,6 +207,10 @@ urlpatterns = [
     path('facebook/fetch/metrics-refresh/', fetch_metrics_refresh, name='facebook-fetch-metrics-refresh'),
     path('facebook/fetch/resolve-owner/', fetch_resolve_owner, name='facebook-fetch-resolve-owner'),
     path('facebook/fetch/video-metrics-refresh/', fetch_video_metrics_refresh, name='facebook-fetch-video-metrics-refresh'),
+    path('facebook/fetch/video-source/', fetch_video_source, name='facebook-fetch-video-source'),
+    path('facebook/fetch/video-captions/', fetch_video_captions, name='facebook-fetch-video-captions'),
+    path('facebook/fetch/video-transcript/', fetch_video_transcript, name='facebook-fetch-video-transcript'),
+    path('facebook/fetch/token-refresh/', fetch_token_refresh, name='facebook-fetch-token-refresh'),
 
     # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
     # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.
