@@ -309,6 +309,56 @@ class MinimaxVoiceCloneService:
             logger.error(f"[Voice Clone] Workflow error: {str(e)}", exc_info=True)
             raise
 
+    def delete_voice(self, voice_id: str) -> Dict[str, Any]:
+        """
+        Xoá hẳn một giọng đã clone khỏi tài khoản MiniMax (giải phóng slot giọng).
+
+        API: POST /v1/delete_voice, body {"voice_type": "voice_cloning", "voice_id": ...}
+        https://platform.minimax.io/docs/api-reference/voice-cloning-delete
+
+        Trả về {'deleted': True} khi MiniMax xác nhận đã xoá, hoặc
+        {'deleted': False, 'reason': ...} khi giọng KHÔNG còn tồn tại phía MiniMax
+        (đã bị xoá tay, hoặc hết hạn 168h). Không tồn tại thì không phải lỗi —
+        người dùng vẫn cần dọn bản ghi trong DB của mình, xem voice_views.delete_voice_api.
+        Mọi lỗi khác (mạng, key sai, quyền) đều raise để tầng trên chặn việc xoá DB.
+        """
+        url = self._build_url("/delete_voice")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"voice_type": "voice_cloning", "voice_id": voice_id}
+
+        logger.info(f"[Voice Clone] Deleting voice: {voice_id}")
+        # Ít lần thử hơn clone: xoá chạy đồng bộ trong request của người dùng, không
+        # phải background thread — chờ 10 x 30s sẽ làm treo cả BE lẫn trình duyệt.
+        response = self._post_with_retry(
+            lambda: requests.post(url, headers=headers, json=payload, timeout=30),
+            max_attempts=3,
+        )
+
+        if response.status_code != 200:
+            logger.error(f"[Voice Clone] Delete failed: {response.text}")
+            raise Exception(f"Delete failed ({response.status_code}): {response.text}")
+
+        data = response.json()
+        base_resp = data.get('base_resp', {}) or {}
+        status_code = base_resp.get('status_code', -1)
+        status_msg = base_resp.get('status_msg', '')
+
+        if status_code != 0:
+            # 2013 = "invalid params, voice_id does not exist" — đo thật ngày 2026-08-06 bằng
+            # cách gọi delete_voice trên một voice_id vừa bị xoá. Đừng nhầm với 2054
+            # ("voice id not exist") mà endpoint TTS trả về: hai endpoint dùng hai mã khác nhau
+            # cho cùng một tình huống.
+            if status_code == 2013:
+                logger.warning(f"[Voice Clone] Voice {voice_id} không còn trên MiniMax: {status_msg}")
+                return {'deleted': False, 'reason': status_msg or 'voice not found'}
+            raise Exception(f"Minimax API error ({status_code}): {status_msg}")
+
+        logger.info(f"[Voice Clone] Delete success! voice_id: {voice_id}")
+        return {'deleted': True}
+
 
 # Singleton instance
 _voice_clone_service = None
