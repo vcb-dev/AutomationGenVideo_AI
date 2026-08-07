@@ -13,6 +13,30 @@ logger = logging.getLogger(__name__)
 
 MIN_CONTENT_LENGTH = 100
 
+# KHÔNG giới hạn độ dài trên. Trước đây chặn cứng 3000 ký tự, trong khi bước viết kịch bản của
+# content-transform chạy với max_tokens=16000 nên output vượt 3000 ký tự là chuyện thường —
+# endpoint /rescore truyền thẳng output_text vào đây và ăn 400. Tệ hơn: 400 là lỗi TẤT ĐỊNH
+# nhưng BE vẫn retry đủ 3 lượt rồi thay message thật bằng "có thể do timeout", nên triệu chứng
+# hiện ra là "chấm điểm timeout" trong khi thực chất là content quá dài.
+
+
+def _read_timeout_seconds(request):
+    """
+    Timeout (giây) mà BE cho phép cho CẢ request này — BE gửi kèm để Django dùng ĐÚNG ngân sách
+    bên gọi thực sự chờ, thay vì tự cắt theo hằng số hard-code riêng.
+
+    Trả None khi thiếu/không hợp lệ ⇒ service rơi về DEFAULT_ANALYZE_TIMEOUT_S.
+    """
+    raw = request.data.get('timeout_seconds')
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"timeout_seconds không hợp lệ ({raw!r}) — dùng mặc định")
+        return None
+    return value if value > 0 else None
+
 
 @api_view(['POST'])
 def analyze_content(request):
@@ -33,9 +57,8 @@ def analyze_content(request):
                 {'error': f'Content quá ngắn — cần ít nhất {MIN_CONTENT_LENGTH} ký tự'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
         service = PaastAnalysisService()
-        result = service.analyze(content)
+        result = service.analyze(content, timeout_seconds=_read_timeout_seconds(request))
 
         return Response({
             'success': True,
@@ -80,7 +103,11 @@ def upgrade_content(request):
             )
 
         service = PaastAnalysisService()
-        result = service.upgrade(original_content, missing_elements)
+        result = service.upgrade(
+            original_content,
+            missing_elements,
+            timeout_seconds=_read_timeout_seconds(request),
+        )
 
         return Response({
             'success': True,
