@@ -680,3 +680,160 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
             "changes_added": changes_added,
             "new_analysis": new_analysis,
         }
+
+
+# ===========================================================================
+# BẢN 2 — dành cho video kênh nội bộ
+#
+# Khác bản 1 ở ba điểm, đối chiếu trực tiếp với API của paast.vercel.app:
+#   1. BỎ thang điểm 0–100. Bản mới chỉ đếm số element đạt (`elementCount`) và
+#      kết luận đạt/chưa đạt. Trong phản hồi thật của họ không hề có `score`,
+#      `totalScore` hay `total_score`.
+#   2. THÊM 16 hook gợi ý thay thế, nằm trong `layers.action.hookSuggestions`.
+#   3. Khoá JSON viết kiểu camelCase.
+#
+# Cố ý KHÔNG sửa `analyze()` cũ: task-auto đang chạy trên schema đó (snake_case
+# + total_score). Hai bản sống song song, khi nào task-auto chuyển sang thì mới bỏ bản cũ.
+# ===========================================================================
+
+HOOK_GROUPS = [
+    {"group": "Tò mò", "formula": "Có một chi tiết mà đa số bỏ qua…"},
+    {"group": "Người nổi tiếng", "formula": "[Nhân vật] + hành động bất thường + khoảng trống"},
+    {"group": "Sốc có dữ kiện", "formula": "Con số thật + đối tượng quen thuộc"},
+    {"group": "Độc lạ", "formula": "Vật liệu/ý tưởng không thường đi cùng nhau"},
+    {"group": "Giá trị thật", "formula": "Thứ đắt/quan trọng nhất không phải X mà là Y"},
+    {"group": "Hiểu lầm", "formula": "Đa số nghĩ X, nhưng thực tế Y"},
+    {"group": "Nghịch lý", "formula": "Hai đặc tính đối lập cùng tồn tại"},
+    {"group": "Bí mật kỹ thuật", "formula": "Hiệu ứng nhìn thấy + kỹ thuật ẩn sau"},
+    {"group": "Con số", "formula": "Số cụ thể + câu hỏi ý nghĩa"},
+    {"group": "Tranh luận", "formula": "Hai cách nhìn đều có lý"},
+    {"group": "Tâm lý", "formula": "Hành vi con người + nguyên nhân ẩn"},
+    {"group": "Thử thách", "formula": "Yêu cầu quan sát/đoán từ người xem"},
+    {"group": "Story", "formula": "Bắt đầu bằng khoảnh khắc quyết định"},
+    {"group": "Quan điểm mạnh", "formula": "Lập trường + lý do sẽ chứng minh"},
+    {"group": "So sánh", "formula": "Hai đối tượng dễ nhầm/đối lập"},
+    {"group": "Hệ quả", "formula": "Nếu hiểu chi tiết này, cách nhìn sẽ thay đổi"},
+]
+
+
+class PaastAnalysisServiceV2(PaastAnalysisService):
+    """Bản 2 — dùng lại toàn bộ phần phân loại của bản 1, chỉ đổi cách quy đổi và thêm hook."""
+
+    def _build_hook_prompt(self, content: str) -> str:
+        cong_thuc = "\n".join(
+            f'{i + 1}. {h["group"]} — công thức: {h["formula"]}' for i, h in enumerate(HOOK_GROUPS)
+        )
+        return f"""Đây là kịch bản một video ngắn:
+
+\"\"\"{content}\"\"\"
+
+Viết lại câu HOOK MỞ ĐẦU cho video này theo ĐỦ 16 nhóm dưới đây. Mỗi nhóm đúng MỘT câu hook.
+
+{cong_thuc}
+
+Yêu cầu bắt buộc:
+- Mỗi hook là một câu tiếng Việt có dấu, tối đa 25 từ, đọc lên nghe tự nhiên.
+- Hook phải bám vào NỘI DUNG THẬT của kịch bản trên, không bịa thông tin không có.
+- Đúng tinh thần công thức của nhóm đó.
+- Giữ nguyên thứ tự và tên nhóm.
+
+Trả về DUY NHẤT JSON, không markdown, không giải thích:
+{{"hooks": [{{"group": "Tò mò", "example": "..."}}, ... đủ 16 phần tử ...]}}"""
+
+    def _generate_hooks(self, content: str) -> List[Dict[str, str]]:
+        """
+        Sinh 16 hook. Hỏng thì trả về danh sách công thức KHÔNG kèm ví dụ thay vì ném lỗi —
+        hook chỉ là phần gợi ý thêm, không đáng để làm hỏng cả bản phân tích đã chấm xong.
+        """
+        try:
+            raw = self._gen._call_deepseek_raw(
+                prompt=self._build_hook_prompt(content),
+                system_msg=(
+                    "Bạn là copywriter chuyên viết hook cho video ngắn. "
+                    "Chỉ trả JSON hợp lệ, không markdown fence, không lời giải thích."
+                ),
+                temperature=0.8,  # cao hơn phần phân loại: đây là việc sáng tạo, cần đa dạng
+                max_tokens=2048,
+                timeout=60,
+                log_prefix="PAAST v2/hooks (DeepSeek)",
+            )
+            parsed = self._gen._extract_json_dict(raw) if raw else None
+            theo_nhom = {
+                h.get("group"): (h.get("example") or "").strip()
+                for h in (parsed or {}).get("hooks", [])
+                if isinstance(h, dict)
+            }
+        except Exception as e:
+            logger.warning("[PAAST v2] Sinh hook lỗi: %s", e)
+            theo_nhom = {}
+
+        return [
+            {"group": h["group"], "formula": h["formula"], "example": theo_nhom.get(h["group"], "")}
+            for h in HOOK_GROUPS
+        ]
+
+    @staticmethod
+    def _sang_camel(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        doi = {"name_en": "nameEn", "name_vi": "nameVi", "evidence_sentences": "evidenceSentences"}
+        return [{doi.get(k, k): v for k, v in it.items()} for it in items]
+
+    @staticmethod
+    def _dem_dat(items: List[Dict[str, Any]]) -> int:
+        """Số tiêu chí ĐẠT. 'na' (không áp dụng cho văn bản) không tính là đạt lẫn không đạt."""
+        return sum(1 for it in items if it.get("status") == "pass")
+
+    def analyze_v2(self, content: str) -> Dict[str, Any]:
+        classification = self._normalize_classification(self._classify(content))
+
+        prefer = classification["prefer"]
+        chu_dao = sum(1 for i in prefer if i.get("status") == "primary")
+        phu_tro = sum(1 for i in prefer if i.get("status") == "secondary")
+
+        # Đạt chuẩn khi cả 5 lớp đều có ít nhất một element, và Prefer phải có element CHỦ ĐẠO
+        # — giữ đúng quy tắc của compute_verdict() bản 1, chỉ đổi cách diễn đạt ra ngoài.
+        du_lop = (
+            chu_dao >= 1
+            and all(self._dem_dat(classification[k]) >= 1 for k in ("action", "acknowledge", "stick", "trust"))
+        )
+
+        return {
+            "phien_ban": 2,
+            "verdict": {
+                "passed": du_lop,
+                "title": "Đạt chuẩn PAAST" if du_lop else "Chưa đủ chuẩn PAAST",
+                "subtitle": (
+                    "Content có element ở cả 5 lớp — sẵn sàng publish."
+                    if du_lop
+                    else "Content còn thiếu element ở một số lớp — xem gợi ý bên dưới."
+                ),
+            },
+            "layers": {
+                "prefer": {
+                    "leadParagraph": (content or "").strip()[:400],
+                    "insights": self._sang_camel(prefer),
+                    "primaryCount": chu_dao,
+                    "secondaryCount": phu_tro,
+                },
+                "action": {
+                    "elementCount": self._dem_dat(classification["action"]),
+                    "criteria": self._sang_camel(classification["action"]),
+                    "hookSuggestions": self._generate_hooks(content),
+                },
+                "acknowledge": {
+                    "elementCount": self._dem_dat(classification["acknowledge"]),
+                    "criteria": self._sang_camel(classification["acknowledge"]),
+                },
+                "stick": {
+                    "elementCount": self._dem_dat(classification["stick"]),
+                    "textDetectableCount": sum(
+                        1 for it in classification["stick"] if it.get("status") != "na"
+                    ),
+                    "criteria": self._sang_camel(classification["stick"]),
+                },
+                "trust": {
+                    "elementCount": self._dem_dat(classification["trust"]),
+                    "criteria": self._sang_camel(classification["trust"]),
+                },
+            },
+            "ctaWarning": self.check_cta_compliance(content),
+        }

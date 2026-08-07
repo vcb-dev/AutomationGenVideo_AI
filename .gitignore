@@ -92,3 +92,6 @@ celerybeat.pid
 .coverage
 htmlcov/
 .gstack/
+
+# Token Facebook đã gia hạn (chứa User Access Token — không commit)
+.fb_token.json

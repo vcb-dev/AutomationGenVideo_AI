@@ -144,6 +144,7 @@ from video_management.views import paast_analysis_views
 
 urlpatterns += [
     path('api/ai/paast/analyze/', paast_analysis_views.analyze_content, name='paast-analyze'),
+    path('api/ai/paast/analyze-v2/', paast_analysis_views.analyze_content_v2, name='paast-analyze-v2'),
     path('api/ai/paast/upgrade/', paast_analysis_views.upgrade_content, name='paast-upgrade'),
 ]
 

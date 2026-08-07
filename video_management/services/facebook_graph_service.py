@@ -14,6 +14,8 @@ import requests
 from typing import Dict, Any, Optional
 from django.conf import settings
 
+from .facebook_token_store import get_token
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,9 @@ class FacebookGraphService:
         """Initialize Facebook Graph API service."""
         self.app_id = getattr(settings, 'FACEBOOK_APP_ID', '')
         self.app_secret = getattr(settings, 'FACEBOOK_APP_SECRET', '')
-        self.access_token = getattr(settings, 'FACEBOOK_ACCESS_TOKEN', '')
+        # Qua token store, KHÔNG đọc thẳng settings: settings nạp một lần lúc boot nên
+        # token vừa gia hạn sẽ không có hiệu lực tới lần restart Django.
+        self.access_token = get_token()
         
         if not self.app_id or not self.app_secret:
             raise ValueError("FACEBOOK_APP_ID and FACEBOOK_APP_SECRET must be configured")
