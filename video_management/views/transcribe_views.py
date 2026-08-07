@@ -441,7 +441,12 @@ def _resolve_tiktok_direct_url(video_url: str) -> str:
 
 def _extract_text_from_video_frames(video_path: str, ffmpeg_path: str, anthropic_key: str, uid: str, tmp_dir: str) -> str:
     """
-    OCR text from sampled video frames using OpenAI vision.
+    OCR chữ cháy trên khung hình video bằng Claude vision.
+
+    Trước đây thân hàm gọi `_ocr_frame_with_openai(frame, openai_key)` — cả hàm lẫn biến đó
+    đều KHÔNG tồn tại (chỉ có `_ocr_frame_with_claude`). Mỗi lần chạy là một NameError, bị
+    `except Exception` bên dưới nuốt gọn nên hàm luôn trả chuỗi rỗng và không ai thấy lỗi.
+    Đo lại sau khi sửa: cùng một video trước trả 0 ký tự.
     """
     frames_dir = os.path.join(tmp_dir, f'vcb_frames_{uid}')
     os.makedirs(frames_dir, exist_ok=True)
@@ -458,7 +463,7 @@ def _extract_text_from_video_frames(video_path: str, ffmpeg_path: str, anthropic
 
         extracted_lines = []
         for frame in frames:
-            txt = _ocr_frame_with_openai(frame, openai_key)
+            txt = _ocr_frame_with_claude(frame, anthropic_key)
             if txt:
                 extracted_lines.extend([ln.strip() for ln in txt.split('\n') if ln.strip()])
 
@@ -498,7 +503,10 @@ def _ocr_frame_with_claude(frame_path: str, anthropic_key: str) -> str:
         with open(frame_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode("utf-8")
         
-        models = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"]
+        # Ba ID cũ ("claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5") đều KHÔNG tồn tại
+        # nên mọi khung hình đều trả 400 Bad Request. Haiku 4.5 đứng đầu vì OCR chữ trên ảnh là
+        # việc nhẹ, mà hàm này gọi 12 lần cho mỗi video — dùng model to là đốt tiền vô ích.
+        models = ["claude-haiku-4-5-20251001", "claude-sonnet-5"]
         response = None
         for m in models:
             try:
