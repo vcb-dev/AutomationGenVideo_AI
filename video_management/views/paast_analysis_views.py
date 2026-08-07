@@ -115,12 +115,6 @@ def analyze_content_v2(request):
                 {'error': f'Content quá ngắn — cần ít nhất {MIN_CONTENT_LENGTH} ký tự'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        if len(content) > MAX_CONTENT_LENGTH:
-            return Response(
-                {'error': f'Content quá dài — tối đa {MAX_CONTENT_LENGTH} ký tự'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         result = PaastAnalysisServiceV2().analyze_v2(content)
         return Response({'success': True, **result})
 
