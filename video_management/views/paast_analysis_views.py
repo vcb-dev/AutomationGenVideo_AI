@@ -12,7 +12,6 @@ from video_management.services.paast_analysis_service import PaastAnalysisServic
 logger = logging.getLogger(__name__)
 
 MIN_CONTENT_LENGTH = 100
-MAX_CONTENT_LENGTH = 3000
 
 
 @api_view(['POST'])
@@ -32,11 +31,6 @@ def analyze_content(request):
         if len(content) < MIN_CONTENT_LENGTH:
             return Response(
                 {'error': f'Content quá ngắn — cần ít nhất {MIN_CONTENT_LENGTH} ký tự'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        if len(content) > MAX_CONTENT_LENGTH:
-            return Response(
-                {'error': f'Content quá dài — tối đa {MAX_CONTENT_LENGTH} ký tự'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
