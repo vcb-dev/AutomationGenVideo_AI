@@ -115,8 +115,13 @@ class ViewsFetchFailureTests(SimpleTestCase):
         duoc_ghi = '\n'.join(logs.output)
         self.assertIn('post_video_views is deprecated', duoc_ghi)
 
-    def test_lay_duoc_thi_cong_don_dung_hai_metric(self):
-        """Đường thành công phải giữ nguyên hành vi cũ."""
+    def test_lay_duoc_thi_tra_dung_so(self):
+        """Đường thành công vẫn phải trả đúng số.
+
+        Trước đây test này cộng post_video_views + post_video_reels_organic_plays = 1234. Metric
+        Reels đã bị Facebook khai tử (đo ngày 09/08/2026) và bị loại khỏi VIEW_METRICS, nên nếu
+        nó còn lọt vào phản hồi thì cũng KHÔNG được cộng — xem test_facebook_view_metric_names.
+        """
         service = _build_service()
         insights = {
             POST_A: {
@@ -134,7 +139,7 @@ class ViewsFetchFailureTests(SimpleTestCase):
             mock_get.side_effect = [_ok_response(ENGAGEMENT_OK), _ok_response(insights)]
             result = service.update_video_views_batch([POST_A, POST_B])
 
-        self.assertEqual(result[POST_A]['view_count'], 1234)
+        self.assertEqual(result[POST_A]['view_count'], 1000)
         self.assertEqual(result[POST_B]['view_count'], 50)
 
     def test_bai_khong_phai_video_van_la_0_chu_khong_phai_None(self):

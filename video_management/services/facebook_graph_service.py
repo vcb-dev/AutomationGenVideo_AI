@@ -54,6 +54,23 @@ class _ScrubTokenFilter(logging.Filter):
 logger.addFilter(_ScrubTokenFilter())
 
 
+# Metric dùng để tính lượt xem. CẢNH BÁO trước khi thêm vào đây: Facebook từ chối NGUYÊN request
+# `insights.metric(a,b)` nếu chỉ một metric không hợp lệ — nên một metric bị khai tử kéo sập luôn
+# các metric còn sống chung request.
+#
+# Đó đúng là sự cố 27/07–09/08/2026: `post_video_reels_organic_plays` bị khai tử, kéo theo
+# `post_video_views` (vẫn chạy tốt) cũng không lấy được, và 1.169 video bị ghi view = 0 dù lượt
+# xem thật vẫn nằm sẵn ở Facebook. Đo bằng page token thật ngày 09/08/2026:
+#
+#     post_video_views                 ✅ 486 / 902 / 649 / 98 / 585 trên 5 bài
+#     post_video_reels_organic_plays   ❌ (#100) The value must be a valid insights metric
+#     blue_reels_total_plays           ❌ (#100)   — không có bản thay thế cùng tên cho Reels
+#     post_reels_plays                 ❌ (#100)
+#
+# Thêm metric mới thì thử riêng từng cái bằng /{post_id}/insights?metric=<tên> trước đã.
+VIEW_METRICS = ('post_video_views',)
+
+
 class FacebookGraphService:
     """
     Facebook Graph API service for fetching page metadata.
@@ -604,9 +621,9 @@ class FacebookGraphService:
         try:
             insights_params = {
                 'ids': ','.join(video_ids),
-                # post_video_reels_organic_plays: chỉ số play của Reels — tránh hụt view
-                # khi bài là Reels chia sẻ vào feed (post_video_views có thể rỗng/0).
-                'fields': "insights.metric(post_video_views,post_video_reels_organic_plays){name,period,values}",
+                # Lấy tên metric từ VIEW_METRICS chứ không gõ cứng: gõ cứng ở đây và ở vòng lặp
+                # đọc kết quả bên dưới là hai nơi, đổi một nơi quên nơi kia thì view âm thầm về 0.
+                'fields': f"insights.metric({','.join(VIEW_METRICS)}){{name,period,values}}",
                 'access_token': self.access_token,
             }
             insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
@@ -615,7 +632,7 @@ class FacebookGraphService:
             for p_id, p_data in insights_data.items():
                 views = 0
                 for metric in p_data.get('insights', {}).get('data', []):
-                    if metric.get('name') in ('post_video_views', 'post_video_reels_organic_plays'):
+                    if metric.get('name') in VIEW_METRICS:
                         values_list = metric.get('values', [])
                         if values_list:
                             views += values_list[0].get('value', 0)
