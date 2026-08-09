@@ -554,7 +554,18 @@ class FacebookGraphService:
 
         # Views: best-effort, không chặn kết quả reactions/comments/shares nếu fail
         # (bài không có video, hoặc metric không áp dụng cho object này).
+        #
+        # views_fetch_ok phân biệt hai thứ mà bản cũ gộp làm một, và chính chỗ gộp đó gây ra sự
+        # cố 27/07–09/08/2026: request insights hỏng thì mọi bài đều nhận view_count = 0, không
+        # cách nào phân biệt với 0 nghĩa là THẬT SỰ không ai xem. Kết quả: 13 ngày liền dashboard
+        # vẽ đường lượt xem tụt về 0 trông y như dữ liệu thật, trong khi like/comment/share vẫn
+        # về đều — không ai báo động vì bảng vẫn đầy số.
+        #
+        # Hỏng thì trả None. Phía BE (facebook-owned-pages.service.ts) đã có sẵn nhánh
+        # `m.view_count ?? view_count_cũ` để giữ nguyên số cũ — nhánh đó viết ra chính là cho
+        # tình huống này, chỉ chưa bao giờ chạy vì Python luôn gửi 0.
         views_map: Dict[str, int] = {}
+        views_fetch_ok = False
         try:
             insights_params = {
                 'ids': ','.join(video_ids),
@@ -574,11 +585,20 @@ class FacebookGraphService:
                         if values_list:
                             views += values_list[0].get('value', 0)
                 views_map[p_id] = views
+            views_fetch_ok = True
         except requests.exceptions.HTTPError as e:
+            # ERROR chứ không phải WARNING, và giữ nguyên `body`: body là thứ DUY NHẤT nói được
+            # Facebook từ chối vì lý do gì (metric bị khai tử / thiếu quyền / token chết). Mức
+            # warning đã khiến sự cố lần trước chìm 13 ngày không ai thấy.
             body = e.response.text if e.response is not None else ''
-            logger.warning(f"⚠️ Không lấy được views (có thể bài không có video): {str(e)} | body: {body}")
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG "
+                f"(không ghi 0 đè lên số cũ): {str(e)} | body: {body}"
+            )
         except Exception as e:
-            logger.warning(f"⚠️ Không lấy được views: {str(e)}")
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG: {str(e)}"
+            )
 
         metrics_map = {}
         for p_id, p_data in res_data.items():
@@ -587,7 +607,9 @@ class FacebookGraphService:
             shares = p_data.get('shares', {}).get('count', 0)
 
             metrics_map[p_id] = {
-                'view_count': views_map.get(p_id, 0),
+                # Request thành công mà bài không có khối insights = bài đó thật sự không có
+                # video để đếm view → 0 là câu trả lời đúng. Request hỏng → None = "không biết".
+                'view_count': views_map.get(p_id, 0) if views_fetch_ok else None,
                 'like_count': likes,
                 'comment_count': comments,
                 'share_count': shares,
