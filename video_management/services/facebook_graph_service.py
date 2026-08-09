@@ -10,6 +10,7 @@ This provides accurate, official data directly from Facebook.
 """
 
 import logging
+import re
 import requests
 from typing import Dict, Any, Optional
 from django.conf import settings
@@ -17,6 +18,40 @@ from django.conf import settings
 from .facebook_token_store import get_token
 
 logger = logging.getLogger(__name__)
+
+# Dừng ở & hoặc khoảng trắng hoặc nháy — token nằm cuối chuỗi cũng phải che được.
+_TOKEN_RE = re.compile(r'(access_token=)[^&\s"\'\\]+')
+
+
+def _scrub_tokens(text) -> str:
+    """Che access_token trước khi ghi log.
+
+    Vì sao cần: `str(e)` của requests nhúng NGUYÊN URL kèm query string, nên mỗi lần request
+    Graph API hỏng là token bị ghi thẳng vào log dưới dạng chữ thường. Đo được ngày 09/08/2026:
+    log production đã chứa token đầy đủ suốt 13 ngày sự cố lượt xem. Token đó đọc được toàn bộ
+    dữ liệu 106 fanpage — ai đọc được log là dùng được luôn.
+    """
+    return _TOKEN_RE.sub(r'\1<ĐÃ ẨN>', str(text))
+
+
+class _ScrubTokenFilter(logging.Filter):
+    """Lọc ở tầng logger thay vì sửa từng lời gọi.
+
+    Service này có 47 lời gọi log, phần lớn kèm str(e). Sửa tay từng cái thì lần sau ai thêm
+    một dòng log mới là hở lại, mà không ai nhớ nổi quy tắc. Đặt ở đây thì quên cũng vẫn an toàn.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _scrub_tokens(record.msg)
+        if record.args:
+            record.args = tuple(
+                _scrub_tokens(a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
+logger.addFilter(_ScrubTokenFilter())
 
 
 class FacebookGraphService:
