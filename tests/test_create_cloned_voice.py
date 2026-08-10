@@ -10,7 +10,7 @@ Người dùng chỉ thấy "clone thất bại" nên nhiều khả năng bấm 
 Cột name giới hạn 255 ký tự, gender 20 — trước đây không tầng nào kiểm (ô nhập
 FE không có maxLength, BE chỉ kiểm rỗng), nên tên dài là rơi đúng vào kịch bản trên.
 
-Chạy: python manage.py test tests.test_tao_giong_clone
+Chạy: python manage.py test tests.test_create_cloned_voice
 """
 
 from unittest.mock import patch
@@ -21,69 +21,69 @@ from rest_framework.test import APIRequestFactory
 from video_management.views import voice_views
 
 
-class TaoGiongClone(SimpleTestCase):
+class CreateClonedVoice(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
 
-    def _goi(self, **fields):
-        du_lieu = {
+    def _call(self, **fields):
+        payload = {
             'file': _file_audio(),
             'voice_name': 'KOC Lan',
             'gender': 'female',
         }
-        du_lieu.update(fields)
-        request = self.factory.post('/api/voice/clone/start/', du_lieu, format='multipart')
+        payload.update(fields)
+        request = self.factory.post('/api/voice/clone/start/', payload, format='multipart')
         return voice_views.clone_voice_start_api(request)
 
-    def test_ten_dai_hon_255_bi_chan_TRUOC_khi_goi_minimax(self):
+    def test_name_over_255_rejected_BEFORE_calling_minimax(self):
         """Chốt chính: chặn ở view, không để DB chặn sau khi đã mất tiền."""
         with patch.object(voice_views, 'Voice') as Voice, \
                 patch.object(voice_views, 'threading') as threading:
             Voice.objects.filter.return_value.first.return_value = None
-            res = self._goi(voice_name='A' * 256)
+            res = self._call(voice_name='A' * 256)
 
         self.assertEqual(res.status_code, 400)
         self.assertIn('255', str(res.data['error']))
         threading.Thread.assert_not_called()
 
-    def test_ten_dung_255_ky_tu_van_chay(self):
+    def test_name_of_exactly_255_still_runs(self):
         """Chặn đúng ở ngưỡng cột, không chặn nhầm tên hợp lệ."""
         with patch.object(voice_views, 'Voice') as Voice, \
                 patch.object(voice_views, 'threading') as threading:
             Voice.objects.filter.return_value.first.return_value = None
-            res = self._goi(voice_name='A' * 255)
+            res = self._call(voice_name='A' * 255)
 
         self.assertEqual(res.status_code, 200)
         threading.Thread.assert_called_once()
 
-    def test_ten_toan_khoang_trang_bi_chan(self):
+    def test_whitespace_only_name_rejected(self):
         """'   ' là chuỗi truthy trong Python nên lọt qua kiểm 'not voice_name'."""
         with patch.object(voice_views, 'Voice') as Voice, \
                 patch.object(voice_views, 'threading') as threading:
             Voice.objects.filter.return_value.first.return_value = None
-            res = self._goi(voice_name='   ')
+            res = self._call(voice_name='   ')
 
         self.assertEqual(res.status_code, 400)
         threading.Thread.assert_not_called()
 
-    def test_gioi_tinh_la_bi_chan(self):
+    def test_unknown_gender_rejected(self):
         """Cột gender chỉ chứa 20 ký tự; giá trị lạ cũng làm hỏng bộ lọc của FE."""
         with patch.object(voice_views, 'Voice') as Voice, \
                 patch.object(voice_views, 'threading') as threading:
             Voice.objects.filter.return_value.first.return_value = None
-            res = self._goi(gender='x' * 40)
+            res = self._call(gender='x' * 40)
 
         self.assertEqual(res.status_code, 400)
         threading.Thread.assert_not_called()
 
-    def test_ten_duoc_trim_truoc_khi_luu(self):
+    def test_name_trimmed_before_save(self):
         """FE đã trim, nhưng view là nơi cuối cùng còn chặn được — tên lưu vào DB
         phải khớp đúng tên vừa đem đi so trùng, nếu không luật chặn trùng vô nghĩa."""
         with patch.object(voice_views, 'Voice') as Voice, \
                 patch.object(voice_views, 'threading'), \
                 patch.object(voice_views, 'progress_set') as progress_set:
             Voice.objects.filter.return_value.first.return_value = None
-            res = self._goi(voice_name='  KOC Lan  ')
+            res = self._call(voice_name='  KOC Lan  ')
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(progress_set.call_args[0][1]['voice_name'], 'KOC Lan')

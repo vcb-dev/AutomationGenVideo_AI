@@ -7,7 +7,7 @@ trang Tổng quan Tiện ích AI lại đếm `voices.filter(is_cloned)` nên b�
 đã clone" trong khi thực tế không có giọng nào. Test này khoá lại: DB rỗng thì
 danh sách rỗng.
 
-Chạy: python manage.py test tests.test_danh_sach_giong
+Chạy: python manage.py test tests.test_voice_list
 """
 
 from unittest.mock import MagicMock, patch
@@ -18,8 +18,8 @@ from rest_framework.test import APIRequestFactory
 from video_management.views import voice_views
 
 
-def _giong(**over):
-    mac_dinh = dict(
+def _voice(**over):
+    defaults = dict(
         id=7,
         voice_id='KOC_Lan_a1b2c3d4',
         name='KOC Lan',
@@ -30,35 +30,35 @@ def _giong(**over):
         is_system=False,
         sample_audio_url=None,
     )
-    mac_dinh.update(over)
+    defaults.update(over)
     v = MagicMock()
-    for k, val in mac_dinh.items():
+    for k, val in defaults.items():
         setattr(v, k, val)
     return v
 
 
-class DanhSachGiong(SimpleTestCase):
+class VoiceList(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
 
-    def _goi(self):
+    def _call(self):
         return voice_views.list_voices_api(self.factory.get('/api/voice/list/'))
 
-    def test_db_rong_thi_danh_sach_rong(self):
+    def test_empty_db_returns_empty_list(self):
         """Không bịa giọng: trang Tổng quan đếm is_cloned nên một giọng ma = số liệu sai."""
         with patch.object(voice_views, 'Voice') as Voice:
             Voice.objects.all.return_value = []
-            res = self._goi()
+            res = self._call()
 
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data['voices'], [])
         self.assertEqual(res.data['count'], 0)
 
-    def test_tra_dung_cac_truong_FE_dang_dung(self):
+    def test_returns_fields_the_FE_relies_on(self):
         """FE lọc theo is_cloned/is_system/provider — thiếu trường nào là lọc sai."""
         with patch.object(voice_views, 'Voice') as Voice:
-            Voice.objects.all.return_value = [_giong()]
-            res = self._goi()
+            Voice.objects.all.return_value = [_voice()]
+            res = self._call()
 
         self.assertEqual(res.data['count'], 1)
         self.assertEqual(res.data['voices'][0], {
@@ -73,10 +73,10 @@ class DanhSachGiong(SimpleTestCase):
             'sample_audio_url': None,
         })
 
-    def test_gender_trong_thi_mac_dinh_female(self):
+    def test_missing_gender_defaults_to_female(self):
         """Bản ghi cũ không ghi cột gender — FE hiển thị thẳng chuỗi này dưới tên giọng."""
         with patch.object(voice_views, 'Voice') as Voice:
-            Voice.objects.all.return_value = [_giong(gender=None)]
-            res = self._goi()
+            Voice.objects.all.return_value = [_voice(gender=None)]
+            res = self._call()
 
         self.assertEqual(res.data['voices'][0]['gender'], 'female')

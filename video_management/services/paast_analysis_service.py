@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from video_management.services.content_generation_service import (
     ContentGenerationService,
     DeepSeekError,
+    DEEPSEEK_DEFAULT_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -567,6 +568,9 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
             "total_score": scores["total_score"],
             "verdict": verdict,
             "cta_warning": cta,
+            # BE ghi thẳng vào cột model_used. Trả từ đây vì AI mới là bên quyết model —
+            # BE tự đoán thì bảng lịch sử ghi sai như trước.
+            "model_used": DEEPSEEK_DEFAULT_MODEL,
         }
 
     def upgrade(

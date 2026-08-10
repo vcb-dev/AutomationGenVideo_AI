@@ -11,6 +11,8 @@ import os
 import uuid
 from typing import Optional, Dict, Any
 
+from django.conf import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,8 +42,6 @@ class MinimaxVoiceCloneService:
     Service for cloning custom voices using Minimax Voice Cloning API.
     """
     
-    BASE_URL = "https://api.minimax.io/v1"
-    
     def __init__(self, api_key: Optional[str] = None, group_id: Optional[str] = None):
         """
         Initialize Minimax Voice Clone Service.
@@ -50,11 +50,12 @@ class MinimaxVoiceCloneService:
             api_key: Minimax API Key (JWT token)
             group_id: Minimax Group ID
         """
-        self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
+        self.api_key = api_key or getattr(settings, 'MINIMAX_API_KEY', '')
         # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
         # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
         # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
-        self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
+        self.group_id = group_id or getattr(settings, 'MINIMAX_GROUP_ID', '')
+        self.base_url = getattr(settings, 'MINIMAX_API_BASE_URL', 'https://api.minimax.io/v1')
 
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
@@ -64,7 +65,7 @@ class MinimaxVoiceCloneService:
 
     def _build_url(self, path: str) -> str:
         """Build API URL; chỉ gắn GroupId khi có (key JWT cũ)."""
-        url = f"{self.BASE_URL}{path}"
+        url = f"{self.base_url}{path}"
         return f"{url}?GroupId={self.group_id}" if self.group_id else url
 
     def _post_with_retry(self, request_fn, max_attempts: int = 10):

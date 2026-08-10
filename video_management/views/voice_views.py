@@ -28,12 +28,12 @@ _TTS_FILENAME_RE = re.compile(r'^tts_[0-9a-f]{32}\.mp3$')
 
 
 # Lấy thẳng từ model thay vì gõ lại số: đổi max_length của cột mà quên sửa chỗ
-# kiểm thì lỗi rơi vào đúng chỗ đắt nhất (xem _kiem_dau_vao_clone).
-_TEN_GIONG_TOI_DA = Voice._meta.get_field('name').max_length
-_GIOI_TINH_HOP_LE = ('male', 'female')
+# kiểm thì lỗi rơi vào đúng chỗ đắt nhất (xem _validate_clone_input).
+_MAX_VOICE_NAME_LEN = Voice._meta.get_field('name').max_length
+_VALID_GENDERS = ('male', 'female')
 
 
-def _kiem_dau_vao_clone(voice_name, gender):
+def _validate_clone_input(voice_name, gender):
     """Trả câu lỗi nếu đầu vào không thể ghi được vào bảng Voice, None nếu hợp lệ.
 
     PHẢI gọi trước clone_voice_from_file(). Thứ tự trong job nền là gọi MiniMax
@@ -42,10 +42,10 @@ def _kiem_dau_vao_clone(voice_name, gender):
     """
     if not voice_name:
         return 'voice_name is required'
-    if len(voice_name) > _TEN_GIONG_TOI_DA:
-        return f'Tên giọng dài quá {_TEN_GIONG_TOI_DA} ký tự — hãy đặt tên ngắn hơn.'
-    if gender not in _GIOI_TINH_HOP_LE:
-        return f"Giới tính phải là một trong {'/'.join(_GIOI_TINH_HOP_LE)}."
+    if len(voice_name) > _MAX_VOICE_NAME_LEN:
+        return f'Tên giọng dài quá {_MAX_VOICE_NAME_LEN} ký tự — hãy đặt tên ngắn hơn.'
+    if gender not in _VALID_GENDERS:
+        return f"Giới tính phải là một trong {'/'.join(_VALID_GENDERS)}."
     return None
 
 
@@ -240,9 +240,9 @@ def clone_voice_start_api(request):
 
         if not audio_file:
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
-        loi = _kiem_dau_vao_clone(voice_name, gender)
-        if loi:
-            return Response({'error': loi}, status=status.HTTP_400_BAD_REQUEST)
+        error = _validate_clone_input(voice_name, gender)
+        if error:
+            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
 
         existing = _find_duplicate_cloned_voice(voice_name)
         if existing:

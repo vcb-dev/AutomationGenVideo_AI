@@ -11,6 +11,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Optional, List, Tuple, Any
 from django.conf import settings
 
+# Model DeepSeek dùng cho mọi lời gọi không chỉ định riêng. Để MỘT chỗ vì BE ghi tên
+# này vào cột model_used của paast_analysis_history — BE từng gõ cứng 'deepseek-chat'
+# trong khi thực tế chạy model dưới đây, làm cả bảng lịch sử ghi sai tên model.
+DEEPSEEK_DEFAULT_MODEL = getattr(settings, 'DEEPSEEK_MODEL', 'deepseek-v4-flash')
+
 
 class DeepSeekError(RuntimeError):
     """
@@ -751,7 +756,7 @@ class ContentGenerationService:
         self,
         prompt: str,
         system_msg: str,
-        model: str = "deepseek-v4-flash",
+        model: str = DEEPSEEK_DEFAULT_MODEL,
         temperature: float = 0.1,
         max_tokens: int = 2048,
         timeout: int = 60,
@@ -782,7 +787,7 @@ class ContentGenerationService:
         self,
         prompt: str,
         system_msg: str,
-        model: str = "deepseek-v4-flash",
+        model: str = DEEPSEEK_DEFAULT_MODEL,
         temperature: float = 0.1,
         max_tokens: int = 2048,
         timeout: int = 60,
@@ -801,7 +806,8 @@ class ContentGenerationService:
         if not self.deepseek_key:
             raise DeepSeekError('no_key', 'Chưa cấu hình DEEPSEEK_API_KEY')
 
-        url = "https://api.deepseek.com/chat/completions"
+        # Đọc lúc gọi, không gõ cứng — đổi .env là trỏ được sang proxy/mock server.
+        url = f"{getattr(settings, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com')}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.deepseek_key}"
