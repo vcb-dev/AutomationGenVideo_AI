@@ -11,12 +11,46 @@ lần phân tích đầu và lần phân tích lại sau khi nâng cấp nội d
 """
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from video_management.services.content_generation_service import ContentGenerationService
+from video_management.services.content_generation_service import (
+    ContentGenerationService,
+    DeepSeekError,
+    DEEPSEEK_DEFAULT_MODEL,
+)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Ngân sách thời gian
+# ---------------------------------------------------------------------------
+# Timeout TRONG (Django→DeepSeek) phải nhỏ hơn HẲN timeout NGOÀI (BE→AI service), nếu không
+# BE luôn bung trước: Django còn cần thời gian cho handshake, đọc body, parse JSON, normalize
+# và serialize response SAU KHI DeepSeek trả xong. Trước đây 2 mốc bằng nhau (120s = 120s) nên
+# mọi lượt chạm trần đều bị BE huỷ ngang dù Django sắp trả kết quả hợp lệ.
+DEEPSEEK_TIMEOUT_MARGIN_S = 20
+
+# Khi caller không gửi timeout_seconds (gọi trực tiếp, test, hoặc client cũ).
+DEFAULT_ANALYZE_TIMEOUT_S = 120
+
+# Tối đa 3 lượt/nhóm (1 đầu + 2 thử lại) — nhưng chỉ thử lại khi ngân sách còn đủ, xem
+# _classify_group. Thử lại TẠI CHỖ trong worker của nhóm, thay vì để BE chạy lại cả 5 nhóm:
+# trước đây 1 nhóm hỏng là raise cả lượt, nên xác suất hỏng chung = 1-(1-p)^5 (p=5%/nhóm đã
+# ra 23% lượt hỏng), và mỗi lần BE retry lại tung xúc xắc 5 mặt lần nữa.
+MAX_GROUP_ATTEMPTS = 3
+
+# Dưới mức này thì thử lại chỉ để chắc chắn timeout thêm lần nữa — dừng sớm, nhường phần
+# quyết định thử lại cho BE.
+MIN_RETRY_BUDGET_S = 25
+
+# Trần cho MỖI lượt gọi của 1 nhóm. Cần thiết vì nếu để 1 lượt được dùng trọn ngân sách còn
+# lại thì một lượt bất thường sẽ ăn sạch budget và retry per-group không bao giờ chạy được —
+# đúng lỗi đã mắc ở bản sửa đầu: lỗi "reasoning ăn hết token" là lỗi CHẬM (~90s), không phải
+# lỗi nhanh như giả định. Với suy luận đã tắt, lượt bình thường chỉ ~9s nên trần 45s vừa rất
+# rộng cho input dài, vừa đảm bảo luôn còn budget cho ít nhất 1 lượt thử lại.
+PER_ATTEMPT_TIMEOUT_CAP_S = 45
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +149,35 @@ ALL_CRITERIA_BY_CODE: Dict[str, Dict[str, str]] = {
 # Tách nhỏ thay vì 1 prompt gộp cả 30 tiêu chí giúp giảm độ trễ (thời gian chờ = lệnh
 # chậm nhất trong 5 lệnh chạy song song, không phải tổng cả 5) và giảm rủi ro response
 # bị cắt cụt do quá dài (mỗi lệnh giờ chỉ cần trả tối đa 6 tiêu chí thay vì cả 30+6).
+#
+# TẮT SUY LUẬN cho toàn bộ phần phân loại PAAST — đây là thay đổi quan trọng nhất.
+#
+# Phân loại PAAST là tác vụ TRÍCH XUẤT CÓ CẤU TRÚC (đọc content, gán status + quote lại câu
+# nguyên văn), không phải tác vụ cần suy luận nhiều bước. Chạy nó trên model reasoning gây
+# đúng bệnh "over-thinking": reasoning_tokens NỞ RA LẤP ĐẦY mọi max_tokens được cấp rồi không
+# còn chỗ sinh nội dung ⇒ content rỗng ⇒ 502. Thực đo trên nhóm prefer (nhóm nặng nhất):
+#
+#   max_tokens=16000 + suy luận : 0/3 lượt thành công, ~115s/lượt, reasoning_tokens ~11k-16k
+#   max_tokens=12000 + suy luận : 0/3 lượt thành công, ~90s/lượt, reasoning ăn trọn 12000
+#   TẮT suy luận                : thành công, ~9s/lượt, completion chỉ ~1530 token
+#
+# Tức nâng/hạ max_tokens đều không cứu được — model luôn tiêu hết phần được cấp. Tắt hẳn suy
+# luận vừa sửa đúng lỗi vừa nhanh hơn ~10 lần. Chất lượng phân loại KHÔNG dựa vào suy luận:
+# điểm số do compute_scores (Python thuần) tính, LLM chỉ gán nhãn và trích quote.
+DISABLE_THINKING_PARAMS = {"thinking": {"type": "disabled"}}
+
+# Với suy luận đã tắt, nhu cầu token trở nên DỰ ĐOÁN ĐƯỢC (thực đo: nhóm nặng nhất ~1530
+# token cho ~3900 ký tự JSON) nên mới cấp được theo số tiêu chí một cách an toàn. Vẫn để dư
+# gấp ~2.5 lần mức thực đo cho input dài.
+GROUP_MAX_TOKENS_6_CRITERIA = 4000
+GROUP_MAX_TOKENS_STICK = 2000
+
 CLASSIFICATION_GROUPS = [
-    ("prefer", "NHÓM PREFER (đánh giá TỔNG THỂ toàn bài, không phải câu-by-câu)", PREFER_INSIGHTS, "primary | secondary | off"),
-    ("action", "NHÓM ACTION — S-FACES (đánh giá từng câu/đoạn cụ thể)", ACTION_CRITERIA, "pass | miss"),
-    ("acknowledge", "NHÓM ACKNOWLEDGE — BRANDS (đánh giá từng câu/đoạn cụ thể)", ACKNOWLEDGE_CRITERIA, "pass | miss"),
-    ("stick", "NHÓM STICK text-detectable (chỉ 2 tiêu chí này detect được từ text thuần)", STICK_TEXT_DETECTABLE_CRITERIA, "pass | miss"),
-    ("trust", "NHÓM TRUST — TRUSTS (đánh giá từng câu/đoạn cụ thể)", TRUST_CRITERIA, "pass | miss"),
+    ("prefer", "NHÓM PREFER (đánh giá TỔNG THỂ toàn bài, không phải câu-by-câu)", PREFER_INSIGHTS, "primary | secondary | off", GROUP_MAX_TOKENS_6_CRITERIA),
+    ("action", "NHÓM ACTION — S-FACES (đánh giá từng câu/đoạn cụ thể)", ACTION_CRITERIA, "pass | miss", GROUP_MAX_TOKENS_6_CRITERIA),
+    ("acknowledge", "NHÓM ACKNOWLEDGE — BRANDS (đánh giá từng câu/đoạn cụ thể)", ACKNOWLEDGE_CRITERIA, "pass | miss", GROUP_MAX_TOKENS_6_CRITERIA),
+    ("stick", "NHÓM STICK text-detectable (chỉ 2 tiêu chí này detect được từ text thuần)", STICK_TEXT_DETECTABLE_CRITERIA, "pass | miss", GROUP_MAX_TOKENS_STICK),
+    ("trust", "NHÓM TRUST — TRUSTS (đánh giá từng câu/đoạn cụ thể)", TRUST_CRITERIA, "pass | miss", GROUP_MAX_TOKENS_6_CRITERIA),
 ]
 
 # CTA compliance patterns — port nguyên văn từ PAAST_Analyzer_Spec.md §5.4.
@@ -199,36 +256,105 @@ KỊCH BẢN CẦN PHÂN TÍCH:
 Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text giải thích ngoài JSON:
 {shape}"""
 
-    def _classify_group(self, content: str, group_key: str, group_label: str, items: List[Dict[str, str]], status_options: str) -> List[Dict[str, Any]]:
+    def _classify_group(
+        self,
+        content: str,
+        group_key: str,
+        group_label: str,
+        items: List[Dict[str, str]],
+        status_options: str,
+        max_tokens: int,
+        deadline: float,
+    ) -> List[Dict[str, Any]]:
+        """
+        Phân loại 1 nhóm, tự thử lại TẠI CHỖ tối đa MAX_GROUP_ATTEMPTS lượt.
+
+        Thử lại trong worker của chính nhóm này thay vì để BE chạy lại cả 5 nhóm: retry ở BE
+        vứt bỏ cả 4 nhóm vừa thành công rồi tung lại xúc xắc 5 mặt, trong khi lỗi ở đây thường
+        là lỗi ngẫu nhiên của riêng 1 nhóm (429, JSON hỏng) — thử lại đúng nhóm đó rẻ hơn nhiều.
+
+        Ngân sách kép: DEADLINE chung cho cả lượt phân tích, CỘNG trần
+        PER_ATTEMPT_TIMEOUT_CAP_S cho từng lượt. Trần mỗi lượt là bắt buộc — nếu để một lượt
+        dùng trọn thời gian còn lại thì một lượt bất thường sẽ ăn sạch budget và vòng thử lại
+        này không bao giờ chạy được (đúng lỗi của bản sửa đầu tiên).
+        """
         system_msg = (
             "Bạn là chuyên gia phân tích content marketing theo khung PAAST. "
             "Chỉ trả JSON hợp lệ theo đúng shape được yêu cầu, không thêm markdown fence, không thêm lời giải thích."
         )
-        raw = self._gen._call_deepseek_raw(
-            prompt=self._build_group_prompt(content, group_key, group_label, items, status_options),
-            system_msg=system_msg,
-            temperature=0.2,
-            max_tokens=2048,
-            timeout=45,
-            log_prefix=f"PAAST analyze/{group_key} (DeepSeek)",
-        )
-        if not raw:
-            raise RuntimeError(f"nhóm {group_key}: DeepSeek không phản hồi")
+        prompt = self._build_group_prompt(content, group_key, group_label, items, status_options)
+        last_err: Optional[str] = None
 
-        parsed = self._gen._extract_json_dict(raw)
-        if not parsed:
-            raise RuntimeError(f"nhóm {group_key}: không parse được JSON từ phản hồi LLM")
-        return parsed.get(group_key, [])
+        for attempt in range(1, MAX_GROUP_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining < MIN_RETRY_BUDGET_S:
+                break
 
-    def _classify(self, content: str) -> Dict[str, Any]:
+            try:
+                raw = self._gen._call_deepseek_checked(
+                    prompt=prompt,
+                    system_msg=system_msg,
+                    # temperature=0: phân loại phải TẤT ĐỊNH — cùng 1 nội dung phải luôn ra cùng
+                    # 1 điểm. Ở 0.2, thực đo 15 lượt trên CÙNG một kịch bản cho ra điểm dao động
+                    # 80-93, khiến người dùng bấm "chấm lại" là thấy điểm khác dù không sửa gì.
+                    # Đây là tác vụ gán nhãn theo rubric cố định, không phải sinh nội dung nên
+                    # không cần đa dạng đầu ra.
+                    temperature=0,
+                    max_tokens=max_tokens,
+                    # Cắt trần mỗi lượt để 1 lượt bất thường không nuốt trọn ngân sách, còn chừa
+                    # chỗ cho lượt thử lại — thực đo lượt bình thường chỉ ~9s nên trần này rất rộng.
+                    timeout=int(min(remaining, PER_ATTEMPT_TIMEOUT_CAP_S)),
+                    log_prefix=f"PAAST analyze/{group_key} lượt {attempt}/{MAX_GROUP_ATTEMPTS} (DeepSeek)",
+                    extra_params=DISABLE_THINKING_PARAMS,
+                )
+            except DeepSeekError as e:
+                last_err = str(e)
+                # Lỗi tất định (request sai, thiếu API key) — thử lại chỉ tốn thời gian mà kết
+                # quả không đổi. Các loại còn lại (timeout/429/5xx/mạng/parse) đều ngẫu nhiên.
+                if e.kind in ('client', 'no_key'):
+                    raise RuntimeError(f"nhóm {group_key}: {e}") from e
+                self.logger.warning(
+                    f"PAAST analyze/{group_key}: lượt {attempt}/{MAX_GROUP_ATTEMPTS} hỏng "
+                    f"(kind={e.kind}): {e}"
+                )
+                continue
+
+            parsed = self._gen._extract_json_dict(raw)
+            if not parsed:
+                # LLM trả text không phải JSON hợp lệ — không tất định, lượt sau thường ổn.
+                last_err = "không parse được JSON từ phản hồi LLM"
+                self.logger.warning(
+                    f"PAAST analyze/{group_key}: lượt {attempt}/{MAX_GROUP_ATTEMPTS} — {last_err}"
+                )
+                continue
+
+            if attempt > 1:
+                self.logger.warning(f"PAAST analyze/{group_key}: thành công ở lượt {attempt}/{MAX_GROUP_ATTEMPTS}")
+            return parsed.get(group_key, [])
+
+        raise RuntimeError(f"nhóm {group_key}: {last_err or 'hết ngân sách thời gian'}")
+
+    def _classify(self, content: str, timeout_s: int) -> Dict[str, Any]:
         """Chạy 5 lệnh gọi LLM (1 lệnh/lớp) song song thay vì 1 lệnh gộp cả 30+6 tiêu chí —
-        thời gian chờ = lệnh chậm nhất trong 5, không phải tổng cộng dồn (xem CLASSIFICATION_GROUPS)."""
+        thời gian chờ = lệnh chậm nhất trong 5, không phải tổng cộng dồn (xem CLASSIFICATION_GROUPS).
+
+        `timeout_s` là ngân sách cho phần gọi DeepSeek, đã trừ biên an toàn so với timeout mà BE
+        cho phép. 5 nhóm chạy song song và dùng CHUNG một deadline nên tổng thời gian vẫn nằm
+        trong ngân sách đó dù mỗi nhóm có thể thử lại vài lượt.
+
+        KHÔNG degrade partial: 1 nhóm hỏng sau khi đã tự thử lại ⇒ hỏng cả lượt (quyết định
+        nghiệp vụ — thà báo lỗi còn hơn trả điểm thiếu lớp, vì điểm thiếu lớp luôn thấp hơn
+        thực tế mà người dùng không có cách nào biết).
+        """
+        deadline = time.monotonic() + timeout_s
         result: Dict[str, Any] = {}
         errors: List[str] = []
         with ThreadPoolExecutor(max_workers=len(CLASSIFICATION_GROUPS)) as executor:
             future_to_key = {
-                executor.submit(self._classify_group, content, key, label, items, status_options): key
-                for key, label, items, status_options in CLASSIFICATION_GROUPS
+                executor.submit(
+                    self._classify_group, content, key, label, items, status_options, max_tokens, deadline
+                ): key
+                for key, label, items, status_options, max_tokens in CLASSIFICATION_GROUPS
             }
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
@@ -408,8 +534,24 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
     # Public API
     # ------------------------------------------------------------------
 
-    def analyze(self, content: str) -> Dict[str, Any]:
-        raw_classification = self._classify(content)
+    @staticmethod
+    def _inner_budget_s(timeout_seconds: Optional[int]) -> int:
+        """
+        Quy đổi timeout NGOÀI (BE cho phép cả request) thành ngân sách TRONG cho DeepSeek,
+        luôn nhỏ hơn ít nhất DEEPSEEK_TIMEOUT_MARGIN_S để Django còn kịp normalize + serialize
+        + trả response trước khi axios của BE bung.
+        """
+        outer = timeout_seconds if timeout_seconds and timeout_seconds > 0 else DEFAULT_ANALYZE_TIMEOUT_S
+        return max(MIN_RETRY_BUDGET_S, outer - DEEPSEEK_TIMEOUT_MARGIN_S)
+
+    def analyze(self, content: str, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        """`timeout_seconds` = timeout NGOÀI mà BE cho phép; biên an toàn trừ ở _inner_budget_s."""
+        return self._analyze_inner(content, self._inner_budget_s(timeout_seconds))
+
+    def _analyze_inner(self, content: str, inner_budget_s: int) -> Dict[str, Any]:
+        """Nhận thẳng ngân sách TRONG (đã trừ biên) — để `upgrade` chia budget cho 2 lượt gọi
+        nối tiếp mà không bị trừ biên an toàn hai lần."""
+        raw_classification = self._classify(content, inner_budget_s)
         classification = self._normalize_classification(raw_classification)
         scores = self.compute_scores(classification)
         verdict = self.compute_verdict(scores)
@@ -426,16 +568,35 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
             "total_score": scores["total_score"],
             "verdict": verdict,
             "cta_warning": cta,
+            # BE ghi thẳng vào cột model_used. Trả từ đây vì AI mới là bên quyết model —
+            # BE tự đoán thì bảng lịch sử ghi sai như trước.
+            "model_used": DEEPSEEK_DEFAULT_MODEL,
         }
 
-    def upgrade(self, original_content: str, missing_elements: List[Dict[str, str]]) -> Dict[str, Any]:
+    def upgrade(
+        self,
+        original_content: str,
+        missing_elements: List[Dict[str, str]],
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         missing_elements: [{"layer": "acknowledge", "criterion": "STORY", "suggestion": "..."}]
         Caller (BE) chịu trách nhiệm loại bỏ các tiêu chí `na` của Stick trước khi gọi hàm này
         (business doc §11.2 — không thể "nâng cấp" phần cần production bằng cách sửa text).
+
+        Endpoint này tốn 2 lượt gọi LLM NỐI TIẾP nhau (viết bản nâng cấp → chấm lại từ đầu bản
+        mới), nên `timeout_seconds` được CHIA ĐÔI theo tỷ lệ chứ không cấp trọn cho từng lượt:
+        trước đây bước viết cứng 60s + bước chấm cứng 120s = tệ nhất 180s trong khi BE chỉ chờ
+        90s, tức đường này gần như không thể thành công với input nặng.
         """
+        inner_total = self._inner_budget_s(timeout_seconds)
+        # Bước viết thường nhanh hơn bước chấm (1 lệnh gọi so với 5 lệnh song song có retry).
+        write_budget = max(MIN_RETRY_BUDGET_S, int(inner_total * 0.4))
+        analyze_budget = max(MIN_RETRY_BUDGET_S, inner_total - write_budget)
+
         if not missing_elements:
-            new_analysis = self.analyze(original_content)
+            # Không có gì để thêm ⇒ bỏ qua bước viết, dồn trọn ngân sách cho bước chấm.
+            new_analysis = self._analyze_inner(original_content, inner_total)
             return {
                 "original": original_content,
                 "upgraded": original_content,
@@ -494,8 +655,13 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
             prompt=prompt,
             system_msg=system_msg,
             temperature=0.4,
-            max_tokens=4096,
-            timeout=60,
+            # KHÔNG tắt suy luận ở đây (khác phần phân loại): viết lại content là tác vụ sáng
+            # tạo, suy luận có giá trị thật. Nhưng phải cấp đủ headroom — 4096 là quá thấp cho
+            # model reasoning: thực đo 3 lượt thì reasoning_tokens ăn trọn 4096 ở 2 lượt, trả
+            # content rỗng, chỉ 1/3 lượt thành công. Dùng đúng mức 16000 mà bước viết kịch bản
+            # của content-transform đang dùng (writeContentWithRetry) vì cùng loại tác vụ.
+            max_tokens=16000,
+            timeout=write_budget,
             log_prefix="PAAST upgrade (DeepSeek)",
         )
         if not raw:
@@ -510,7 +676,7 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
 
         # Không giả định điểm chắc chắn tăng — luôn phân tích lại bản đã nâng cấp (business doc §11.1).
         stripped_for_analysis = re.sub(r"</?add>", "", upgraded_content)
-        new_analysis = self.analyze(stripped_for_analysis)
+        new_analysis = self._analyze_inner(stripped_for_analysis, analyze_budget)
 
         return {
             "original": original_content,

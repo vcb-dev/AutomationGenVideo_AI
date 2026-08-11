@@ -10,7 +10,9 @@ from video_management.services.social_fetch_service import TOOL_DEFINITIONS, cal
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+# Đọc settings LÚC GỌI (không phải lúc import) — đổi .env là đổi được, xem tests.test_ai_provider_urls
+def _deepseek_chat_url() -> str:
+    return f"{getattr(settings, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com')}/chat/completions"
 
 SYSTEM_PROMPT = """Bạn là VCB Assistant — trợ lý AI của hệ thống VCB Studio.
 Bạn có quyền truy cập dữ liệu thực từ Facebook, Instagram, YouTube, TikTok và database nội bộ.
@@ -164,7 +166,7 @@ def _call_deepseek_with_tools(messages: list) -> dict | None:
     }
 
     try:
-        resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=payload, timeout=30)
+        resp = requests.post(_deepseek_chat_url(), headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         result = resp.json()
         choice = result["choices"][0]
@@ -216,7 +218,7 @@ def _call_deepseek_with_tools(messages: list) -> dict | None:
             "max_tokens": 4096,
             "response_format": {"type": "json_object"},
         }
-        final_resp = requests.post(DEEPSEEK_API_URL, headers=headers, json=final_payload, timeout=60)
+        final_resp = requests.post(_deepseek_chat_url(), headers=headers, json=final_payload, timeout=60)
         final_resp.raise_for_status()
         content = final_resp.json()["choices"][0]["message"]["content"]
         try:

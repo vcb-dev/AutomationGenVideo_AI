@@ -1,14 +1,15 @@
 """
 Minimax TTS Service - Text-to-Speech using Minimax AI.
 
-API Docs: https://platform.minimaxi.com/document/T2A%20V2?key=66719005a427f0c8a5701643
+API Docs: https://platform.minimax.io/docs/api-reference/text-to-speech-t2a-v2
 """
 
 import logging
 import requests
-import os
 import time
 from typing import Optional, Dict, Any
+
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,23 @@ class MinimaxTTSService:
     Service for generating audio using Minimax TTS API.
     """
     
-    BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+    # Retry mạng: kết nối tới api.minimax.io chập chờn ở cả 2 IP load-balancer (đo
+    # 2026-07-07). 5 x 45s = ~225s, cố ý dưới trần chờ 300s của BE. TTS thật chỉ mất
+    # 3-10s nên 45s/lần là quá đủ. ĐỌC TỪ ĐÂY, đừng gõ lại số vào chuỗi log.
+    MAX_ATTEMPTS = 5
+    ATTEMPT_TIMEOUT_S = 45
+    # Tải file audio khi MiniMax trả URL thay vì bytes — file mp3 vài MB.
+    DOWNLOAD_TIMEOUT_S = 120
 
-    # speech-2.8-hd: model HD mới nhất (01/2026), chất lượng + độ giống giọng clone
-    # cao nhất. Nếu giọng clone nghe chưa giống, thử "speech-2.6-hd" (được MiniMax
-    # ghi nhận "excellent cloning similarity") qua env MINIMAX_TTS_MODEL.
-    DEFAULT_MODEL = "speech-2.8-hd"
+    # Chất lượng cao nhất cho MP3 của MiniMax: 44.1kHz / 256kbps / mono.
+    # Hạ xuống chỉ nên làm khi có lý do đo được (dung lượng, băng thông) — giọng
+    # clone nghe rõ sự khác biệt ở bitrate thấp.
+    AUDIO_SETTING = {
+        "sample_rate": 44100,
+        "bitrate": 256000,
+        "format": "mp3",
+        "channel": 1,
+    }
 
     def __init__(self, api_key: Optional[str] = None, group_id: Optional[str] = None):
         """
@@ -33,12 +45,13 @@ class MinimaxTTSService:
             api_key: Minimax API Key (JWT token)
             group_id: Minimax Group ID
         """
-        self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
+        self.api_key = api_key or getattr(settings, 'MINIMAX_API_KEY', '')
         # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
         # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
         # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
-        self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
-        self.model = os.getenv('MINIMAX_TTS_MODEL', self.DEFAULT_MODEL)
+        self.group_id = group_id or getattr(settings, 'MINIMAX_GROUP_ID', '')
+        self.model = getattr(settings, 'MINIMAX_TTS_MODEL', 'speech-2.8-hd')
+        self.base_url = f"{getattr(settings, 'MINIMAX_API_BASE_URL', 'https://api.minimax.io/v1')}/t2a_v2"
 
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
@@ -103,13 +116,7 @@ class MinimaxTTSService:
                 "text": text,
                 "stream": False,
                 "voice_setting": voice_setting,
-                # Chất lượng cao nhất cho MP3: 44.1kHz / 256kbps
-                "audio_setting": {
-                    "sample_rate": 44100,
-                    "bitrate": 256000,
-                    "format": "mp3",
-                    "channel": 1
-                }
+                "audio_setting": dict(self.AUDIO_SETTING),
             }
             if language_boost:
                 payload["language_boost"] = language_boost
@@ -121,25 +128,26 @@ class MinimaxTTSService:
             }
             
             # Chỉ gắn GroupId khi có (key JWT cũ); key sk-api không cần
-            url = f"{self.BASE_URL}?GroupId={self.group_id}" if self.group_id else self.BASE_URL
+            url = f"{self.base_url}?GroupId={self.group_id}" if self.group_id else self.base_url
             
             logger.info(f"📡 Calling Minimax API: {url[:50]}...")
 
-            # Make request — retry khi lỗi tầng mạng. Kết nối tới api.minimax.io
-            # chập chờn (cả 2 IP load-balancer, xác nhận 2026-07-07): 1 request treo
-            # 300s vượt luôn quota chờ của BE. Thay bằng 5 lần thử x 45s (~225s max,
-            # dưới trần 300s của BE); TTS thật chỉ mất 3-10s nên 45s/lần là quá đủ.
+            # Retry khi lỗi tầng mạng — xem MAX_ATTEMPTS / ATTEMPT_TIMEOUT_S.
             start_time = time.time()
             last_network_error = None
             response = None
-            for attempt in range(1, 6):
+            for attempt in range(1, self.MAX_ATTEMPTS + 1):
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=45)
+                    response = requests.post(
+                        url, headers=headers, json=payload, timeout=self.ATTEMPT_TIMEOUT_S
+                    )
                     last_network_error = None
                     break
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
                     last_network_error = net_err
-                    logger.warning(f"📡 Minimax TTS attempt {attempt}/5 failed (network): {net_err}")
+                    logger.warning(
+                        f"📡 Minimax TTS attempt {attempt}/{self.MAX_ATTEMPTS} failed (network): {net_err}"
+                    )
             if response is None:
                 raise last_network_error if last_network_error else RuntimeError("TTS retry loop exited without result")
 
@@ -175,7 +183,7 @@ class MinimaxTTSService:
                 # Caller (voice_tts_api) serves the file from output_path via /media —
                 # nếu không tải về thì URL /media trả 404. Download về output_path.
                 if output_path:
-                    dl = requests.get(audio_file, timeout=120)
+                    dl = requests.get(audio_file, timeout=self.DOWNLOAD_TIMEOUT_S)
                     dl.raise_for_status()
                     with open(output_path, 'wb') as f:
                         f.write(dl.content)
