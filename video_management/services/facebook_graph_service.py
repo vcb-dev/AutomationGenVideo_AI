@@ -10,6 +10,7 @@ This provides accurate, official data directly from Facebook.
 """
 
 import logging
+import re
 import requests
 from typing import Dict, Any, Optional
 from django.conf import settings
@@ -17,6 +18,57 @@ from django.conf import settings
 from .facebook_token_store import get_token
 
 logger = logging.getLogger(__name__)
+
+# Dừng ở & hoặc khoảng trắng hoặc nháy — token nằm cuối chuỗi cũng phải che được.
+_TOKEN_RE = re.compile(r'(access_token=)[^&\s"\'\\]+')
+
+
+def _scrub_tokens(text) -> str:
+    """Che access_token trước khi ghi log.
+
+    Vì sao cần: `str(e)` của requests nhúng NGUYÊN URL kèm query string, nên mỗi lần request
+    Graph API hỏng là token bị ghi thẳng vào log dưới dạng chữ thường. Đo được ngày 09/08/2026:
+    log production đã chứa token đầy đủ suốt 13 ngày sự cố lượt xem. Token đó đọc được toàn bộ
+    dữ liệu 106 fanpage — ai đọc được log là dùng được luôn.
+    """
+    return _TOKEN_RE.sub(r'\1<ĐÃ ẨN>', str(text))
+
+
+class _ScrubTokenFilter(logging.Filter):
+    """Lọc ở tầng logger thay vì sửa từng lời gọi.
+
+    Service này có 47 lời gọi log, phần lớn kèm str(e). Sửa tay từng cái thì lần sau ai thêm
+    một dòng log mới là hở lại, mà không ai nhớ nổi quy tắc. Đặt ở đây thì quên cũng vẫn an toàn.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _scrub_tokens(record.msg)
+        if record.args:
+            record.args = tuple(
+                _scrub_tokens(a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
+logger.addFilter(_ScrubTokenFilter())
+
+
+# Metric dùng để tính lượt xem. CẢNH BÁO trước khi thêm vào đây: Facebook từ chối NGUYÊN request
+# `insights.metric(a,b)` nếu chỉ một metric không hợp lệ — nên một metric bị khai tử kéo sập luôn
+# các metric còn sống chung request.
+#
+# Đó đúng là sự cố 27/07–09/08/2026: `post_video_reels_organic_plays` bị khai tử, kéo theo
+# `post_video_views` (vẫn chạy tốt) cũng không lấy được, và 1.169 video bị ghi view = 0 dù lượt
+# xem thật vẫn nằm sẵn ở Facebook. Đo bằng page token thật ngày 09/08/2026:
+#
+#     post_video_views                 ✅ 486 / 902 / 649 / 98 / 585 trên 5 bài
+#     post_video_reels_organic_plays   ❌ (#100) The value must be a valid insights metric
+#     blue_reels_total_plays           ❌ (#100)   — không có bản thay thế cùng tên cho Reels
+#     post_reels_plays                 ❌ (#100)
+#
+# Thêm metric mới thì thử riêng từng cái bằng /{post_id}/insights?metric=<tên> trước đã.
+VIEW_METRICS = ('post_video_views',)
 
 
 class FacebookGraphService:
@@ -554,13 +606,24 @@ class FacebookGraphService:
 
         # Views: best-effort, không chặn kết quả reactions/comments/shares nếu fail
         # (bài không có video, hoặc metric không áp dụng cho object này).
+        #
+        # views_fetch_ok phân biệt hai thứ mà bản cũ gộp làm một, và chính chỗ gộp đó gây ra sự
+        # cố 27/07–09/08/2026: request insights hỏng thì mọi bài đều nhận view_count = 0, không
+        # cách nào phân biệt với 0 nghĩa là THẬT SỰ không ai xem. Kết quả: 13 ngày liền dashboard
+        # vẽ đường lượt xem tụt về 0 trông y như dữ liệu thật, trong khi like/comment/share vẫn
+        # về đều — không ai báo động vì bảng vẫn đầy số.
+        #
+        # Hỏng thì trả None. Phía BE (facebook-owned-pages.service.ts) đã có sẵn nhánh
+        # `m.view_count ?? view_count_cũ` để giữ nguyên số cũ — nhánh đó viết ra chính là cho
+        # tình huống này, chỉ chưa bao giờ chạy vì Python luôn gửi 0.
         views_map: Dict[str, int] = {}
+        views_fetch_ok = False
         try:
             insights_params = {
                 'ids': ','.join(video_ids),
-                # post_video_reels_organic_plays: chỉ số play của Reels — tránh hụt view
-                # khi bài là Reels chia sẻ vào feed (post_video_views có thể rỗng/0).
-                'fields': "insights.metric(post_video_views,post_video_reels_organic_plays){name,period,values}",
+                # Lấy tên metric từ VIEW_METRICS chứ không gõ cứng: gõ cứng ở đây và ở vòng lặp
+                # đọc kết quả bên dưới là hai nơi, đổi một nơi quên nơi kia thì view âm thầm về 0.
+                'fields': f"insights.metric({','.join(VIEW_METRICS)}){{name,period,values}}",
                 'access_token': self.access_token,
             }
             insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
@@ -569,16 +632,25 @@ class FacebookGraphService:
             for p_id, p_data in insights_data.items():
                 views = 0
                 for metric in p_data.get('insights', {}).get('data', []):
-                    if metric.get('name') in ('post_video_views', 'post_video_reels_organic_plays'):
+                    if metric.get('name') in VIEW_METRICS:
                         values_list = metric.get('values', [])
                         if values_list:
                             views += values_list[0].get('value', 0)
                 views_map[p_id] = views
+            views_fetch_ok = True
         except requests.exceptions.HTTPError as e:
+            # ERROR chứ không phải WARNING, và giữ nguyên `body`: body là thứ DUY NHẤT nói được
+            # Facebook từ chối vì lý do gì (metric bị khai tử / thiếu quyền / token chết). Mức
+            # warning đã khiến sự cố lần trước chìm 13 ngày không ai thấy.
             body = e.response.text if e.response is not None else ''
-            logger.warning(f"⚠️ Không lấy được views (có thể bài không có video): {str(e)} | body: {body}")
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG "
+                f"(không ghi 0 đè lên số cũ): {str(e)} | body: {body}"
+            )
         except Exception as e:
-            logger.warning(f"⚠️ Không lấy được views: {str(e)}")
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG: {str(e)}"
+            )
 
         metrics_map = {}
         for p_id, p_data in res_data.items():
@@ -587,7 +659,9 @@ class FacebookGraphService:
             shares = p_data.get('shares', {}).get('count', 0)
 
             metrics_map[p_id] = {
-                'view_count': views_map.get(p_id, 0),
+                # Request thành công mà bài không có khối insights = bài đó thật sự không có
+                # video để đếm view → 0 là câu trả lời đúng. Request hỏng → None = "không biết".
+                'view_count': views_map.get(p_id, 0) if views_fetch_ok else None,
                 'like_count': likes,
                 'comment_count': comments,
                 'share_count': shares,
