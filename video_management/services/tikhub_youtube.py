@@ -17,6 +17,8 @@ from typing import Optional
 import requests
 from django.conf import settings
 
+from .tikhub_errors import raise_if_auth_error, raise_if_auth_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,6 +99,7 @@ def fetch_channel_info(channel_id: str) -> Optional[dict]:
             timeout=30,
         )
         if not resp.ok:
+            raise_if_auth_error(resp, 'youtube get_channel_info')
             logger.error(f'[YOUTUBE] get_channel_info {resp.status_code}: {resp.text[:300]}')
             return None
         body = resp.json()
@@ -105,6 +108,7 @@ def fetch_channel_info(channel_id: str) -> Optional[dict]:
             return None
         return body.get('data') or None
     except requests.RequestException as e:
+        raise_if_auth_exception(e, 'youtube get_channel_info')
         logger.error(f'[YOUTUBE] get_channel_info request failed: {e}')
         return None
 
@@ -135,10 +139,12 @@ def fetch_channel_shorts(channel_id: str, count: int = 20) -> list:
                 timeout=30,
             )
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'youtube get_channel_shorts')
             logger.error(f'[YOUTUBE] get_channel_shorts request failed: {e}')
             break
 
         if not resp.ok:
+            raise_if_auth_error(resp, 'youtube get_channel_shorts')
             logger.error(f'[YOUTUBE] get_channel_shorts {resp.status_code}: {resp.text[:300]}')
             break
 
