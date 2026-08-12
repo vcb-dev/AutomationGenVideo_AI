@@ -377,11 +377,28 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
 DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
+DEEPSEEK_API_BASE_URL = env('DEEPSEEK_API_BASE_URL', default='https://api.deepseek.com')
+# Model dùng chung cho mọi lời gọi DeepSeek không chỉ định riêng (PAAST, sinh script...).
+# DeepSeek đã bỏ tên "deepseek-chat" — chỉ còn deepseek-v4-pro / deepseek-v4-flash.
+DEEPSEEK_MODEL = env('DEEPSEEK_MODEL', default='deepseek-v4-flash')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION
 # ==========================================
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# ==========================================
+# MINIMAX API CONFIGURATION (TTS + clone giọng)
+# ==========================================
+# Key thường do BE gửi kèm từng request qua header X-Minimax-Key; các biến dưới đây
+# chỉ là fallback cho management command chạy tay (vd clone_koc_voice).
+MINIMAX_API_KEY = env('MINIMAX_API_KEY', default='')
+# Key kiểu mới "sk-api-..." tự gắn group nên để trống; chỉ key JWT cũ (eyJ...) mới cần.
+MINIMAX_GROUP_ID = env('MINIMAX_GROUP_ID', default='')
+MINIMAX_API_BASE_URL = env('MINIMAX_API_BASE_URL', default='https://api.minimax.io/v1')
+# speech-2.8-hd: model HD mới nhất (01/2026), độ giống giọng clone cao nhất. Giọng
+# clone nghe chưa giống thì thử 'speech-2.6-hd' (MiniMax ghi nhận cloning similarity tốt).
+MINIMAX_TTS_MODEL = env('MINIMAX_TTS_MODEL', default='speech-2.8-hd')
 
 # ==========================================
 # ELEVENLABS API CONFIGURATION
