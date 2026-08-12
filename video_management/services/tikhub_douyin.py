@@ -12,6 +12,8 @@ from typing import Optional
 from django.conf import settings
 from django.utils import timezone
 
+from .tikhub_errors import raise_if_auth_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,6 +91,7 @@ def fetch_douyin_videos(keyword: str, count: int = 30, cursor: Optional[dict] = 
             )
             resp.raise_for_status()
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'douyin fetch_video_search_v2')
             logger.error(f"[DOUYIN] Request failed: {e}")
             has_more = False
             break
@@ -201,6 +204,7 @@ def fetch_douyin_user_videos(sec_user_id: str, count: int = 30) -> list:
             )
             resp.raise_for_status()
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'douyin fetch_user_post_videos')
             logger.error(f"[DOUYIN PROFILE] Request failed: {e}")
             break
 

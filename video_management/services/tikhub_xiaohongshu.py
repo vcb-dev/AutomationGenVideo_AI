@@ -10,6 +10,8 @@ from datetime import datetime, timezone as _tz
 from typing import Optional
 from django.conf import settings
 
+from .tikhub_errors import raise_if_auth_error
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +87,7 @@ def search_xiaohongshu_videos(keyword: str, count: int = 20, cursor: Optional[di
             timeout=30,
         )
         if not resp.ok:
+            raise_if_auth_error(resp, 'xiaohongshu search_notes')
             logger.error(f'[XHS] {resp.status_code}: {resp.text[:300]}')
             has_more = False
             break
@@ -212,6 +215,7 @@ def fetch_xhs_user_video_notes(user_id: str, count: int = 100) -> list:
             timeout=30,
         )
         if not resp.ok:
+            raise_if_auth_error(resp, 'xiaohongshu get_user_posted_notes')
             logger.error(f'[XHS-PROFILE] HTTP {resp.status_code}: {resp.text[:300]}')
             break
 

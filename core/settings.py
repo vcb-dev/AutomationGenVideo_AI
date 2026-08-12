@@ -223,6 +223,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
+    # Không có dòng này thì TikHubAuthError rơi vào nhánh 500 mặc định của DRF và BE
+    # chỉ đọc được "status code 500" — đúng cái mù mờ mà ngoại lệ đó sinh ra để chấm dứt.
+    'EXCEPTION_HANDLER': 'core.exception_handler.xu_ly_ngoai_le',
     # 'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
