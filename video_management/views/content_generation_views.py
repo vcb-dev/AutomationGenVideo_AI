@@ -4,6 +4,7 @@ Views for content generation based on viral videos.
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from video_management.models import ScrapedVideo, GeneratedContent, Product
 from video_management.services.content_generation_service import ContentGenerationService, DeepSeekError
@@ -23,8 +24,25 @@ DEEPSEEK_ERROR_MESSAGES = {
     'network': 'Không kết nối được tới DeepSeek từ máy chủ AI.',
     'parse': 'DeepSeek trả về dữ liệu không đọc được. Thử lại một lượt nữa.',
     'empty': 'DeepSeek trả về nội dung rỗng. Thử lại hoặc diễn đạt kịch bản khác đi.',
+    'token_budget': (
+        'Model đã tiêu hết ngân sách token vào phần suy luận nên không kịp viết câu trả lời. '
+        'Cần giảm độ dài prompt hệ của nhân vật, nâng max_tokens, hoặc đổi sang model không suy '
+        'luận — thử lại y nguyên sẽ ra đúng kết quả này.'
+    ),
     'unknown': 'Chuyển đổi thất bại vì lỗi chưa rõ ở phía DeepSeek. Xem log máy chủ AI để biết chi tiết.',
 }
+
+# Model dùng riêng cho việc chuyển đổi kịch bản — KHÔNG nhận `DEEPSEEK_MODEL` toàn cục.
+#
+# Toàn cục đang đặt `deepseek-v4-flash`, là model SUY LUẬN: token suy luận bị trừ thẳng vào
+# max_tokens. Prompt hệ của nhân vật dài ~29.000 ký tự khiến nó suy luận không dứt — đo ngày
+# 13/08/2026 với cùng prompt đó: cấp 2048/4096/8192 token thì ăn trọn cả ba, content về RỖNG;
+# phải tới 16384 token và 105 GIÂY mới ra được 1508 ký tự. Cả hai mốc timeout trên đường đi
+# (AI 60s, BE 30s) đều thấp hơn thế nên tính năng hỏng 100%.
+#
+# `deepseek-chat` làm cùng việc đó trong 10 giây, hết 2048 token, ra 1911 ký tự — dài hơn.
+# Viết lại kịch bản theo giọng nhân vật là việc văn phong, không phải việc suy luận.
+CONTENT_TRANSFORM_MODEL = getattr(settings, 'CONTENT_TRANSFORM_MODEL', 'deepseek-chat')
 
 # Thiếu khoá là lỗi cấu hình của CHÍNH máy chủ này (5xx của mình), không phải lỗi nhà cung cấp
 # bên ngoài — nên 500 chứ không 502. 429 giữ nguyên 429 để bên gọi biết mà giãn nhịp.
@@ -407,6 +425,7 @@ def transform_content(request):
             output_text = service._call_deepseek_checked(
                 prompt=input_text,
                 system_msg=system_prompt,
+                model=CONTENT_TRANSFORM_MODEL,
                 log_prefix="Content transform (DeepSeek)"
             )
         except DeepSeekError as e:

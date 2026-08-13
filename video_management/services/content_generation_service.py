@@ -27,7 +27,8 @@ class DeepSeekError(RuntimeError):
     không thể biết một lượt chấm PAAST hỏng vì chậm thật hay vì bị chặn rate-limit — mà 5
     lệnh gọi song song trên cùng 1 API key thì 429 là chuyện rất thực tế.
 
-    `kind` nhận: 'timeout' | 'rate_limit' | 'server' | 'client' | 'parse' | 'network' | 'no_key'.
+    `kind` nhận: 'timeout' | 'rate_limit' | 'server' | 'client' | 'parse' | 'network' | 'no_key'
+    | 'token_budget'.
     `retriable` phân biệt lỗi đáng thử lại (timeout/429/5xx/mạng) với lỗi tất định
     (4xx khác, parse) — thử lại lỗi tất định chỉ tốn thời gian mà kết quả không đổi.
     """
@@ -882,7 +883,11 @@ class ContentGenerationService:
                     f"(finish_reason={finish_reason}, max_tokens={max_tokens}, usage={usage})"
                 )
                 raise DeepSeekError(
-                    'server' if finish_reason == 'length' else 'parse',
+                    # 'length' = LỖI NGÂN SÁCH của chính mình, không phải nhà cung cấp hỏng:
+                    # DeepSeek trả 200 và tính tiền đủ số token đã tiêu. Gọi lại y hệt sẽ ra y
+                    # hệt, nên kind này KHÔNG nằm trong RETRIABLE_KINDS — trước đây xếp vào
+                    # 'server' nên vừa đổ oan vừa khuyên người dùng ngồi bấm lại vô ích.
+                    'token_budget' if finish_reason == 'length' else 'parse',
                     f'DeepSeek trả nội dung rỗng (finish_reason={finish_reason}, max_tokens={max_tokens})',
                 )
 
