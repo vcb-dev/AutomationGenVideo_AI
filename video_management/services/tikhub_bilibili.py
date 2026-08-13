@@ -21,6 +21,8 @@ from typing import Optional
 import requests
 from django.conf import settings
 
+from .tikhub_errors import raise_if_auth_error, raise_if_auth_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,6 +82,7 @@ def fetch_user_info(mid: str) -> Optional[dict]:
             timeout=30,
         )
         if not resp.ok:
+            raise_if_auth_error(resp, 'bilibili fetch_user_info')
             logger.error(f'[BILIBILI] fetch_user_info {resp.status_code}: {resp.text[:300]}')
             return None
         body = resp.json()
@@ -93,6 +96,7 @@ def fetch_user_info(mid: str) -> Optional[dict]:
             'archive_count': (inner.get('archive') or {}).get('count') or 0,
         }
     except requests.RequestException as e:
+        raise_if_auth_exception(e, 'bilibili fetch_user_info')
         logger.error(f'[BILIBILI] fetch_user_info request failed: {e}')
         return None
 
@@ -123,10 +127,12 @@ def fetch_user_videos(mid: str, count: int = 20) -> list:
                 timeout=30,
             )
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'bilibili fetch_user_videos')
             logger.error(f'[BILIBILI] fetch_user_videos request failed: {e}')
             break
 
         if not resp.ok:
+            raise_if_auth_error(resp, 'bilibili fetch_user_videos')
             logger.error(f'[BILIBILI] fetch_user_videos {resp.status_code}: {resp.text[:300]}')
             break
 
@@ -186,11 +192,13 @@ def search_bilibili_by_keyword(keyword: str, count: int = 30, cursor: Optional[i
                 timeout=30,
             )
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'bilibili fetch_general_search')
             logger.error(f'[BILIBILI] fetch_general_search request failed: {e}')
             has_more = False
             break
 
         if not resp.ok:
+            raise_if_auth_error(resp, 'bilibili fetch_general_search')
             logger.error(f'[BILIBILI] fetch_general_search {resp.status_code}: {resp.text[:300]}')
             has_more = False
             break

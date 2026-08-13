@@ -95,3 +95,7 @@ htmlcov/
 
 # Token Facebook đã gia hạn (chứa User Access Token — không commit)
 .fb_token.json
+
+# Mẫu biến môi trường: team đã quyết bỏ khỏi git từ 2026-01-28 (commit 2c3bf8b),
+# tránh bị thêm lại lần nữa.
+.env.example

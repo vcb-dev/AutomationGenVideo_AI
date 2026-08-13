@@ -17,10 +17,15 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_BASE = "https://api.deepseek.com"
-# DeepSeek đã bỏ tên "deepseek-chat" — API trả lỗi "The supported API model names are
-# deepseek-v4-pro or deepseek-v4-flash". Dùng -flash (rẻ/nhanh) cho tác vụ sinh script.
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+# URL/model đọc từ settings LÚC GỌI (không phải lúc import) — theo mẫu _tikhub_base():
+# đổi .env là đổi được, và override_settings trong test cũng có tác dụng.
+def _deepseek_base() -> str:
+    return getattr(settings, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com')
+
+
+def _deepseek_model() -> str:
+    # DeepSeek đã bỏ tên "deepseek-chat" — chỉ còn deepseek-v4-pro / deepseek-v4-flash.
+    return getattr(settings, 'DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
 # MIME types đọc được thành text để đưa vào prompt (DeepSeek chỉ nhận text)
 TEXT_MIMES = {
@@ -418,13 +423,13 @@ def _call_deepseek(prompt: str) -> Dict[str, Any]:
         raise ValueError("DEEPSEEK_API_KEY chưa được cấu hình")
 
     res = requests.post(
-        f"{DEEPSEEK_BASE}/chat/completions",
+        f"{_deepseek_base()}/chat/completions",
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {deepseek_key}",
         },
         json={
-            "model": DEEPSEEK_MODEL,
+            "model": _deepseek_model(),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.8,
             "max_tokens": 8192,
