@@ -471,6 +471,17 @@ def _safe_filename(title: str, ext: str) -> str:
     return f"{name[:80]}.{ext}"
 
 
+def ytdlp_ffmpeg_args(ffmpeg: str) -> list:
+    """Cờ `--ffmpeg-location` cho yt-dlp — trỏ THẲNG vào binary, không phải thư mục chứa nó.
+
+    `--ffmpeg-location` nhận cả hai dạng, nhưng đưa thư mục thì yt-dlp đi tìm một file tên đúng
+    `ffmpeg` bên trong. Bản `imageio_ffmpeg` đang dùng đặt tên theo nền tảng
+    (`ffmpeg-macos-x86_64-v7.1`) nên trong thư mục đó KHÔNG hề có file tên `ffmpeg` — yt-dlp coi
+    như không có ffmpeg, bỏ luôn bước ghép hình với tiếng mà vẫn thoát mã 0.
+    """
+    return ['--ffmpeg-location', ffmpeg] if ffmpeg else []
+
+
 def _get_ffprobe() -> str:
     """ffprobe nằm cùng thư mục với ffmpeg."""
     ffmpeg = _get_ffmpeg()
@@ -581,6 +592,21 @@ def _take_valid_info_cache(url: str):
         except OSError:
             pass
         return None
+
+
+def finished_media_path(out_base: str, fmt: str):
+    """Đường dẫn file ĐÃ GHÉP XONG của một job, hoặc None nếu chưa có.
+
+    Dùng chung cho cả lúc kết thúc job lẫn lúc trả file về — trước đây mỗi bên tự suy ra một
+    kiểu (`endswith('.mp4')` bên này, ghép chuỗi đúng nghĩa đen bên kia) nên có lúc bên này bảo
+    xong mà bên kia không tìm thấy file, trả 410 ngay sau khi báo "Hoàn tất".
+
+    File hoàn chỉnh LUÔN là đúng `<out_base>.<fmt>`: yt-dlp ghép ra tên đó rồi tự xoá mảnh. Mọi
+    tên khác đều là mảnh dở (`<out_base>.f395.mp4` chỉ có hình, `.f251.webm` chỉ có tiếng) —
+    chúng cũng kết thúc bằng đuôi đã yêu cầu nên KHÔNG được lọc bằng đuôi.
+    """
+    path = out_base + '.' + fmt
+    return path if os.path.isfile(path) else None
 
 
 def _cleanup_job_files(out_base: str):
@@ -756,8 +782,9 @@ def download_file(request, job_id: str):
 
     fmt = data.get('format', 'mp4')
     out_base = os.path.join(tempfile.gettempdir(), f'vcb_dl_{job_id}')
-    target = out_base + '.' + fmt
-    if not os.path.isfile(target):
+    # Cùng một hàm với lúc kết thúc job — job đã báo 'done' thì tới đây chắc chắn phải thấy file.
+    target = finished_media_path(out_base, fmt)
+    if not target:
         return Response({'error': 'File không còn tồn tại (có thể đã hết hạn).'}, status=410)
 
     filename = _safe_filename(data.get('title') or 'video', fmt)
@@ -809,8 +836,7 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
            '--max-filesize', MAX_FILESIZE,
            '--output', out_base + '.%(ext)s',
            '--print', 'after_move:title']
-    if ffmpeg:
-        cmd += ['--ffmpeg-location', os.path.dirname(ffmpeg) if os.path.isabs(ffmpeg) else ffmpeg]
+    cmd += ytdlp_ffmpeg_args(ffmpeg)
     if fmt == 'mp3':
         cmd += ['--format', 'bestaudio/best', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0']
     else:
@@ -876,12 +902,12 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
         wd.join(timeout=1)
 
         files = glob.glob(out_base + '.*')
-        # Chỉ nhận file đúng đuôi đã yêu cầu — trước đây có fallback "lấy đại files[0]"
-        # khi không tìm thấy đúng đuôi, dẫn tới việc lỡ nhận nhầm mảnh tạm dở dang (vd
-        # "*.fdash-AUDIO-1.m4a" khi ghép audio/video thất bại giữa chừng nhưng yt-dlp
-        # vẫn thoát mã 0) rồi báo "Hoàn tất" dù thực ra không có video hoàn chỉnh nào.
-        target = next((f for f in files if f.lower().endswith('.' + fmt)), None)
-        if returncode != 0 or not target or not os.path.isfile(target):
+        # Phải là ĐÚNG file đã ghép xong, không phải "file nào kết thúc bằng đuôi này". Mảnh tạm
+        # của yt-dlp (`<out_base>.f395.mp4`) cũng kết thúc bằng `.mp4` nên lọc theo đuôi vẫn lọt:
+        # bản cũ nhận nguyên mảnh chỉ-có-hình làm video hoàn chỉnh rồi báo "Hoàn tất".
+        # Dùng chung hàm với `download_file` để hai bên không thể hiểu khác nhau về "file xong".
+        target = finished_media_path(out_base, fmt)
+        if returncode != 0 or not target:
             logger.warning(
                 f"[VideoDL] job {job_id} yt-dlp thất bại (rc={returncode}, url={url[:80]}): "
                 + ' | '.join(tail_lines)[-500:]
