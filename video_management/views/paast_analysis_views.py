@@ -122,6 +122,71 @@ def upgrade_content(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+MIN_SCRIPTED_UPGRADE_PROMPT_LENGTH = 1
+
+
+@api_view(['POST'])
+def transform_content_upgrade(request):
+    """
+    Nâng cấp kịch bản của content-transform (giữ giọng nhân vật) — viết lại rồi chấm PAAST bản
+    mới trong CÙNG 1 request, khác `upgrade_content` ở trên (dùng cho PAAST Analyzer độc lập,
+    giọng trung tính, tự build prompt). Ở đây BE đã tự dựng sẵn system_prompt/user_prompt (xem
+    paast-upgrade.util.ts phía BE) để giữ đúng giọng nhân vật — Django chỉ orchestrate 2 lượt gọi
+    LLM nối tiếp và chia ngân sách thời gian, không tự sinh prompt.
+
+    POST /api/ai/transform-content/upgrade/
+    Body:
+    {
+        "write_system_prompt": "...",
+        "write_user_prompt": "...",
+        "max_tokens": 16000,       // tuỳ chọn, mặc định 16000 (khớp writeContentTransformWithRetry cũ)
+        "timeout_seconds": 300     // tuỳ chọn — ngân sách NGOÀI mà BE cho phép cho CẢ request này
+    }
+
+    Response khi viết thành công (bất kể chấm điểm có lỗi hay không — xem PaastAnalysisService.upgrade_scripted):
+    {
+        "success": true,
+        "output_text": "...",
+        "score": {...} | null,
+        "score_error": "..." | null
+    }
+    Lỗi ở bước VIẾT (chưa có output_text nào) trả 502/500 như các endpoint AI khác — không có gì
+    để giữ lại nên caller (BE) coi cả request là thất bại, đúng hành vi cũ khi writeContentTransformWithRetry hết cả 3 lần thử.
+    """
+    try:
+        write_system_prompt = (request.data.get('write_system_prompt') or '').strip()
+        write_user_prompt = (request.data.get('write_user_prompt') or '').strip()
+        max_tokens = request.data.get('max_tokens')
+
+        if len(write_system_prompt) < MIN_SCRIPTED_UPGRADE_PROMPT_LENGTH or len(write_user_prompt) < MIN_SCRIPTED_UPGRADE_PROMPT_LENGTH:
+            return Response(
+                {'error': 'write_system_prompt và write_user_prompt là bắt buộc'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        service = PaastAnalysisService()
+        result = service.upgrade_scripted(
+            write_system_prompt=write_system_prompt,
+            write_user_prompt=write_user_prompt,
+            max_tokens=int(max_tokens) if max_tokens is not None else 16000,
+            timeout_seconds=_read_timeout_seconds(request),
+        )
+
+        return Response({
+            'success': True,
+            'output_text': result['output_text'],
+            'score': result['new_analysis'],
+            'score_error': result['score_error'],
+        })
+
+    except RuntimeError as e:
+        logger.error(f"Content transform upgrade (scripted) failed: {str(e)}")
+        return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+    except Exception as e:
+        logger.error(f"Error in transform_content_upgrade view: {str(e)}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 def analyze_content_v2(request):
     """
