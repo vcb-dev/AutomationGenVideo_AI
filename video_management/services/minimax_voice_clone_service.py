@@ -5,6 +5,8 @@ API Docs: https://platform.minimax.io/docs/api-reference/voice-cloning-intro
 """
 
 import logging
+
+from .minimax_errors import minimax_error_message
 import re
 import requests
 import os
@@ -240,7 +242,7 @@ class MinimaxVoiceCloneService:
             status_msg = base_resp.get('status_msg', '')
             
             if status_code != 0:
-                raise Exception(f"Minimax API error ({status_code}): {status_msg}")
+                raise Exception(minimax_error_message(status_code, status_msg))
             
             # API returns success without voice_id in body; we use the one we sent
             
@@ -355,7 +357,7 @@ class MinimaxVoiceCloneService:
             if status_code == 2013:
                 logger.warning(f"[Voice Clone] Voice {voice_id} không còn trên MiniMax: {status_msg}")
                 return {'deleted': False, 'reason': status_msg or 'voice not found'}
-            raise Exception(f"Minimax API error ({status_code}): {status_msg}")
+            raise Exception(minimax_error_message(status_code, status_msg))
 
         logger.info(f"[Voice Clone] Delete success! voice_id: {voice_id}")
         return {'deleted': True}

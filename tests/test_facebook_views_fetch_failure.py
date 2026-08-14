@@ -17,7 +17,7 @@ Chạy: python manage.py test tests.test_facebook_views_fetch_failure
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from video_management.services.facebook_graph_service import FacebookGraphService
 
@@ -62,7 +62,11 @@ ENGAGEMENT_OK = {
 
 
 def _build_service():
-    with patch(
+    # Xem chú thích cùng loại ở test_facebook_view_metric_names: thiếu app id/secret thì
+    # __init__ ném ValueError, test đỏ trên CI dù logic đang đúng.
+    with override_settings(
+        FACEBOOK_APP_ID='test-app-id', FACEBOOK_APP_SECRET='test-app-secret'
+    ), patch(
         'video_management.services.facebook_graph_service.get_token',
         return_value='tok',
     ):
