@@ -5,6 +5,8 @@ API Docs: https://platform.minimax.io/docs/api-reference/text-to-speech-t2a-v2
 """
 
 import logging
+
+from .minimax_errors import minimax_error_from_response
 import requests
 import time
 from typing import Optional, Dict, Any
@@ -175,7 +177,10 @@ class MinimaxTTSService:
 
             if not audio_file:
                 logger.error(f"❌ No audio in response: {data}")
-                raise Exception(f"No audio in Minimax response: {data}")
+                # Dict thô của MiniMax từng đi thẳng ra toast cho người bán hàng đọc. Lỗi hay gặp
+                # nhất ở đây là giới hạn tài khoản (hết tiền/hết slot) — chuyện có người xử lý
+                # được, nên phải nói thành câu họ hiểu.
+                raise Exception(minimax_error_from_response(data))
 
             if audio_file.startswith('http'):
                 audio_url = audio_file
