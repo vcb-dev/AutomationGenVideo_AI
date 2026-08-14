@@ -17,7 +17,7 @@ Chạy: python manage.py test tests.test_facebook_view_metric_names
 
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from video_management.services.facebook_graph_service import (
     VIEW_METRICS,
@@ -44,7 +44,12 @@ def _ok(payload):
 
 
 def _service():
-    with patch(
+    # Phải cấp app id/secret ngay tại đây: __init__ đọc thẳng settings rồi ném ValueError nếu
+    # thiếu. Không cấp thì test chỉ xanh trên máy có sẵn .env, còn CI (không .env) đỏ ngay khâu
+    # khởi tạo — hỏng trước cả dòng assert đầu tiên.
+    with override_settings(
+        FACEBOOK_APP_ID='test-app-id', FACEBOOK_APP_SECRET='test-app-secret'
+    ), patch(
         'video_management.services.facebook_graph_service.get_token', return_value='tok'
     ):
         return FacebookGraphService()
