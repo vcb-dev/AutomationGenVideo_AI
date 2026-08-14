@@ -45,6 +45,12 @@ MAX_GROUP_ATTEMPTS = 3
 # quyết định thử lại cho BE.
 MIN_RETRY_BUDGET_S = 25
 
+# Tối đa 3 lượt cho bước "viết lại kịch bản" của upgrade_scripted() — cùng số lần với
+# writeContentTransformWithRetry() phía BE (nay chuyển hẳn việc thử lại vào đây, xem
+# upgrade_scripted). Cùng lý do với MAX_GROUP_ATTEMPTS: model reasoning timeout ngẫu nhiên,
+# thử lại tại chỗ rẻ hơn để BE gọi lại nguyên cả request.
+MAX_SCRIPTED_WRITE_ATTEMPTS = 3
+
 # Trần cho MỖI lượt gọi của 1 nhóm. Cần thiết vì nếu để 1 lượt được dùng trọn ngân sách còn
 # lại thì một lượt bất thường sẽ ăn sạch budget và retry per-group không bao giờ chạy được —
 # đúng lỗi đã mắc ở bản sửa đầu: lỗi "reasoning ăn hết token" là lỗi CHẬM (~90s), không phải
@@ -683,6 +689,112 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
             "upgraded": upgraded_content,
             "changes_added": changes_added,
             "new_analysis": new_analysis,
+        }
+
+    # ------------------------------------------------------------------
+    # Nâng cấp cho content-transform (giữ giọng nhân vật) — KHÁC upgrade() ở trên
+    # ------------------------------------------------------------------
+
+    def _write_scripted_upgrade(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        budget_s: int,
+    ) -> str:
+        """
+        Viết lại kịch bản (giữ nguyên giọng nhân vật — system_prompt/user_prompt đã được BE dựng
+        sẵn qua buildPaastUpgradeSystemPrompt/buildPaastUpgradeUserPrompt), tự thử lại TẠI CHỖ
+        tối đa MAX_SCRIPTED_WRITE_ATTEMPTS lượt — cùng nguyên tắc với _classify_group ở trên: lỗi
+        thường là timeout/lỗi mạng ngẫu nhiên của model reasoning, thử lại ngay trong worker này
+        rẻ hơn nhiều so với để BE gọi lại nguyên request (vốn sẽ chạy lại luôn cả bước chấm điểm
+        nếu gộp retry ở tầng ngoài).
+
+        Ném RuntimeError nếu hết ngân sách hoặc gặp lỗi tất định — khi đó KHÔNG có output_text
+        nào được tạo ra, nên caller (view) mất trắng là đúng, không có gì để giữ lại.
+        """
+        deadline = time.monotonic() + budget_s
+        last_err: Optional[str] = None
+
+        for attempt in range(1, MAX_SCRIPTED_WRITE_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining < MIN_RETRY_BUDGET_S:
+                break
+
+            try:
+                raw = self._gen._call_deepseek_checked(
+                    prompt=user_prompt,
+                    system_msg=system_prompt,
+                    max_tokens=max_tokens,
+                    timeout=int(remaining),
+                    log_prefix=f"Content transform upgrade - viết lượt {attempt}/{MAX_SCRIPTED_WRITE_ATTEMPTS} (DeepSeek)",
+                )
+            except DeepSeekError as e:
+                last_err = str(e)
+                if e.kind in ('client', 'no_key'):
+                    raise RuntimeError(f"viết lại kịch bản nâng cấp: {e}") from e
+                self.logger.warning(
+                    f"Content transform upgrade - viết: lượt {attempt}/{MAX_SCRIPTED_WRITE_ATTEMPTS} "
+                    f"hỏng (kind={e.kind}): {e}"
+                )
+                continue
+
+            if not raw:
+                last_err = "DeepSeek không phản hồi"
+                continue
+
+            if attempt > 1:
+                self.logger.warning(
+                    f"Content transform upgrade - viết: thành công ở lượt {attempt}/{MAX_SCRIPTED_WRITE_ATTEMPTS}"
+                )
+            return raw
+
+        raise RuntimeError(f"viết lại kịch bản nâng cấp: {last_err or 'hết ngân sách thời gian'}")
+
+    def upgrade_scripted(
+        self,
+        write_system_prompt: str,
+        write_user_prompt: str,
+        max_tokens: int = 16000,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Nâng cấp cho luồng "Chuyển đổi nội dung" (content-transform) — khác `upgrade()` ở trên:
+          - `upgrade()` (PAAST Analyzer độc lập) TỰ build prompt trung tính + yêu cầu LLM trả JSON
+            {upgraded_content, changes_added}.
+          - Ở đây BE đã tự dựng `write_system_prompt`/`write_user_prompt` (giữ đúng giọng nhân vật
+            — xem paast-upgrade.util.ts), và bước viết trả THẲNG văn bản kịch bản (cùng shape với
+            /api/ai/transform-content/), không phải JSON.
+
+        Gộp 2 lượt gọi LLM nối tiếp (viết lại rồi chấm PAAST bản mới) vào 1 request Django DUY
+        NHẤT — trước đây BE tự gọi 2 request HTTP tuần tự (mỗi request lại tự retry riêng, tối đa
+        6 round-trip cho 1 lần bấm nút). `timeout_seconds` (ngân sách NGOÀI mà BE cho phép) được
+        chia theo cùng tỷ lệ 40% viết / 60% chấm như `upgrade()` — viết thường nhanh hơn (1 lệnh so
+        với 5 lệnh song song có retry).
+
+        QUAN TRỌNG — lỗi ở bước CHẤM không được làm mất kịch bản vừa viết (đúng hành vi cũ ở BE):
+        bắt lỗi cục bộ quanh bước chấm, trả về `new_analysis=None` kèm `score_error` thay vì raise,
+        để output_text vẫn được trả về nguyên vẹn cho caller lưu lại. Lỗi ở bước VIẾT thì raise
+        thẳng — chưa có gì được tạo ra nên không có gì để giữ.
+        """
+        inner_total = self._inner_budget_s(timeout_seconds)
+        write_budget = max(MIN_RETRY_BUDGET_S, int(inner_total * 0.4))
+        analyze_budget = max(MIN_RETRY_BUDGET_S, inner_total - write_budget)
+
+        new_output_text = self._write_scripted_upgrade(write_system_prompt, write_user_prompt, max_tokens, write_budget)
+
+        new_analysis: Optional[Dict[str, Any]] = None
+        score_error: Optional[str] = None
+        try:
+            new_analysis = self._analyze_inner(new_output_text, analyze_budget)
+        except Exception as e:
+            self.logger.error(f"Content transform upgrade - chấm điểm bản mới thất bại: {e}")
+            score_error = str(e)
+
+        return {
+            "output_text": new_output_text,
+            "new_analysis": new_analysis,
+            "score_error": score_error,
         }
 
 

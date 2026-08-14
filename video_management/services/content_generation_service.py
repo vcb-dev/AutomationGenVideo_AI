@@ -16,7 +16,6 @@ from django.conf import settings
 # trong khi thực tế chạy model dưới đây, làm cả bảng lịch sử ghi sai tên model.
 DEEPSEEK_DEFAULT_MODEL = getattr(settings, 'DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
-
 class DeepSeekError(RuntimeError):
     """
     Lỗi khi gọi DeepSeek, có PHÂN LOẠI — thay cho việc nuốt mọi lỗi thành None.

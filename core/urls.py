@@ -146,6 +146,9 @@ urlpatterns += [
     path('api/ai/paast/analyze/', paast_analysis_views.analyze_content, name='paast-analyze'),
     path('api/ai/paast/analyze-v2/', paast_analysis_views.analyze_content_v2, name='paast-analyze-v2'),
     path('api/ai/paast/upgrade/', paast_analysis_views.upgrade_content, name='paast-upgrade'),
+    # Nâng cấp kịch bản content-transform (giữ giọng nhân vật) — viết lại + chấm PAAST bản mới
+    # trong CÙNG 1 request, xem transform_content_upgrade().
+    path('api/ai/transform-content/upgrade/', paast_analysis_views.transform_content_upgrade, name='transform-content-upgrade'),
 ]
 
 # Video Transcription (Speech-to-Text via OpenAI Whisper)
