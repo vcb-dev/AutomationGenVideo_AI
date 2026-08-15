@@ -142,16 +142,19 @@ class DeepSeekErrorClassificationTests(SimpleTestCase):
         self.assertEqual(ctx.exception.kind, 'parse')
         self.assertFalse(ctx.exception.retriable)
 
-    def test_content_rong_vi_het_token_reasoning_nem_kind_server(self):
+    def test_content_rong_vi_het_token_reasoning_nem_kind_token_budget(self):
         """finish_reason='length': token suy luận nội bộ ăn hết max_tokens — lỗi NGÂN SÁCH
-        token, không phải timeout, và đáng thử lại (tăng max_tokens/tắt reasoning ở lượt sau)."""
+        token, không phải timeout, và đáng thử lại (tăng max_tokens/tắt reasoning ở lượt sau).
+
+        Mang kind riêng 'token_budget' thay vì 'server': vẫn retriable như trước, nhưng câu báo
+        cho người dùng thôi đổ lỗi cho nhà cung cấp trong khi lỗi là ở ngân sách của chính mình."""
         with patch('video_management.services.content_generation_service.requests.post') as mock_post:
             mock_post.return_value = _response(200, json_body=_ok_json(content='', finish_reason='length'))
 
             with self.assertRaises(DeepSeekError) as ctx:
                 self.service._call_deepseek_checked(prompt='p', system_msg='s')
 
-        self.assertEqual(ctx.exception.kind, 'server')
+        self.assertEqual(ctx.exception.kind, 'token_budget')
         self.assertTrue(ctx.exception.retriable)
 
     def test_content_rong_vi_ly_do_khac_nem_kind_parse(self):
