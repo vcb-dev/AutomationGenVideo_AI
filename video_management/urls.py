@@ -55,6 +55,7 @@ from .views.facebook_fetch_views import (
     fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
     fetch_video_transcript,
     fetch_token_refresh,
+    fetch_token_save,
 )
 from .views.facebook_external_fetch_views import fetch_facebook_page_reels
 from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
@@ -213,6 +214,7 @@ urlpatterns = [
     path('facebook/fetch/video-captions/', fetch_video_captions, name='facebook-fetch-video-captions'),
     path('facebook/fetch/video-transcript/', fetch_video_transcript, name='facebook-fetch-video-transcript'),
     path('facebook/fetch/token-refresh/', fetch_token_refresh, name='facebook-fetch-token-refresh'),
+    path('facebook/fetch/token-save/', fetch_token_save, name='facebook-fetch-token-save'),
 
     # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
     # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.

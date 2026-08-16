@@ -38,6 +38,32 @@ def fetch_token_refresh(request):
     return Response(facebook_token_store.refresh_user_token())
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def fetch_token_save(request):
+    """Lưu User Access Token mới sau khi người dùng cấp quyền (BE gọi từ luồng OAuth).
+
+    Body: { "access_token": "...", "expires_in": 5184000 }
+
+    Vì sao cần: quyền Facebook đóng cứng vào token lúc phát hành. App được duyệt thêm quyền
+    KHÔNG làm token cũ mạnh lên, và `fb_exchange_token` chỉ đổi hạn chứ không thêm quyền (đo
+    ngày 16/08/2026: token vừa gia hạn vẫn thiếu `instagram_manage_insights`). Đường duy nhất
+    để có quyền mới là đi qua màn hình đồng ý — tức luồng OAuth bên BE. Trước đây BE đổi được
+    token mới rồi VỨT ĐI, nên cấp quyền xong hệ thống vẫn chạy bằng token cũ.
+
+    AI là nơi duy nhất giữ token store (.fb_token.json), nên BE gửi sang đây thay vì tự ghi file.
+    """
+    token = str((request.data or {}).get('access_token') or '').strip()
+    if not token:
+        return Response({'error': 'access_token is required'}, status=400)
+
+    # Mặc định 60 ngày — đúng hạn mà fb_exchange_token trả về cho long-lived token.
+    expires_in = int((request.data or {}).get('expires_in') or 5_184_000)
+    facebook_token_store.save_token(token, expires_in)
+    logger.info('[TOKEN] Đã lưu User Access Token mới từ luồng OAuth, hạn %d ngày', expires_in // 86_400)
+    return Response({'status': 'ok', 'days': expires_in // 86_400})
+
+
 def _get_ffmpeg_path() -> str:
     """Cùng cách tìm với transcribe_views: ưu tiên FFMPEG_PATH trong .env rồi mới tới PATH."""
     from django.conf import settings
