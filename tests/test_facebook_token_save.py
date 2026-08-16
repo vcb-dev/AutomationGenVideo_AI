@@ -41,34 +41,34 @@ class FetchTokenSaveTests(TestCase):
         )
 
     def test_luu_token_vao_token_store(self):
-        with patch('video_management.services.facebook_token_store.save_token') as gia_luu:
+        with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': TOKEN})
 
         self.assertEqual(r.status_code, 200)
-        gia_luu.assert_called_once()
-        self.assertEqual(gia_luu.call_args.args[0], TOKEN)
+        fake_save.assert_called_once()
+        self.assertEqual(fake_save.call_args.args[0], TOKEN)
 
     def test_khong_gui_expires_in_thi_mac_dinh_60_ngay(self):
         """60 ngày là đúng hạn fb_exchange_token trả về cho long-lived token."""
-        with patch('video_management.services.facebook_token_store.save_token') as gia_luu:
+        with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': TOKEN})
 
-        self.assertEqual(gia_luu.call_args.args[1], 5_184_000)
+        self.assertEqual(fake_save.call_args.args[1], 5_184_000)
         self.assertEqual(r.json()['days'], 60)
 
     def test_ton_trong_expires_in_do_facebook_tra_ve(self):
-        with patch('video_management.services.facebook_token_store.save_token') as gia_luu:
+        with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             self._post({'access_token': TOKEN, 'expires_in': 86_400})
 
-        self.assertEqual(gia_luu.call_args.args[1], 86_400)
+        self.assertEqual(fake_save.call_args.args[1], 86_400)
 
     def test_thieu_token_thi_bao_400_va_KHONG_ghi_de_token_dang_chay(self):
         """Ghi chuỗi rỗng đè lên token đang chạy là hạ cả hệ thống — thà từ chối."""
-        with patch('video_management.services.facebook_token_store.save_token') as gia_luu:
+        with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': '   '})
 
         self.assertEqual(r.status_code, 400)
-        gia_luu.assert_not_called()
+        fake_save.assert_not_called()
 
     def test_chua_dang_nhap_thi_khong_cho_ghi_token(self):
         """Endpoint này ghi đè token hệ thống — để hở là ai cũng chiếm được quyền điều khiển."""
