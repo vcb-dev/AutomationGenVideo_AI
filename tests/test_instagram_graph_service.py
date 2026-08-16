@@ -127,23 +127,23 @@ class FetchMediaTests(SimpleTestCase):
     def test_thieu_quyen_insight_thi_view_la_None_chu_khong_phai_0(self):
         """Điểm mấu chốt. 0 nghĩa là "không ai xem" — ghi 0 lên video đang có view thật là
         đúng sự cố 27/07–09/08/2026 của Facebook. Không lấy được thì phải nói là KHÔNG BIẾT."""
-        def _gia(url, **kwargs):
+        def _fake_get(url, **kwargs):
             if '/insights' in url:
                 return _resp(400, {'error': {'code': 10, 'message': 'Application does not have permission'}})
             return _resp(200, self.MEDIA)
 
-        with patch('requests.get', side_effect=_gia):
+        with patch('requests.get', side_effect=_fake_get):
             items = InstagramGraphService().fetch_media(IG_ID, TOKEN, limit=25)
 
         self.assertIsNone(items[0]['view_count'])
 
     def test_co_quyen_insight_thi_lay_duoc_view(self):
-        def _gia(url, **kwargs):
+        def _fake_get(url, **kwargs):
             if '/insights' in url:
                 return _resp(200, {'data': [{'name': 'views', 'values': [{'value': 40790}]}]})
             return _resp(200, self.MEDIA)
 
-        with patch('requests.get', side_effect=_gia):
+        with patch('requests.get', side_effect=_fake_get):
             items = InstagramGraphService().fetch_media(IG_ID, TOKEN, limit=25)
 
         self.assertEqual(items[0]['view_count'], 40790)
@@ -153,11 +153,11 @@ class FetchMediaTests(SimpleTestCase):
         anh = {'data': [dict(self.MEDIA['data'][0], media_type='IMAGE', media_product_type='FEED')]}
         goi = []
 
-        def _gia(url, **kwargs):
+        def _fake_get(url, **kwargs):
             goi.append(url)
             return _resp(200, anh)
 
-        with patch('requests.get', side_effect=_gia):
+        with patch('requests.get', side_effect=_fake_get):
             InstagramGraphService().fetch_media(IG_ID, TOKEN, limit=25)
 
         self.assertEqual([u for u in goi if '/insights' in u], [])

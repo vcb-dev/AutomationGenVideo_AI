@@ -129,7 +129,7 @@ class InstagramGraphService:
             return []
 
         items = []
-        hut_view = 0  # đếm để log MỘT dòng, xem _fetch_views
+        missing_views = 0  # đếm để log MỘT dòng, xem _fetch_views
         for m in (r.json() or {}).get('data', []):
             post_id = str(m.get('id') or '')
             if not post_id:
@@ -137,7 +137,7 @@ class InstagramGraphService:
 
             caption = m.get('caption') or ''
             permalink = m.get('permalink') or ''
-            la_video = (m.get('media_type') or '').upper() in VIDEO_TYPES
+            is_video = (m.get('media_type') or '').upper() in VIDEO_TYPES
 
             items.append({
                 'post_id': post_id,
@@ -153,18 +153,18 @@ class InstagramGraphService:
                 # None = chưa lấy được (thiếu quyền / ảnh không có view), KHÁC 0 = không ai xem.
                 'view_count': None,
             })
-            if la_video:
+            if is_video:
                 items[-1]['view_count'] = self._fetch_views(post_id, page_token)
                 if items[-1]['view_count'] is None:
-                    hut_view += 1
+                    missing_views += 1
 
-        if hut_view:
+        if missing_views:
             # MỘT dòng cho cả tài khoản, không phải mỗi video một dòng: thiếu quyền insights là
             # trạng thái đã biết, log từng bài thì 106 page đẻ ra hơn 1.200 dòng mỗi lượt đồng
             # bộ — ngập log tới mức che mất lỗi thật.
             logger.warning(
                 '[IG] %s: không lấy được lượt xem cho %d/%d video (thường do thiếu quyền '
-                'instagram_manage_insights)', instagram_id, hut_view, len(items),
+                'instagram_manage_insights)', instagram_id, missing_views, len(items),
             )
         return items
 
