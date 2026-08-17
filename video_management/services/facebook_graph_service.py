@@ -78,9 +78,14 @@ class FacebookGraphService:
     This service provides accurate followers count and posts count
     that scrapers typically don't provide.
     """
-    
-    BASE_URL = "https://graph.facebook.com/v25.0"
-    
+    @property
+    def BASE_URL(self) -> str:
+        return getattr(
+            settings,
+            'FACEBOOK_GRAPH_BASE_URL',
+            f"https://graph.facebook.com/{getattr(settings, 'FACEBOOK_GRAPH_API_VERSION', 'v25.0')}",
+        ).rstrip('/')
+
     def __init__(self):
         """Initialize Facebook Graph API service."""
         self.app_id = getattr(settings, 'FACEBOOK_APP_ID', '')
