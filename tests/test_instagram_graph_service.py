@@ -42,33 +42,32 @@ def _resp(status=200, payload=None):
 
 
 class ExtractHelperTests(SimpleTestCase):
-    """Hai hàm thuần — bảng ScraperInstagramReel có cột shortcode và hashtags[] bắt buộc."""
+    """Helper functions for extracting shortcode and hashtags."""
 
-    def test_lay_shortcode_tu_permalink(self):
+    def test_extract_shortcode_from_permalink(self):
         self.assertEqual(extract_shortcode('https://www.instagram.com/reel/DAbc123xyz/'), 'DAbc123xyz')
         self.assertEqual(extract_shortcode('https://www.instagram.com/p/C9xYz-1aB2c/'), 'C9xYz-1aB2c')
 
-    def test_permalink_la_khong_doc_duoc_thi_tra_rong_chu_khong_no(self):
+    def test_unknown_permalink_returns_empty_string(self):
         self.assertEqual(extract_shortcode(''), '')
         self.assertEqual(extract_shortcode('https://instagram.com/'), '')
 
-    def test_lay_hashtag_tu_caption(self):
+    def test_extract_hashtags_from_caption(self):
         self.assertEqual(
             extract_hashtags('Nhẫn kim hoa #N0036 #K101 #a4'),
             ['N0036', 'K101', 'a4'],
         )
 
-    def test_hashtag_co_dau_tieng_viet_van_lay_duoc(self):
-        # Caption kênh nội bộ hay có #vàng, #bạc — bỏ sót là mất hẳn nhóm hashtag tiếng Việt.
+    def test_extract_vietnamese_accented_hashtags(self):
         self.assertEqual(extract_hashtags('Dành hơi nhiều tâm sức #vàng #bạc925'), ['vàng', 'bạc925'])
 
-    def test_khong_co_hashtag_thi_tra_danh_sach_rong(self):
+    def test_empty_hashtags_returns_empty_list(self):
         self.assertEqual(extract_hashtags('Không có thẻ nào'), [])
         self.assertEqual(extract_hashtags(''), [])
 
 
 class FetchOwnedAccountsTests(SimpleTestCase):
-    def test_tra_ve_tai_khoan_ig_gan_voi_page(self):
+    def test_fetch_owned_account_success(self):
         payload = {
             'instagram_business_account': {
                 'id': IG_ID,
@@ -85,13 +84,12 @@ class FetchOwnedAccountsTests(SimpleTestCase):
         self.assertEqual(acc['username'], 'huyk_xuongchetac')
         self.assertEqual(acc['followers_count'], 5812)
 
-    def test_page_khong_noi_instagram_thi_tra_none_chu_khong_no(self):
-        """11/25 page không nối IG — đây là chuyện bình thường, không phải lỗi."""
+    def test_page_without_instagram_account_returns_none(self):
         with patch('requests.get', return_value=_resp(200, {'id': '12345'})):
             self.assertIsNone(InstagramGraphService().fetch_owned_account('12345', TOKEN))
 
-    def test_graph_tra_loi_thi_tra_none(self):
-        with patch('requests.get', return_value=_resp(400, {'error': {'message': 'token hỏng'}})):
+    def test_graph_api_error_returns_none(self):
+        with patch('requests.get', return_value=_resp(400, {'error': {'message': 'token error'}})):
             self.assertIsNone(InstagramGraphService().fetch_owned_account('12345', TOKEN))
 
 
@@ -112,7 +110,7 @@ class FetchMediaTests(SimpleTestCase):
         ]
     }
 
-    def test_parse_du_truong_cho_bang_ScraperInstagramReel(self):
+    def test_parse_media_fields_for_instagram_reel(self):
         with patch('requests.get', return_value=_resp(200, self.MEDIA)):
             items = InstagramGraphService().fetch_media(IG_ID, TOKEN, limit=25)
 
@@ -124,9 +122,7 @@ class FetchMediaTests(SimpleTestCase):
         self.assertEqual(m['hashtags'], ['K101', 'a4'])
         self.assertTrue(m['date_posted'].startswith('2026-08-15'))
 
-    def test_thieu_quyen_insight_thi_view_la_None_chu_khong_phai_0(self):
-        """Điểm mấu chốt. 0 nghĩa là "không ai xem" — ghi 0 lên video đang có view thật là
-        đúng sự cố 27/07–09/08/2026 của Facebook. Không lấy được thì phải nói là KHÔNG BIẾT."""
+    def test_missing_insight_permission_returns_none_view_count(self):
         def _fake_get(url, **kwargs):
             if '/insights' in url:
                 return _resp(400, {'error': {'code': 10, 'message': 'Application does not have permission'}})
@@ -137,7 +133,7 @@ class FetchMediaTests(SimpleTestCase):
 
         self.assertIsNone(items[0]['view_count'])
 
-    def test_co_quyen_insight_thi_lay_duoc_view(self):
+    def test_valid_insight_permission_returns_view_count(self):
         def _fake_get(url, **kwargs):
             if '/insights' in url:
                 return _resp(200, {'data': [{'name': 'views', 'values': [{'value': 40790}]}]})
@@ -148,16 +144,15 @@ class FetchMediaTests(SimpleTestCase):
 
         self.assertEqual(items[0]['view_count'], 40790)
 
-    def test_bai_anh_khong_goi_insight_video(self):
-        """Ảnh không có lượt xem — gọi insight video cho nó chỉ tốn một lượt và nhận lỗi."""
-        anh = {'data': [dict(self.MEDIA['data'][0], media_type='IMAGE', media_product_type='FEED')]}
-        goi = []
+    def test_image_media_does_not_call_video_insights(self):
+        image_data = {'data': [dict(self.MEDIA['data'][0], media_type='IMAGE', media_product_type='FEED')]}
+        called_urls = []
 
         def _fake_get(url, **kwargs):
-            goi.append(url)
-            return _resp(200, anh)
+            called_urls.append(url)
+            return _resp(200, image_data)
 
         with patch('requests.get', side_effect=_fake_get):
             InstagramGraphService().fetch_media(IG_ID, TOKEN, limit=25)
 
-        self.assertEqual([u for u in goi if '/insights' in u], [])
+        self.assertEqual([u for u in called_urls if '/insights' in u], [])
