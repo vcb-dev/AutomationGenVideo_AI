@@ -13,6 +13,7 @@ mã hoá/giải mã — AI giữ FERNET_KEY và là nơi duy nhất biết cách
 
 import logging
 
+from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -22,10 +23,9 @@ from ..utils.encryption import TokenEncryption
 
 logger = logging.getLogger(__name__)
 
-# Trần số bài lấy trong một lượt. Instagram Graph API chặn ~200 lượt gọi/giờ mỗi tài khoản, mà
-# mỗi video tốn thêm 1 lượt cho insight — 25 bài là đã ~26 lượt, đủ cho đồng bộ delta hằng ngày
-# (kênh nội bộ đăng nhiều nhất ~5 bài/ngày) mà vẫn còn xa trần.
-MAX_LIMIT = 50
+# Trần số bài lấy trong một lượt.
+MAX_LIMIT = int(getattr(settings, 'INSTAGRAM_OWNED_FETCH_MAX_LIMIT', 50))
+DEFAULT_LIMIT = int(getattr(settings, 'INSTAGRAM_OWNED_FETCH_DEFAULT_LIMIT', 25))
 
 
 def _decrypt_token(encrypted: str) -> str:

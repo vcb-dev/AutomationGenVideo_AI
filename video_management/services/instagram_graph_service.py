@@ -27,22 +27,25 @@ giữ `limit` nhỏ — đồng bộ delta vài chục bài mới nhất, đừn
 import logging
 import re
 
+from django.conf import settings
 import requests
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = 'https://graph.facebook.com/v25.0'
+GRAPH_VERSION = str(getattr(settings, 'FACEBOOK_GRAPH_API_VERSION', 'v25.0')).strip() or 'v25.0'
+BASE_URL = str(getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', f'https://graph.facebook.com/{GRAPH_VERSION}')).rstrip('/')
 
 # Trường lấy được MIỄN PHÍ, không cần quyền insights.
-MEDIA_FIELDS = (
-    'id,media_type,media_product_type,permalink,timestamp,caption,'
-    'like_count,comments_count,thumbnail_url,media_url'
+MEDIA_FIELDS = getattr(
+    settings,
+    'INSTAGRAM_MEDIA_FIELDS',
+    'id,media_type,media_product_type,permalink,timestamp,caption,like_count,comments_count,thumbnail_url,media_url',
 )
 
 # Chỉ loại có video mới có lượt xem — gọi insight cho ảnh chỉ tốn lượt và nhận lỗi.
 VIDEO_TYPES = {'VIDEO', 'REEL', 'REELS'}
 
-TIMEOUT_S = 30
+TIMEOUT_S = int(getattr(settings, 'FACEBOOK_GRAPH_TIMEOUT', 30))
 
 
 def extract_shortcode(permalink: str) -> str:
