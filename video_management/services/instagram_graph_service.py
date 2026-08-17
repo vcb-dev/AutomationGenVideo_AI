@@ -32,9 +32,6 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-GRAPH_VERSION = str(getattr(settings, 'FACEBOOK_GRAPH_API_VERSION', 'v25.0')).strip() or 'v25.0'
-BASE_URL = str(getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', f'https://graph.facebook.com/{GRAPH_VERSION}')).rstrip('/')
-
 # Trường lấy được MIỄN PHÍ, không cần quyền insights.
 MEDIA_FIELDS = getattr(
     settings,
@@ -74,6 +71,10 @@ def extract_hashtags(caption: str) -> list:
 class InstagramGraphService:
     """Chỉ ĐỌC Graph API và parse. Không đụng DB — BE là nơi duy nhất ghi, giống luồng Facebook."""
 
+    @property
+    def BASE_URL(self) -> str:
+        return str(getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '')).rstrip('/')
+
     def fetch_owned_account(self, page_id: str, page_token: str):
         """Tài khoản IG Business gắn với một Facebook Page, hoặc None nếu page không nối IG.
 
@@ -82,7 +83,7 @@ class InstagramGraphService:
         """
         try:
             r = requests.get(
-                f'{BASE_URL}/{page_id}',
+                f'{self.BASE_URL}/{page_id}',
                 params={
                     'fields': 'instagram_business_account{id,username,name,followers_count,'
                               'media_count,profile_picture_url,biography,website}',
@@ -119,7 +120,7 @@ class InstagramGraphService:
         """Bài đăng gần nhất của một tài khoản IG, đã chuẩn hoá theo cột của ScraperInstagramReel."""
         try:
             r = requests.get(
-                f'{BASE_URL}/{instagram_id}/media',
+                f'{self.BASE_URL}/{instagram_id}/media',
                 params={'fields': MEDIA_FIELDS, 'limit': limit, 'access_token': page_token},
                 timeout=TIMEOUT_S,
             )
@@ -175,7 +176,7 @@ class InstagramGraphService:
         """Lượt xem của một media. Trả None khi không lấy được — xem ghi chú đầu file."""
         try:
             r = requests.get(
-                f'{BASE_URL}/{media_id}/insights',
+                f'{self.BASE_URL}/{media_id}/insights',
                 params={'metric': 'views', 'access_token': page_token},
                 timeout=TIMEOUT_S,
             )
