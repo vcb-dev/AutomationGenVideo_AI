@@ -20,13 +20,15 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
-def _get_graph_oauth_url() -> str:
+def _get_graph_token_url() -> str:
     url = getattr(settings, 'FACEBOOK_GRAPH_OAUTH_URL', '')
     if not url:
         base = getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '')
         if base:
             url = f"{base.rstrip('/')}/oauth/access_token"
     return url
+
+_get_graph_oauth_url = _get_graph_token_url
 
 STATE_PATH = Path(settings.BASE_DIR) / '.fb_token.json'
 
@@ -74,7 +76,7 @@ def refresh_user_token() -> dict:
 
     try:
         resp = requests.get(
-            _get_graph_oauth_url(),
+            _get_graph_token_url(),
             params={
                 'grant_type': 'fb_exchange_token',
                 'client_id': getattr(settings, 'FACEBOOK_APP_ID', ''),
