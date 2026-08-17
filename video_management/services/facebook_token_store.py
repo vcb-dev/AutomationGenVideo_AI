@@ -17,14 +17,16 @@ from pathlib import Path
 import requests
 from django.conf import settings
 
-def _get_graph_token_url() -> str:
-    base = getattr(
-        settings,
-        'FACEBOOK_GRAPH_BASE_URL',
-        f"https://graph.facebook.com/{getattr(settings, 'FACEBOOK_GRAPH_API_VERSION', 'v25.0')}",
-    ).rstrip('/')
-    return f"{base}/oauth/access_token"
+logger = logging.getLogger(__name__)
 
+
+def _get_graph_token_url() -> str:
+    url = getattr(settings, 'FACEBOOK_GRAPH_OAUTH_URL', '')
+    if not url:
+        base = getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '')
+        if base:
+            url = f"{base.rstrip('/')}/oauth/access_token"
+    return url
 
 STATE_PATH = Path(settings.BASE_DIR) / '.fb_token.json'
 
