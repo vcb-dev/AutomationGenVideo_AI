@@ -40,7 +40,7 @@ class FetchTokenSaveTests(TestCase):
             content_type='application/json',
         )
 
-    def test_luu_token_vao_token_store(self):
+    def test_save_token_to_token_store(self):
         with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': TOKEN})
 
@@ -48,30 +48,30 @@ class FetchTokenSaveTests(TestCase):
         fake_save.assert_called_once()
         self.assertEqual(fake_save.call_args.args[0], TOKEN)
 
-    def test_khong_gui_expires_in_thi_mac_dinh_60_ngay(self):
-        """60 ngày là đúng hạn fb_exchange_token trả về cho long-lived token."""
+    def test_default_expiration_when_expires_in_not_provided(self):
+        """Default to 60 days when expires_in is not provided."""
         with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': TOKEN})
 
         self.assertEqual(fake_save.call_args.args[1], 5_184_000)
         self.assertEqual(r.json()['days'], 60)
 
-    def test_ton_trong_expires_in_do_facebook_tra_ve(self):
+    def test_respect_custom_expires_in_from_facebook(self):
         with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             self._post({'access_token': TOKEN, 'expires_in': 86_400})
 
         self.assertEqual(fake_save.call_args.args[1], 86_400)
 
-    def test_thieu_token_thi_bao_400_va_KHONG_ghi_de_token_dang_chay(self):
-        """Ghi chuỗi rỗng đè lên token đang chạy là hạ cả hệ thống — thà từ chối."""
+    def test_reject_empty_token_and_do_not_overwrite(self):
+        """Reject empty token to protect active token."""
         with patch('video_management.services.facebook_token_store.save_token') as fake_save:
             r = self._post({'access_token': '   '})
 
         self.assertEqual(r.status_code, 400)
         fake_save.assert_not_called()
 
-    def test_chua_dang_nhap_thi_khong_cho_ghi_token(self):
-        """Endpoint này ghi đè token hệ thống — để hở là ai cũng chiếm được quyền điều khiển."""
+    def test_unauthenticated_request_is_rejected(self):
+        """Require authentication to protect system token."""
         r = Client().post(
             '/api/facebook/fetch/token-save/',
             data={'access_token': TOKEN},
