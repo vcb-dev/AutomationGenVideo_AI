@@ -1213,7 +1213,8 @@ class UserVideosView(APIView):
                         if user_obj.get('profilePicture'): avatar_url = user_obj.get('profilePicture')  # scraper_one
                         elif user_obj.get('profilePic'): avatar_url = user_obj.get('profilePic')
                         elif user_obj.get('id'): 
-                            avatar_url = f"https://graph.facebook.com/{user_obj.get('id')}/picture?type=large"
+                            fb_base = getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '').rstrip('/')
+                            avatar_url = f"{fb_base}/{user_obj.get('id')}/picture?type=large" if fb_base else ""
                     
                     # 2. Aggregated Stats
                     # 2. Aggregated Stats
