@@ -16,7 +16,6 @@ from django.conf import settings
 # trong khi thực tế chạy model dưới đây, làm cả bảng lịch sử ghi sai tên model.
 DEEPSEEK_DEFAULT_MODEL = getattr(settings, 'DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
-
 class DeepSeekError(RuntimeError):
     """
     Lỗi khi gọi DeepSeek, có PHÂN LOẠI — thay cho việc nuốt mọi lỗi thành None.
@@ -27,12 +26,13 @@ class DeepSeekError(RuntimeError):
     không thể biết một lượt chấm PAAST hỏng vì chậm thật hay vì bị chặn rate-limit — mà 5
     lệnh gọi song song trên cùng 1 API key thì 429 là chuyện rất thực tế.
 
-    `kind` nhận: 'timeout' | 'rate_limit' | 'server' | 'client' | 'parse' | 'network' | 'no_key'.
+    `kind` nhận: 'timeout' | 'rate_limit' | 'server' | 'client' | 'parse' | 'network' | 'no_key'
+    | 'token_budget'.
     `retriable` phân biệt lỗi đáng thử lại (timeout/429/5xx/mạng) với lỗi tất định
     (4xx khác, parse) — thử lại lỗi tất định chỉ tốn thời gian mà kết quả không đổi.
     """
 
-    RETRIABLE_KINDS = {'timeout', 'rate_limit', 'server', 'network'}
+    RETRIABLE_KINDS = {'timeout', 'rate_limit', 'server', 'network', 'token_budget'}
 
     def __init__(self, kind: str, message: str, status_code: Optional[int] = None):
         super().__init__(message)
@@ -882,7 +882,12 @@ class ContentGenerationService:
                     f"(finish_reason={finish_reason}, max_tokens={max_tokens}, usage={usage})"
                 )
                 raise DeepSeekError(
-                    'server' if finish_reason == 'length' else 'parse',
+                    # 'length' = LỖI NGÂN SÁCH của chính mình, không phải nhà cung cấp hỏng:
+                    # DeepSeek trả 200 và tính tiền đủ số token đã tiêu. Vẫn nằm trong
+                    # RETRIABLE_KINDS vì caller thử lại ĐƯỢC — nhưng phải đổi tham số (nâng
+                    # max_tokens / tắt suy luận), không phải bấm lại y nguyên. Tách khỏi 'server'
+                    # chỉ để thôi đổ oan cho nhà cung cấp trong câu báo cho người dùng.
+                    'token_budget' if finish_reason == 'length' else 'parse',
                     f'DeepSeek trả nội dung rỗng (finish_reason={finish_reason}, max_tokens={max_tokens})',
                 )
 

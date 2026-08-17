@@ -6,8 +6,37 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from video_management.models import ScrapedVideo, GeneratedContent, Product
-from video_management.services.content_generation_service import ContentGenerationService
+from video_management.services.content_generation_service import ContentGenerationService, DeepSeekError
 import logging
+
+# Câu báo cho từng loại lỗi DeepSeek. Viết tiếng Việt vì chuỗi này đi thẳng ra toast của người
+# dùng cuối: BE lưu vào error_message rồi FE hiện nguyên văn.
+#
+# Mỗi câu phải nói được NÊN LÀM GÌ TIẾP. "Lỗi hệ thống" thì người dùng chỉ biết bấm lại, mà
+# bấm lại với no_key hay client thì vô ích — sai chỗ nào phải nói đúng chỗ đó.
+DEEPSEEK_ERROR_MESSAGES = {
+    'no_key': 'Máy chủ AI chưa cấu hình DEEPSEEK_API_KEY. Cần người quản trị bổ sung, thử lại không giúp gì.',
+    'client': 'DeepSeek từ chối yêu cầu — khoá sai, hết hạn hoặc hết số dư. Cần kiểm tra tài khoản DeepSeek.',
+    'rate_limit': 'DeepSeek đang chặn vì quá nhiều lượt gọi cùng lúc. Chờ một lát rồi thử lại.',
+    'timeout': 'DeepSeek không trả lời kịp. Thử lại, hoặc rút ngắn kịch bản nếu vẫn chậm.',
+    'server': 'DeepSeek đang lỗi ở phía nhà cung cấp. Thử lại sau ít phút.',
+    'network': 'Không kết nối được tới DeepSeek từ máy chủ AI.',
+    'parse': 'DeepSeek trả về dữ liệu không đọc được. Thử lại một lượt nữa.',
+    'empty': 'DeepSeek trả về nội dung rỗng. Thử lại hoặc diễn đạt kịch bản khác đi.',
+    'token_budget': (
+        'Model đã tiêu hết ngân sách token vào phần suy luận nên không kịp viết câu trả lời. '
+        'Cần giảm độ dài prompt hệ của nhân vật, nâng max_tokens, hoặc đổi sang model không suy '
+        'luận — thử lại y nguyên sẽ ra đúng kết quả này.'
+    ),
+    'unknown': 'Chuyển đổi thất bại vì lỗi chưa rõ ở phía DeepSeek. Xem log máy chủ AI để biết chi tiết.',
+}
+
+# Thiếu khoá là lỗi cấu hình của CHÍNH máy chủ này (5xx của mình), không phải lỗi nhà cung cấp
+# bên ngoài — nên 500 chứ không 502. 429 giữ nguyên 429 để bên gọi biết mà giãn nhịp.
+DEEPSEEK_ERROR_STATUS = {
+    'no_key': status.HTTP_500_INTERNAL_SERVER_ERROR,
+    'rate_limit': status.HTTP_429_TOO_MANY_REQUESTS,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -365,31 +394,65 @@ def transform_content(request):
     try:
         system_prompt = request.data.get('system_prompt')
         input_text = request.data.get('input_text')
-        
+        # Tuỳ chọn — không gửi thì giữ nguyên default cũ (2048 tokens, temperature 0.1),
+        # cho phép caller (vd: chấm điểm cần JSON dài hơn) xin thêm token budget.
+        max_tokens = request.data.get('max_tokens')
+        temperature = request.data.get('temperature')
+        # BUG ĐÃ SỬA: trước đây view này không đọc timeout từ request, nên mọi lệnh gọi
+        # _call_deepseek_raw() rơi về default hard-code là 60s (xem signature của hàm đó),
+        # bất kể BE gửi timeoutMs=120000 ở phía axios client (timeout đó chỉ áp dụng cho
+        # chính request HTTP giữa BE<->AI service, không hề được BE gửi kèm trong body nên
+        # AI service không có cách nào biết để nới ra). Hệ quả: input/prompt cần >60s suy luận
+        # (reasoning_tokens của deepseek-v4-flash dao động rất lớn, đặc biệt với input dài từ
+        # khi bỏ giới hạn 2000 ký tự) sẽ bị cắt ở đúng mốc 60s, trả lỗi 502 chung chung, dù BE
+        # tưởng mình đã cho phép tới 120s. Giờ đọc đúng giá trị BE thực sự muốn, fallback 120s
+        # nếu caller không gửi (phòng trường hợp gọi từ nơi khác chưa cập nhật).
+        timeout_seconds = request.data.get('timeout_seconds')
+
         if not system_prompt or not input_text:
             return Response(
                 {'error': 'Both system_prompt and input_text are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-            
+
+        call_kwargs = {'timeout': int(timeout_seconds) if timeout_seconds is not None else 120}
+        if max_tokens is not None:
+            call_kwargs['max_tokens'] = int(max_tokens)
+        if temperature is not None:
+            call_kwargs['temperature'] = float(temperature)
         service = ContentGenerationService()
-        output_text = service._call_deepseek_raw(
-            prompt=input_text,
-            system_msg=system_prompt,
-            log_prefix="Content transform (DeepSeek)"
-        )
-        
+
+        # Dùng bản _checked để biết LOẠI lỗi. Bản _raw nuốt DeepSeekError rồi trả None, nên chỗ
+        # này từng phải đoán bừa "Please check API key configuration" cho mọi trường hợp — kể cả
+        # khi khoá vẫn đúng mà chỉ là hết số dư hay chạm rate limit. Câu đoán đó đi thẳng ra toast
+        # cho người dùng cuối (BE lưu vào error_message, FE hiện nguyên văn), nên sai là họ đi
+        # sửa nhầm chỗ.
+        try:
+            output_text = service._call_deepseek_checked(
+                prompt=input_text,
+                system_msg=system_prompt,
+                log_prefix="Content transform (DeepSeek)",
+                **call_kwargs,
+            )
+        except DeepSeekError as e:
+            logger.warning(f"Content transform hỏng — kind={e.kind} status={e.status_code}: {e}")
+            return Response(
+                {'error': DEEPSEEK_ERROR_MESSAGES.get(e.kind, DEEPSEEK_ERROR_MESSAGES['unknown']),
+                 'reason': e.kind,
+                 'retriable': e.retriable},
+                status=DEEPSEEK_ERROR_STATUS.get(e.kind, status.HTTP_502_BAD_GATEWAY)
+            )
         if not output_text:
             return Response(
-                {'error': 'Failed to generate content using DeepSeek. Please check API key configuration or logs.'},
+                {'error': DEEPSEEK_ERROR_MESSAGES['empty'], 'reason': 'empty', 'retriable': True},
                 status=status.HTTP_502_BAD_GATEWAY
             )
-            
+
         return Response({
             'success': True,
             'output_text': output_text
         })
-        
+
     except Exception as e:
         logger.error(f"Error in transform_content view: {str(e)}", exc_info=True)
         return Response(

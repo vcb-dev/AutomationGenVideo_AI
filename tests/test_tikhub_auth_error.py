@@ -17,6 +17,8 @@ ra tay", không phải nhóm tự khỏi khi thử lại.
 Chạy: python manage.py test tests.test_tikhub_auth_error
 """
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock, patch
 
 import requests

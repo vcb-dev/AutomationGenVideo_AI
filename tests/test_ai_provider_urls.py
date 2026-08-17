@@ -28,7 +28,10 @@ def _deepseek_ok(content='{"title": "x"}'):
 class DeepSeekUrl(SimpleTestCase):
     """Cả 3 nơi gọi DeepSeek phải theo cùng một biến — sót nơi nào là nơi đó không đổi được."""
 
-    @override_settings(DEEPSEEK_API_BASE_URL='https://ds.test')
+    # Phải cấp cả KEY, không chỉ URL: _call_deepseek chặn ngay từ đầu khi thiếu key, mà thân
+    # test lại nuốt exception nên post không được gọi và call_args là None — lỗi hiện ra dưới
+    # dạng TypeError khó hiểu thay vì "thiếu key". Máy dev có .env nên xanh, CI thì đỏ.
+    @override_settings(DEEPSEEK_API_BASE_URL='https://ds.test', DEEPSEEK_API_KEY='sk-test')
     def test_task_script_service(self):
         from video_management.services import task_script_service as m
         with patch.object(m.requests, 'post', return_value=_deepseek_ok()) as post:
@@ -41,7 +44,7 @@ class DeepSeekUrl(SimpleTestCase):
             f"Gọi nhầm: {post.call_args[0][0]}",
         )
 
-    @override_settings(DEEPSEEK_API_BASE_URL='https://ds.test')
+    @override_settings(DEEPSEEK_API_BASE_URL='https://ds.test', DEEPSEEK_API_KEY='sk-test')
     def test_scraped_video_script_service(self):
         from video_management.services import scraped_video_script_service as m
         with patch.object(m.requests, 'post', return_value=_deepseek_ok()) as post:
