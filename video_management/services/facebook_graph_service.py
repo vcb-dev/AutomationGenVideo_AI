@@ -80,11 +80,7 @@ class FacebookGraphService:
     """
     @property
     def BASE_URL(self) -> str:
-        return getattr(
-            settings,
-            'FACEBOOK_GRAPH_BASE_URL',
-            f"https://graph.facebook.com/{getattr(settings, 'FACEBOOK_GRAPH_API_VERSION', 'v25.0')}",
-        ).rstrip('/')
+        return getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '').rstrip('/')
 
     def __init__(self):
         """Initialize Facebook Graph API service."""
