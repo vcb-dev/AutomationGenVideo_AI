@@ -225,9 +225,19 @@ class PaastAnalysisService:
 
         if group_key == "prefer":
             rule_text = (
-                'Quy tắc: primary = có ít nhất 3 câu bằng chứng VÀ là chủ đề xuyên suốt bài; '
-                'secondary = có 1-2 câu bằng chứng VÀ không phải chủ đề chính; off = không có câu bằng chứng nào. '
-                'Với primary/secondary, liệt kê TẤT CẢ câu bằng chứng tìm được (mảng evidence_sentences), không giới hạn số lượng. '
+                'Quy tắc phân loại: đánh giá theo SỨC NẶNG THỰC SỰ của insight với TOÀN BỘ content — '
+                'KHÔNG đếm số câu bằng chứng một cách máy móc. 1 câu rất đắt giá vẫn có thể là primary; '
+                'ngược lại 4-5 câu nhạt/lặp lại cùng một ý vẫn có thể chỉ là secondary hoặc off. '
+                'Content ngắn (TikTok/Reels) thường chỉ có 1-2 câu cho mỗi insight nhưng vẫn có thể rất mạnh.\n'
+                '- primary: insight này là ĐỘNG LỰC CHÍNH khiến người xem dừng lại/xem tiếp/nhớ tới content — '
+                'nếu bỏ nó đi, content mất hẳn sức hút cốt lõi. Dấu hiệu ưu tiên: nằm ở vị trí chiến lược '
+                '(câu hook mở đầu hoặc câu chốt cuối), bằng chứng cụ thể/sống động (chi tiết, con số, hình ảnh rõ nét) '
+                'thay vì mô tả chung chung, và/hoặc insight xuyên suốt như mạch chính của content.\n'
+                '- secondary: insight có hiện diện, cộng hưởng cho content, nhưng KHÔNG phải lý do chính người xem '
+                'bị cuốn hút — content vẫn đứng vững được dù bỏ insight này đi.\n'
+                '- off: insight không hiện diện, hoặc chỉ thấp thoáng không đáng kể.\n'
+                'Với primary/secondary, vẫn liệt kê TẤT CẢ câu bằng chứng tìm được (mảng evidence_sentences) làm '
+                'dẫn chứng minh hoạ — nhưng số lượng câu KHÔNG phải căn cứ để quyết định primary hay secondary. '
                 'Với off, để "description" và "evidence_sentences" rỗng.'
             )
             shape = (
