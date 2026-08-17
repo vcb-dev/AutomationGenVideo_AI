@@ -28,6 +28,8 @@ def _get_graph_token_url() -> str:
             url = f"{base.rstrip('/')}/oauth/access_token"
     return url
 
+_get_graph_oauth_url = _get_graph_token_url
+
 STATE_PATH = Path(settings.BASE_DIR) / '.fb_token.json'
 
 # Gia hạn khi còn <= ngưỡng này. Token long-lived sống 60 ngày, cron chạy mỗi ngày,
