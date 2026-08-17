@@ -81,6 +81,7 @@ class FacebookGraphService:
     @property
     def BASE_URL(self) -> str:
         return getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '').rstrip('/')
+
     def __init__(self):
         """Initialize Facebook Graph API service."""
         self.app_id = getattr(settings, 'FACEBOOK_APP_ID', '')

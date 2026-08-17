@@ -83,7 +83,7 @@ def refresh_user_token() -> dict:
                 'client_secret': getattr(settings, 'FACEBOOK_APP_SECRET', ''),
                 'fb_exchange_token': token,
             },
-            timeout=getattr(settings, 'FACEBOOK_GRAPH_TIMEOUT', 30),
+            timeout=int(getattr(settings, 'FACEBOOK_GRAPH_TIMEOUT', 30)),
         )
         data = resp.json()
     except Exception as e:
