@@ -58,7 +58,9 @@ def fetch_token_save(request):
         return Response({'error': 'access_token is required'}, status=400)
 
     # Mặc định 60 ngày — đúng hạn mà fb_exchange_token trả về cho long-lived token.
-    expires_in = int((request.data or {}).get('expires_in') or 5_184_000)
+    from django.conf import settings
+    default_expires = int(getattr(settings, 'FACEBOOK_TOKEN_DEFAULT_EXPIRES_IN', 5_184_000))
+    expires_in = int((request.data or {}).get('expires_in') or default_expires)
     facebook_token_store.save_token(token, expires_in)
     logger.info('[TOKEN] Đã lưu User Access Token mới từ luồng OAuth, hạn %d ngày', expires_in // 86_400)
     return Response({'status': 'ok', 'days': expires_in // 86_400})
