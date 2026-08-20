@@ -28,10 +28,10 @@ def _rapidapi_reels_url() -> str:
     return f"https://{_rapidapi_host()}/get_facebook_reels_details"
 
 
-def _headers() -> dict:
+def _headers() -> Optional[dict]:
     api_key = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY', '')
     if not api_key:
-        raise ValueError("RAPIDAPI_FACEBOOK_KEY not configured")
+        return None
     return {
         "x-rapidapi-key": api_key,
         "x-rapidapi-host": _rapidapi_host(),
@@ -43,10 +43,15 @@ def _headers() -> dict:
 
 def fetch_page_profile(page_url: str) -> Optional[dict]:
     """Gọi profile detail API, trả về dict page hoặc None nếu lỗi."""
+    headers = _headers()
+    if not headers:
+        logger.warning(f"[FB-PROFILE] {page_url}: RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
+        return None
+
     try:
         resp = requests.get(
             _rapidapi_profile_url(),
-            headers=_headers(),
+            headers=headers,
             params={
                 "link": page_url,
                 "exact_followers_count": "true",
@@ -70,13 +75,18 @@ def fetch_page_profile(page_url: str) -> Optional[dict]:
 
 def _fetch_reels_page(page_url: str, cursor: Optional[str] = None) -> tuple:
     """Fetch 1 trang reels. Returns (reels_list, next_cursor, has_next)."""
+    headers = _headers()
+    if not headers:
+        logger.warning(f"[FB-REELS] {page_url}: RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
+        return [], None, False
+
     params = {"link": page_url}
     if cursor:
         params["cursor"] = cursor
     try:
         resp = requests.get(
             _rapidapi_reels_url(),
-            headers=_headers(),
+            headers=headers,
             params=params,
             timeout=30,
         )

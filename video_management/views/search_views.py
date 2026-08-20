@@ -52,20 +52,182 @@ search_videos_task = None  # Async search not currently available (no scraper pr
 logger = logging.getLogger(__name__)
 
 
+class UnifiedTikHubScraper:
+    def __init__(self, platform: str, search_type: str = 'posts'):
+        self.platform = (platform or 'tiktok').lower()
+        self.search_type = search_type
+
+    def execute_search(
+        self,
+        keyword: str,
+        min_likes: int = 0,
+        min_views: int = 0,
+        min_comments: int = 0,
+        max_results: int = 30,
+        page: int = 1,
+        search_mode: str = 'hashtag',
+        use_cache: bool = True,
+        save_to_db: bool = True,
+        session_id: str = None
+    ) -> dict:
+        import time
+        start_time = time.time()
+        cursor = (page - 1) * max_results if page > 1 else 0
+        raw_items = []
+        has_more = False
+
+        try:
+            if self.platform == 'tiktok':
+                from ..services.tikhub_tiktok import search_tiktok_by_keyword, parse_tiktok_videos
+                videos, next_cursor, has_more = search_tiktok_by_keyword(keyword, count=max_results, cursor=cursor)
+                parsed = parse_tiktok_videos(videos, search_keyword=keyword)
+                for item in parsed:
+                    raw_items.append({
+                        'video_id': item.get('post_id', ''),
+                        'id': item.get('post_id', ''),
+                        'title': (item.get('description', '') or keyword)[:120],
+                        'description': item.get('description', ''),
+                        'thumbnail_url': item.get('thumbnail_url', ''),
+                        'video_url': item.get('url', ''),
+                        'author_name': item.get('author_display_name') or item.get('author_username', ''),
+                        'author_username': item.get('author_username', ''),
+                        'views_count': item.get('play_count', 0),
+                        'likes_count': item.get('digg_count', 0),
+                        'comments_count': item.get('comment_count', 0),
+                        'shares_count': item.get('share_count', 0),
+                        'platform': 'tiktok',
+                        'published_at': item.get('date_posted'),
+                        'raw_data': item,
+                    })
+            elif self.platform == 'douyin':
+                from ..services.tikhub_douyin import fetch_douyin_videos, parse_douyin_videos
+                videos, next_cursor, has_more = fetch_douyin_videos(keyword, count=max_results)
+                parsed = parse_douyin_videos(videos, search_keyword=keyword)
+                for item in parsed:
+                    raw_items.append({
+                        'video_id': item.get('post_id', ''),
+                        'id': item.get('post_id', ''),
+                        'title': (item.get('description', '') or keyword)[:120],
+                        'description': item.get('description', ''),
+                        'thumbnail_url': item.get('thumbnail_url', ''),
+                        'video_url': item.get('url', ''),
+                        'author_name': item.get('author_display_name') or item.get('author_username', ''),
+                        'author_username': item.get('author_username', ''),
+                        'views_count': item.get('play_count', 0),
+                        'likes_count': item.get('digg_count', 0),
+                        'comments_count': item.get('comment_count', 0),
+                        'shares_count': item.get('share_count', 0),
+                        'platform': 'douyin',
+                        'published_at': item.get('date_posted'),
+                        'raw_data': item,
+                    })
+            elif self.platform == 'xiaohongshu':
+                from ..services.tikhub_xiaohongshu import search_xiaohongshu_videos, parse_xiaohongshu_videos
+                notes, next_cursor, has_more = search_xiaohongshu_videos(keyword, count=max_results)
+                parsed = parse_xiaohongshu_videos(notes)
+                for item in parsed:
+                    raw_items.append({
+                        'video_id': item.get('note_id', ''),
+                        'id': item.get('note_id', ''),
+                        'title': (item.get('title', '') or keyword)[:120],
+                        'description': item.get('description', ''),
+                        'thumbnail_url': item.get('thumbnail_url', ''),
+                        'video_url': item.get('url', ''),
+                        'author_name': item.get('author_name') or item.get('author_id', ''),
+                        'author_username': item.get('author_id', ''),
+                        'views_count': item.get('liked_count', 0),
+                        'likes_count': item.get('liked_count', 0),
+                        'comments_count': item.get('comments_count', 0),
+                        'shares_count': item.get('shared_count', 0),
+                        'platform': 'xiaohongshu',
+                        'published_at': item.get('date_posted'),
+                        'raw_data': item,
+                    })
+            elif self.platform == 'bilibili':
+                from ..services.tikhub_bilibili import search_bilibili_by_keyword, parse_bilibili_search_videos
+                videos, next_cursor, has_more = search_bilibili_by_keyword(keyword, count=max_results)
+                parsed = parse_bilibili_search_videos(videos, search_keyword=keyword)
+                for item in parsed:
+                    raw_items.append({
+                        'video_id': item.get('post_id', ''),
+                        'id': item.get('post_id', ''),
+                        'title': (item.get('title', '') or keyword)[:120],
+                        'description': item.get('description', ''),
+                        'thumbnail_url': item.get('thumbnail_url', ''),
+                        'video_url': item.get('url', ''),
+                        'author_name': item.get('author_display_name') or item.get('author_username', ''),
+                        'author_username': item.get('author_username', ''),
+                        'views_count': item.get('play_count', 0),
+                        'likes_count': item.get('digg_count', 0),
+                        'comments_count': item.get('comment_count', 0),
+                        'shares_count': item.get('share_count', 0),
+                        'platform': 'bilibili',
+                        'published_at': item.get('date_posted'),
+                        'raw_data': item,
+                    })
+            elif self.platform == 'kuaishou':
+                from ..services.tikhub_kuaishou import search_kuaishou_by_keyword, parse_kuaishou_search_videos
+                videos, next_cursor, has_more = search_kuaishou_by_keyword(keyword, count=max_results)
+                parsed = parse_kuaishou_search_videos(videos, search_keyword=keyword)
+                for item in parsed:
+                    raw_items.append({
+                        'video_id': item.get('post_id', ''),
+                        'id': item.get('post_id', ''),
+                        'title': (item.get('description', '') or keyword)[:120],
+                        'description': item.get('description', ''),
+                        'thumbnail_url': item.get('thumbnail_url', ''),
+                        'video_url': item.get('url', ''),
+                        'author_name': item.get('author_display_name') or item.get('author_username', ''),
+                        'author_username': item.get('author_username', ''),
+                        'views_count': item.get('play_count', 0),
+                        'likes_count': item.get('digg_count', 0),
+                        'comments_count': item.get('comment_count', 0),
+                        'shares_count': item.get('share_count', 0),
+                        'platform': 'kuaishou',
+                        'published_at': item.get('date_posted'),
+                        'raw_data': item,
+                    })
+            else:
+                raise NotImplementedError(f"Scraping for '{self.platform}' is not currently available.")
+        except Exception as e:
+            logger.error(f"Error in UnifiedTikHubScraper ({self.platform}): {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'results': [],
+                'execution_time': round(time.time() - start_time, 2),
+            }
+
+        filtered = [v for v in raw_items if (v.get('likes_count') or 0) >= min_likes and (v.get('views_count') or 0) >= min_views]
+        if not filtered and raw_items:
+            filtered = raw_items
+
+        execution_time = round(time.time() - start_time, 2)
+        return {
+            'success': True,
+            'count': len(filtered),
+            'results': filtered,
+            'execution_time': execution_time,
+            'cached': False,
+            'page': page,
+            'has_more': has_more,
+            'filter_fallback': len(filtered) == len(raw_items) and (min_likes > 0 or min_views > 0),
+        }
+
+
 def create_scraper(platform: str, search_type: str = 'posts'):
-    """Generic multi-platform scraper — not currently available (no provider configured)."""
-    raise NotImplementedError(f"Scraping for '{platform}' is not currently available.")
+    return UnifiedTikHubScraper(platform, search_type)
 
 
 def fetch_tiktok_user_profile(username: str):
-    """TikTok profile enrichment — not currently available (no provider configured)."""
-    raise NotImplementedError("TikTok profile lookup is not currently available.")
-
-
-class InstagramApifyService:
-    """Instagram scraper — not currently available (no provider configured)."""
-    def __init__(self, *a, **kw):
-        raise NotImplementedError("Instagram scraping is not currently available.")
+    """TikTok profile enrichment."""
+    try:
+        from ..services.tikhub_tiktok_profile import fetch_tiktok_profile
+        return fetch_tiktok_profile(username)
+    except Exception as e:
+        logger.error(f"Error fetching TikTok profile for {username}: {e}")
+        return None
 
 
 
