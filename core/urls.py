@@ -183,6 +183,14 @@ urlpatterns += [
     path('api/scraper/play-url/', play_url_views.get_play_url, name='scraper-play-url'),
 ]
 
+# ID Photo — ghép trang phục ảnh thẻ nhân viên bằng Gemini image editing (BE orchestrate, xem
+# id_photo_views.py — vô trạng thái, không có model/DB riêng ở AI service).
+from video_management.views import id_photo_views
+
+urlpatterns += [
+    path('api/ai/id-photo/merge-outfit/', id_photo_views.merge_outfit, name='id-photo-merge-outfit'),
+]
+
 # Serve media files in development
 from django.conf import settings
 from django.conf.urls.static import static
