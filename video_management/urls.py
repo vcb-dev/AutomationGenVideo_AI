@@ -50,6 +50,7 @@ from .views.voice_views import (
     clone_voice_start_api, clone_voice_job_status_api,
      serve_minimax_tts_file, delete_voice_api,
 )
+from .views.thumbnail_views import thumbnail_templates_api, thumbnail_generate_api
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
     fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
@@ -116,6 +117,7 @@ app_name = 'video_management'
 router = DefaultRouter()
 router.register(r'collections', VideoCollectionViewSet, basename='collection')
 
+# URL patterns để xử lý các request từ client
 urlpatterns = [
     # Health check
     path('health/', HealthCheckView.as_view(), name='health'),
@@ -153,6 +155,9 @@ urlpatterns = [
     # Serve file TTS đã sinh — thay cho /media/minimax_tts/... vốn chỉ hoạt động khi DEBUG=True
     path('voice/tts/file/<str:filename>', serve_minimax_tts_file, name='voice-tts-file'),
 
+    # AI Thumbnail Generator (Tiện ích — layout deterministic, Pillow composite)
+    path('thumbnail/templates/', thumbnail_templates_api, name='thumbnail-templates'),
+    path('thumbnail/generate/', thumbnail_generate_api, name='thumbnail-generate'),
 
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     
