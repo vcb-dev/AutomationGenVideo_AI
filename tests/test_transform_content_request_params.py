@@ -30,9 +30,9 @@ class TransformContentRequestParamsTests(SimpleTestCase):
     def _call(self, **body):
         request = self._post(**body)
         with patch.object(content_generation_views, 'ContentGenerationService') as ServiceCls:
-            ServiceCls.return_value._call_deepseek_raw.return_value = 'output đã viết lại'
+            ServiceCls.return_value._call_deepseek_checked.return_value = 'output đã viết lại'
             response = content_generation_views.transform_content(request)
-            call_kwargs = ServiceCls.return_value._call_deepseek_raw.call_args.kwargs
+            call_kwargs = ServiceCls.return_value._call_deepseek_checked.call_args.kwargs
         return response, call_kwargs
 
     def test_khong_gui_timeout_thi_dung_default_120s_khong_phai_60s(self):

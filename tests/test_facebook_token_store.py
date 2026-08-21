@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from video_management.services import facebook_token_store as store
 
@@ -66,6 +66,9 @@ class FacebookTokenStoreTest(SimpleTestCase):
         self.assertEqual(ket_qua['status'], 'ok')
         req.get.assert_not_called()
 
+    # app id/secret phải cấp qua settings: __init__ của service ném ValueError khi thiếu, nên
+    # không có dòng này thì test đỏ trên CI (không có .env) dù phần token đang đúng.
+    @override_settings(FACEBOOK_APP_ID='test-app-id', FACEBOOK_APP_SECRET='test-app-secret')
     def test_graph_service_dung_ngay_token_vua_gia_han(self):
         """Không có bước này thì gia hạn xong vẫn cào bằng token cũ tới lần restart Django."""
         from video_management.services.facebook_graph_service import FacebookGraphService
