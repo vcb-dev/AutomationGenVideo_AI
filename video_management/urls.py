@@ -55,8 +55,13 @@ from .views.facebook_fetch_views import (
     fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
     fetch_video_transcript,
     fetch_token_refresh,
+    fetch_token_save,
 )
 from .views.facebook_external_fetch_views import fetch_facebook_page_reels
+from .views.instagram_owned_fetch_views import (
+    fetch_owned_account as instagram_fetch_owned_account,
+    fetch_media as instagram_fetch_media,
+)
 from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
@@ -203,6 +208,10 @@ urlpatterns = [
     # native (FacebookOwnedPagesController) — AI không còn route đọc nào cho owned pages.
 
     # Facebook owned-pages — fetch-only (BE sở hữu DB, gọi các endpoint này để lấy data thô)
+    # Instagram nội bộ — đọc qua page token của Facebook, xem instagram_graph_service.py
+    path('instagram/fetch/owned-account/', instagram_fetch_owned_account, name='instagram-fetch-owned-account'),
+    path('instagram/fetch/media/', instagram_fetch_media, name='instagram-fetch-media'),
+
     path('facebook/fetch/managed-pages/', fetch_managed_pages, name='facebook-fetch-managed-pages'),
     path('facebook/fetch/sync/', fetch_page_sync, name='facebook-fetch-sync'),
     path('facebook/fetch/backfill/', fetch_page_backfill, name='facebook-fetch-backfill'),
@@ -213,6 +222,7 @@ urlpatterns = [
     path('facebook/fetch/video-captions/', fetch_video_captions, name='facebook-fetch-video-captions'),
     path('facebook/fetch/video-transcript/', fetch_video_transcript, name='facebook-fetch-video-transcript'),
     path('facebook/fetch/token-refresh/', fetch_token_refresh, name='facebook-fetch-token-refresh'),
+    path('facebook/fetch/token-save/', fetch_token_save, name='facebook-fetch-token-save'),
 
     # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
     # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.
