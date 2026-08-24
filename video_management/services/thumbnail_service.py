@@ -45,9 +45,11 @@ TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
             },
             'text': {
                 'area': (60, 40, 1220, 260),
-                'color': (255, 255, 255, 255),
+                'color_mode': 'auto',   # quan trọng — không fixed white
                 'align': 'center',
                 'max_lines': 3,
+                'font_size_start': 72,
+                'font_size_min': 28,
             },
         },
         #portrait là hình ảnh dọc
@@ -62,9 +64,11 @@ TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
             },
             'text': {
                 'area': (40, 80, 680, 340),
-                'color': (255, 255, 255, 255),
+                'color_mode': 'auto',
                 'align': 'center',
                 'max_lines': 4,
+                'font_size_start': 72,
+                'font_size_min': 28,
             },
         },
     },
@@ -181,20 +185,108 @@ def _wrap_title(
 
     return lines
 
+def _relative_luminance(r: int, g: int, b: int) -> float:
+    """WCAG relative luminance — chọn màu chữ tương phản."""
+
+    def channel(c: float) -> float:
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+# Tính tỷ lệ tương phản giữa 2 màu.
+def _contrast_ratio(l1: float, l2: float) -> float:
+    lighter = max(l1, l2)
+    darker = min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+# Lấy màu trung bình của vùng đặt chữ.
+def _sample_text_area_stats(
+    canvas: Image.Image,
+    text_area: tuple[int, int, int, int],
+) -> tuple[float, int, int, int]:
+    """Trả (avg_luminance, avg_r, avg_g, avg_b) của vùng đặt chữ."""
+    left, top, right, bottom = text_area
+    region = canvas.crop((left, top, right, bottom)).convert('RGB')
+    pixels = list(region.getdata())
+    if not pixels:
+        return 0.5, 128, 128, 128
+
+    rs = [p[0] for p in pixels]
+    gs = [p[1] for p in pixels]
+    bs = [p[2] for p in pixels]
+    avg_r = sum(rs) // len(rs)
+    avg_g = sum(gs) // len(gs)
+    avg_b = sum(bs) // len(bs)
+    avg_lum = _relative_luminance(avg_r, avg_g, avg_b)
+    return avg_lum, avg_r, avg_g, avg_b
+
+# Chọn màu chữ tương phản.
+def _pick_text_style(
+    canvas: Image.Image,
+    text_area: tuple[int, int, int, int],
+    spec: dict[str, Any],
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int], int]:
+    """
+    Chọn fill + stroke + stroke_width sao cho đọc được trên nền THẬT tại vùng chữ.
+    Không làm tối ảnh — chỉ đổi màu/viền chữ.
+    """
+    if spec.get('color_mode') == 'fixed':
+        fill = tuple(spec.get('color', (255, 255, 255, 255)))
+        stroke = (0, 0, 0, 220) if fill[0] > 128 else (255, 255, 255, 200)
+        return fill, stroke, int(spec.get('stroke_width', 3))
+
+    avg_lum, avg_r, avg_g, avg_b = _sample_text_area_stats(canvas, text_area)
+
+    # Ứng viên: trắng, đen, vàng thumbnail (nền xanh/tím), trắng kem (nền tối ấm)
+    candidates: list[tuple[tuple[int, int, int, int], str]] = [
+        ((255, 255, 255, 255), 'white'),
+        ((20, 20, 20, 255), 'black'),
+        ((255, 230, 0, 255), 'yellow'),
+        ((255, 248, 220, 255), 'cream'),
+    ]
+
+    bg_lum = avg_lum
+    best_fill = candidates[0][0]
+    best_ratio = 0.0
+
+    for fill, _name in candidates:
+        text_lum = _relative_luminance(fill[0], fill[1], fill[2])
+        ratio = _contrast_ratio(bg_lum, text_lum)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_fill = fill
+
+    # Nền quá sáng → ưu tiên đen; quá tối → ưu tiên trắng (override nếu contrast sát)
+    if avg_lum > 0.62 and best_fill[0] > 200:
+        best_fill = (20, 20, 20, 255)
+    elif avg_lum < 0.38 and best_fill[0] < 80:
+        best_fill = (255, 255, 255, 255)
+
+    stroke = (0, 0, 0, 220) if best_fill[0] > 128 else (255, 255, 255, 200)
+    stroke_width = 3 if best_ratio < 4.5 else 2  # nền lẫn → viền dày hơn
+
+    logger.info(
+        '[THUMBNAIL] text_area lum=%.2f contrast=%.1f fill=%s stroke_w=%s',
+        avg_lum, best_ratio, 'light' if best_fill[0] > 128 else 'dark', stroke_width,
+    )
+    return best_fill, stroke, stroke_width
+
 # Vẽ tiêu đề lên ảnh
 def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key: str) -> None:
     left, top, right, bottom = spec['area']
     max_width = right - left
     max_height = bottom - top
     align = spec.get('align', 'center')
-    color = tuple(spec.get('color', (255, 255, 255, 255)))
     max_lines = int(spec.get('max_lines', 3))
+    font_size_start = int(spec.get('font_size_start', 72))
+    font_size_min = int(spec.get('font_size_min', 28))
 
-    font_size = 72
+    fill, stroke_fill, stroke_width = _pick_text_style(canvas, spec['area'], spec)
+
+    font_size = font_size_start
     lines: list[str] = []
-    font = _load_font(font_key, font_size)
-
-    while font_size >= 28:
+    while font_size >= font_size_min:
         font = _load_font(font_key, font_size)
         lines = _wrap_title(title, font, max_width, max_lines)
         line_heights = [font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines]
@@ -202,6 +294,8 @@ def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key:
         if total_h <= max_height:
             break
         font_size -= 2
+    else:
+        font = _load_font(font_key, font_size)
 
     draw = ImageDraw.Draw(canvas)
     line_gap = int(font_size * 0.15)
@@ -213,7 +307,10 @@ def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key:
         bbox = font.getbbox(line)
         text_w = bbox[2] - bbox[0]
         x = left + (max_width - text_w) // 2 if align == 'center' else left
-        draw.text((x, y), line, font=font, fill=color)
+        draw.text(
+            (x, y), line, font=font, fill=fill,
+            stroke_width=stroke_width, stroke_fill=stroke_fill,
+        )
         y += line_heights[i] + line_gap
 
 # Tạo lớp nền — Gemini nếu bật, fallback PIL crop.
@@ -280,18 +377,7 @@ def generate_thumbnail(data: ThumbnailInput) -> bytes:
         data.orientation,
         data.enhance_background,
     )
-    if data.enhance_background:
-        # Gemini đã xử lý contrast/vignette — không phủ thêm lớp đen
-        canvas = bg.copy()
-    else:
-        # PIL thuần — vẫn cần overlay để chữ trắng dễ đọc
-        overlay_color = tuple(spec.get('overlay', {}).get('color', (0, 0, 0, 80)))
-        overlay = Image.new('RGBA', size, overlay_color)
-        canvas = Image.alpha_composite(bg, overlay)
-
-    # overlay_color = tuple(spec.get('overlay', {}).get('color', (0, 0, 0, 80)))
-    # overlay = Image.new('RGBA', size, overlay_color)
-    # canvas = Image.alpha_composite(bg, overlay)
+    canvas = bg.copy()
 
     person = _open_rgba(data.person_image_bytes)
     _paste_person(canvas, person, spec['person'])

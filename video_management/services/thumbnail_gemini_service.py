@@ -37,12 +37,13 @@ def _gemini_model_name() -> str:
 def _build_prompt(size: Tuple[int, int], orientation: str) -> str:
     w, h = size
     return (
-        'Enhance this image as a professional YouTube/TikTok thumbnail BACKGROUND only.\n'
+        'Enhance this image as a professional YouTube/TikTok/Facebook thumbnail BACKGROUND only.\n'
         f'- Target aspect ratio: {w}x{h} ({orientation})\n'
         '- Cinematic lighting, vibrant but natural colors\n'
         '- Subtle depth-of-field blur on background\n'
         '- Keep bottom 40% relatively clear (a person PNG will be overlaid)\n'
-        '- Darken top 30% slightly (white title text will be placed there)\n'
+        '- Keep natural brightness and colors — do NOT darken or add vignette\n'
+        '- Preserve original lighting — text contrast will be handled separately\n'
         '- Do NOT add any text, people, logos, or watermarks\n'
         '- Preserve the main subject and mood of the original photo\n'
         '- Output a single full-frame background image'
