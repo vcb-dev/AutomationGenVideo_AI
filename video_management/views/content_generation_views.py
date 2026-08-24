@@ -23,6 +23,11 @@ DEEPSEEK_ERROR_MESSAGES = {
     'network': 'Không kết nối được tới DeepSeek từ máy chủ AI.',
     'parse': 'DeepSeek trả về dữ liệu không đọc được. Thử lại một lượt nữa.',
     'empty': 'DeepSeek trả về nội dung rỗng. Thử lại hoặc diễn đạt kịch bản khác đi.',
+    'token_budget': (
+        'Model đã tiêu hết ngân sách token vào phần suy luận nên không kịp viết câu trả lời. '
+        'Cần giảm độ dài prompt hệ của nhân vật, nâng max_tokens, hoặc đổi sang model không suy '
+        'luận — thử lại y nguyên sẽ ra đúng kết quả này.'
+    ),
     'unknown': 'Chuyển đổi thất bại vì lỗi chưa rõ ở phía DeepSeek. Xem log máy chủ AI để biết chi tiết.',
 }
 

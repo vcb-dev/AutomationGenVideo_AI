@@ -119,3 +119,20 @@ class HeygenUrl(SimpleTestCase):
         status_ep, clone_ep = asyncio.run(_run())
         self.assertEqual(status_ep, 'https://hg.test/v1/video_status.get')
         self.assertEqual(clone_ep, 'https://hg.test/v2/voice/clone')
+
+
+class FacebookGraphUrl(SimpleTestCase):
+    @override_settings(
+        FACEBOOK_GRAPH_BASE_URL='https://fb-mock.test/v25.0',
+        FACEBOOK_APP_ID='app_id',
+        FACEBOOK_APP_SECRET='app_secret',
+    )
+    def test_facebook_graph_service_base_url(self):
+        from video_management.services.facebook_graph_service import FacebookGraphService
+        svc = FacebookGraphService()
+        self.assertEqual(svc.BASE_URL, 'https://fb-mock.test/v25.0')
+
+    @override_settings(FACEBOOK_GRAPH_OAUTH_URL='https://fb-oauth.test/oauth/access_token')
+    def test_facebook_token_store_oauth_url(self):
+        from video_management.services.facebook_token_store import _get_graph_oauth_url
+        self.assertEqual(_get_graph_oauth_url(), 'https://fb-oauth.test/oauth/access_token')
