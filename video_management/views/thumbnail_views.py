@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 VALID_ORIENTATIONS = {'landscape', 'portrait'}
 
+# Parse boolean từ string.
+def _parse_bool(value, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
 # Validate dữ liệu đầu vào
 def _validate_generate_form(data, files):
     title = (data.get('title') or '').strip()
@@ -30,6 +38,8 @@ def _validate_generate_form(data, files):
     person_slug = (data.get('person_slug') or '').strip()
     person_url = (data.get('person_image_url') or '').strip()
     content = files.get('content_image')
+    enhance_background = _parse_bool(data.get('enhance_background'), default=True)
+    
 
     if not title:
         return None, 'Vui lòng nhập tiêu đề'
@@ -50,6 +60,7 @@ def _validate_generate_form(data, files):
         'person_slug': person_slug,
         'person_url': person_url,
         'content_bytes': content.read(),
+        'enhance_background': enhance_background,
     }, None
 
 # API danh sách các template
@@ -89,6 +100,7 @@ def thumbnail_generate_api(request):
                 font_key=payload['font_key'],
                 content_image_bytes=payload['content_bytes'],
                 person_image_bytes=person_bytes,
+                enhance_background=payload['enhance_background'],
             )
         )
     except ValueError as exc:

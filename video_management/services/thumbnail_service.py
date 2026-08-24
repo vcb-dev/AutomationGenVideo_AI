@@ -216,6 +216,51 @@ def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key:
         draw.text((x, y), line, font=font, fill=color)
         y += line_heights[i] + line_gap
 
+# Tạo lớp nền — Gemini nếu bật, fallback PIL crop.
+def _build_background(
+    content_image_bytes: bytes,
+    size: Tuple[int, int],
+    spec: dict[str, Any],
+    orientation: Orientation,
+    enhance: bool,
+) -> Image.Image:
+    """Tạo lớp nền — Gemini nếu bật, fallback PIL crop."""
+    content = _open_rgba(content_image_bytes).convert('RGB')
+
+    if enhance:
+        try:
+            from video_management.services.thumbnail_gemini_service import (
+                ThumbnailGeminiError,
+                enhance_background_with_gemini,
+            )
+            logger.info('[THUMBNAIL] Gemini enhance background ON')
+            return enhance_background_with_gemini(
+                content_image_bytes,
+                size,
+                orientation,
+            ).convert('RGBA')
+        except ThumbnailGeminiError as exc:
+            logger.warning('[THUMBNAIL] Gemini fallback PIL: %s', exc)
+        except Exception:
+            logger.warning('[THUMBNAIL] Gemini fallback PIL', exc_info=True)
+
+    bg = _fit_cover(content, size).convert('RGBA')
+    blur = int(spec.get('content_bg', {}).get('blur', 0))
+    if blur > 0:
+        bg = bg.filter(ImageFilter.GaussianBlur(blur))
+    return bg
+
+# Post polish: sharpen + saturation nhẹ — free, không tốn API.
+def _post_polish(canvas: Image.Image) -> Image.Image:
+    """Sharpen + saturation nhẹ — free, không tốn API."""
+    from PIL import ImageEnhance
+
+    rgb = canvas.convert('RGB')
+    rgb = ImageEnhance.Color(rgb).enhance(1.08)
+    rgb = ImageEnhance.Contrast(rgb).enhance(1.05)
+    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.2, percent=80, threshold=3))
+    return rgb.convert('RGBA')
+
 # Tạo thumbnail từ dữ liệu đầu vào
 def generate_thumbnail(data: ThumbnailInput) -> bytes:
     if data.template not in TEMPLATES:
@@ -228,21 +273,31 @@ def generate_thumbnail(data: ThumbnailInput) -> bytes:
     spec = TEMPLATES[data.template][data.orientation]
     size = tuple(spec['size'])
 
-    content = _open_rgba(data.content_image_bytes).convert('RGB')
-    bg = _fit_cover(content, size).convert('RGBA')
+    bg = _build_background(
+        data.content_image_bytes,
+        size,
+        spec,
+        data.orientation,
+        data.enhance_background,
+    )
+    if data.enhance_background:
+        # Gemini đã xử lý contrast/vignette — không phủ thêm lớp đen
+        canvas = bg.copy()
+    else:
+        # PIL thuần — vẫn cần overlay để chữ trắng dễ đọc
+        overlay_color = tuple(spec.get('overlay', {}).get('color', (0, 0, 0, 80)))
+        overlay = Image.new('RGBA', size, overlay_color)
+        canvas = Image.alpha_composite(bg, overlay)
 
-    blur = int(spec.get('content_bg', {}).get('blur', 0))
-    if blur > 0:
-        bg = bg.filter(ImageFilter.GaussianBlur(blur))
-
-    overlay_color = tuple(spec.get('overlay', {}).get('color', (0, 0, 0, 80)))
-    overlay = Image.new('RGBA', size, overlay_color)
-    canvas = Image.alpha_composite(bg, overlay)
+    # overlay_color = tuple(spec.get('overlay', {}).get('color', (0, 0, 0, 80)))
+    # overlay = Image.new('RGBA', size, overlay_color)
+    # canvas = Image.alpha_composite(bg, overlay)
 
     person = _open_rgba(data.person_image_bytes)
     _paste_person(canvas, person, spec['person'])
     _draw_title(canvas, data.title, spec['text'], data.font_key)
 
+    canvas = _post_polish(canvas)
     out = io.BytesIO()
     canvas.convert('RGB').save(out, format='PNG', optimize=True)
     return out.getvalue()
