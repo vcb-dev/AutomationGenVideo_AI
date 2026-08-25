@@ -350,13 +350,14 @@ def voice_tts_api(request):
         pitch = int(request.data.get('pitch', 0))
         volume = int(request.data.get('volume', 100))
         language = request.data.get('language') or None
+        model = request.data.get('model') or None
 
         if not text:
             return Response({'error': 'text is required'}, status=status.HTTP_400_BAD_REQUEST)
         if not voice_id:
             return Response({'error': 'voice_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        logger.info(f"🎤 Minimax TTS Request: voice={voice_id}, text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}")
+        logger.info(f"🎤 Minimax TTS Request: voice={voice_id}, model={model}, text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}")
 
         # Check the voice belongs to Minimax before forwarding — a HeyGen/ElevenLabs
         # voice_id would otherwise be sent straight to Minimax and fail with an opaque error.
@@ -388,7 +389,8 @@ def voice_tts_api(request):
             vol=vol_minimax,
             pitch=pitch,
             language_boost=language,
-            output_path=output_path
+            output_path=output_path,
+            model=model,
         )
         
         # Generate the public URL to serve this media file. Nếu vì lý do nào đó
@@ -416,6 +418,8 @@ def voice_tts_api(request):
                 import base64
                 audio_base64 = base64.b64encode(f.read()).decode('ascii')
 
+        usage_chars = extra_info.get('usage_characters') or extra_info.get('character_count') or len(text)
+
         return Response({
             'success': True,
             'audio_url': audio_url,
@@ -423,7 +427,8 @@ def voice_tts_api(request):
             'duration': result.get('duration', 0),
             # Số ký tự MiniMax thực tính phí (khớp đơn vị "điểm âm thanh" của gói) —
             # BE dùng để ghi log tiêu dùng theo user.
-            'usage_characters': extra_info.get('usage_characters', 0),
+            'usage_characters': int(usage_chars),
+            'model': model or tts_service.model,
         }, status=status.HTTP_200_OK)
         
     except Exception as e:

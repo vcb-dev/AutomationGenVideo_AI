@@ -51,8 +51,29 @@ def fetch_facebook_page_reels(request):
         first_reel = reels_raw[0] if reels_raw else {}
         parsed_profile = parse_fanpage_profile(profile, first_reel)
 
-    # Fallback: Nếu RapidAPI chưa cấu hình hoặc tạm thời không trả dữ liệu,
-    # trích xuất thông tin cơ bản từ URL để tạo kênh trong hệ thống không bị crash 500
+    # Fallback Cấp 1: Kiểm tra trong FacebookPageCache DB nếu RapidAPI không trả về profile
+    if not parsed_profile:
+        import re
+        m = re.search(r'facebook\.com/([^/?&#]+)', page_url)
+        handle = m.group(1) if m else ''
+        if handle and handle not in ('profile.php', 'watch', 'reel'):
+            try:
+                from ..models import FacebookPageCache
+                cached = FacebookPageCache.objects.filter(username=handle).first()
+                if cached:
+                    parsed_profile = {
+                        'profile_id': cached.username,
+                        'name': cached.page_name or handle,
+                        'page_url': page_url,
+                        'handle': handle,
+                        'avatar_url': cached.avatar_url or '',
+                        'is_verified': False,
+                        'followers_count': int(cached.followers_count or 0),
+                    }
+            except Exception:
+                pass
+
+    # Fallback Cấp 2: Nếu chưa có trong Cache, trích xuất thông tin cơ bản từ URL
     if not parsed_profile:
         import re
         m = re.search(r'facebook\.com/([^/?&#]+)', page_url)
@@ -73,4 +94,6 @@ def fetch_facebook_page_reels(request):
         'profile_api_ok': profile is not None or parsed_profile is not None,
         'profile': parsed_profile,
         'reels': parsed_reels,
+        'fallback_used': profile is None,
     })
+

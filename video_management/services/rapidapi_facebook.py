@@ -28,69 +28,147 @@ def _rapidapi_reels_url() -> str:
     return f"https://{_rapidapi_host()}/get_facebook_reels_details"
 
 
-def _headers() -> Optional[dict]:
-    api_key = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY', '')
-    if not api_key:
+def _get_api_keys() -> list:
+    keys = []
+    primary = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY', '') or ''
+    backup = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY_BACKUP', '') or ''
+    for raw in [primary, backup]:
+        for k in raw.split(','):
+            cleaned = k.strip()
+            if cleaned and cleaned not in keys:
+                keys.append(cleaned)
+    return keys
+
+
+def _request_with_keys(url: str, params: dict, timeout: int = 30) -> Optional[requests.Response]:
+    """Thực hiện HTTP GET với cơ chế tự động xoay vòng key khi gặp 429 hoặc hết hạn mức."""
+    keys = _get_api_keys()
+    if not keys:
+        logger.warning("[FB-RAPIDAPI] RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
         return None
-    return {
-        "x-rapidapi-key": api_key,
-        "x-rapidapi-host": _rapidapi_host(),
-        "Content-Type": "application/json",
-    }
+
+    host = _rapidapi_host()
+    for idx, key in enumerate(keys):
+        headers = {
+            "x-rapidapi-key": key,
+            "x-rapidapi-host": host,
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+            if resp.status_code == 429 or "exceeded the MONTHLY quota" in resp.text:
+                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} ({key[:8]}...) hết hạn mức (429). Đang chuyển sang key tiếp theo...")
+                continue
+            if resp.status_code == 403 and "not subscribed" in resp.text:
+                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} ({key[:8]}...) chưa subscribe API. Đang chuyển sang key tiếp theo...")
+                continue
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            if idx < len(keys) - 1:
+                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} gặp lỗi ({e}). Đang thử key tiếp theo...")
+            else:
+                logger.error(f"[FB-RAPIDAPI] Tất cả các RapidAPI key đều thất bại: {e}")
+    return None
+
+
+def _is_scraper3(host: str) -> bool:
+    return 'facebook-scraper3' in host
 
 
 # ── Profile detail ────────────────────────────────────────────────────────────
 
 def fetch_page_profile(page_url: str) -> Optional[dict]:
     """Gọi profile detail API, trả về dict page hoặc None nếu lỗi."""
-    headers = _headers()
-    if not headers:
-        logger.warning(f"[FB-PROFILE] {page_url}: RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
+    host = _rapidapi_host()
+    if _is_scraper3(host):
+        url = f"https://{host}/page/details"
+        params = {"url": page_url}
+        resp = _request_with_keys(url, params=params, timeout=30)
+        if not resp:
+            return None
+        try:
+            data = resp.json()
+            res = data.get("results")
+            if res and isinstance(res, dict):
+                return {
+                    "title": res.get("name"),
+                    "ad_page_id": str(res.get("page_id") or ""),
+                    "url": res.get("url") or page_url,
+                    "image": res.get("image") or "",
+                    "followers_count": res.get("followers") or 0,
+                    "reels_page_id": res.get("reels_page_id") or "",
+                }
+            return None
+        except Exception as e:
+            logger.warning(f"[FB-PROFILE-SCRAPER3] {page_url}: {e}")
+            return None
+
+    url = f"https://{host}/get_facebook_pages_details_from_link"
+    params = {
+        "link": page_url,
+        "exact_followers_count": "true",
+        "show_verified_badge": "false",
+        "proxy_country": "us",
+        "page_section": "default",
+    }
+    resp = _request_with_keys(url, params=params, timeout=30)
+    if not resp:
         return None
 
     try:
-        resp = requests.get(
-            _rapidapi_profile_url(),
-            headers=headers,
-            params={
-                "link": page_url,
-                "exact_followers_count": "true",
-                "show_verified_badge": "false",
-                "proxy_country": "us",
-                "page_section": "default",
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list) and data:
             return data[0]
         return None
     except Exception as e:
-        logger.warning(f"[FB-PROFILE] {page_url}: {e}")
+        logger.warning(f"[FB-PROFILE-API4] {page_url}: {e}")
         return None
 
 
 # ── Reels fetch (có pagination) ───────────────────────────────────────────────
 
-def _fetch_reels_page(page_url: str, cursor: Optional[str] = None) -> tuple:
+def _fetch_reels_page(page_url: str, cursor: Optional[str] = None, reels_page_id: Optional[str] = None) -> tuple:
     """Fetch 1 trang reels. Returns (reels_list, next_cursor, has_next)."""
-    headers = _headers()
-    if not headers:
-        logger.warning(f"[FB-REELS] {page_url}: RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
-        return [], None, False
+    host = _rapidapi_host()
+    if _is_scraper3(host):
+        url = f"https://{host}/page/reels"
+        params = {}
+        if reels_page_id:
+            params["reels_page_id"] = reels_page_id
+        else:
+            prof = fetch_page_profile(page_url)
+            r_id = (prof or {}).get("reels_page_id")
+            if r_id:
+                params["reels_page_id"] = r_id
+            else:
+                params["url"] = page_url
+        if cursor:
+            params["cursor"] = cursor
 
+        resp = _request_with_keys(url, params=params, timeout=30)
+        if not resp:
+            return [], None, False
+        try:
+            data = resp.json()
+            reels = data.get("results", [])
+            next_cursor = data.get("cursor")
+            has_next = bool(next_cursor)
+            return reels, next_cursor, has_next
+        except Exception as e:
+            logger.warning(f"[FB-REELS-SCRAPER3] {page_url}: {e}")
+            return [], None, False
+
+    url = f"https://{host}/get_facebook_reels_details"
     params = {"link": page_url}
     if cursor:
         params["cursor"] = cursor
+
+    resp = _request_with_keys(url, params=params, timeout=30)
+    if not resp:
+        return [], None, False
+
     try:
-        resp = requests.get(
-            _rapidapi_reels_url(),
-            headers=headers,
-            params=params,
-            timeout=30,
-        )
-        resp.raise_for_status()
         inner = resp.json().get("data", {})
         reels = inner.get("reels", [])
         page_info = inner.get("page_info", {})
@@ -98,7 +176,7 @@ def _fetch_reels_page(page_url: str, cursor: Optional[str] = None) -> tuple:
         next_cursor = page_info.get("end_cursor") if has_next else None
         return reels, next_cursor, has_next
     except Exception as e:
-        logger.warning(f"[FB-REELS] {page_url}: {e}")
+        logger.warning(f"[FB-REELS-API4] {page_url}: {e}")
         return [], None, False
 
 
@@ -119,9 +197,14 @@ def fetch_reels_only(
 
     all_reels: list = []
     cursor: Optional[str] = None
+    reels_page_id: Optional[str] = None
+
+    if _is_scraper3(_rapidapi_host()):
+        prof = fetch_page_profile(page_url)
+        reels_page_id = (prof or {}).get("reels_page_id")
 
     while len(all_reels) < num_of_posts:
-        batch, next_cursor, has_next = _fetch_reels_page(page_url, cursor)
+        batch, next_cursor, has_next = _fetch_reels_page(page_url, cursor, reels_page_id)
         if not batch:
             break
 
