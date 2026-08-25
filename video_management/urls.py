@@ -50,7 +50,11 @@ from .views.voice_views import (
     clone_voice_start_api, clone_voice_job_status_api,
      serve_minimax_tts_file, delete_voice_api,
 )
-from .views.thumbnail_views import thumbnail_templates_api, thumbnail_generate_api
+from .views.thumbnail_views import (
+    thumbnail_templates_api, 
+    thumbnail_generate_api, 
+    thumbnail_generate_content_api
+)
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
     fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
@@ -306,6 +310,11 @@ urlpatterns = [
     path('checklist/submit/', ChecklistSubmitView.as_view(), name='checklist-submit'),
     path('checklist/settings/', ChecklistSettingsView.as_view(), name='checklist-settings'),
     path('checklist/status/', ChecklistReportingStatusView.as_view(), name='checklist-status'),
+
+    # AI Thumbnail Generator (Tiện ích — layout deterministic, Pillow composite)
+    path('thumbnail/templates/', thumbnail_templates_api, name='thumbnail-templates'),
+    path('thumbnail/generate/', thumbnail_generate_api, name='thumbnail-generate'),
+    path('thumbnail/generate-content/', thumbnail_generate_content_api, name='thumbnail-generate-content'),
     
     # Collections (router URLs)
     path('', include(router.urls)),

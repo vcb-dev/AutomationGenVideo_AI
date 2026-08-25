@@ -13,6 +13,10 @@ from video_management.services.thumbnail_gemini_service import (
     enhance_background_with_gemini,
 )
 
+from video_management.services.thumbnail_gemini_service import (
+    generate_content_with_gemini,
+)
+
 
 def _fake_png_bytes() -> bytes:
     buf = io.BytesIO()
@@ -68,3 +72,25 @@ class ThumbnailGeminiServiceTests(SimpleTestCase):
             result = enhance_background_with_gemini(_fake_png_bytes(), (1280, 720), 'landscape')
 
         self.assertEqual(result.size, (1280, 720))
+    # Kiểm tra generate_content_with_gemini trả về ảnh đúng kích thước target (1280x720 landscape)
+    @patch('google.generativeai.GenerativeModel')
+    @patch('google.generativeai.configure')
+    def test_generate_content_returns_correct_size(self, _mock_configure, mock_generative_model):
+        out_png = io.BytesIO()
+        Image.new('RGB', (1600, 900), (0, 128, 255)).save(out_png, format='PNG')
+        mock_model = MagicMock()
+        mock_model.generate_content.return_value = _fake_gemini_response(out_png.getvalue())
+        mock_generative_model.return_value = mock_model
+        with patch(
+            'video_management.services.thumbnail_gemini_service._gemini_api_key',
+            return_value='test-key',
+        ):
+            result = generate_content_with_gemini(
+                prompt='Phòng gym hiện đại, ánh sáng vàng',
+                orientation='landscape',
+                reference_images=[_fake_png_bytes()],
+            )
+        self.assertEqual(result.size, (1280, 720))
+        # Kiểm tra gọi Gemini có prompt + 1 ref image
+        call_parts = mock_model.generate_content.call_args[0][0]
+        self.assertGreaterEqual(len(call_parts), 2)

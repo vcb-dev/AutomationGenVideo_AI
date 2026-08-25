@@ -11,8 +11,17 @@ from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = 'gemini-2.0-flash-preview-image-generation'
+DEFAULT_MODEL = 'gemini-2.5-flash-image'
 DEFAULT_TIMEOUT_S = 45
+MAX_CONTENT_PROMPT_LEN = 2000
+MAX_REFERENCE_IMAGES = 3
+# Kích thước template simple_v1 — đồng bộ với thumbnail_service.TEMPLATES
+TEMPLATE_SIZES: dict[str, dict[str, tuple[int, int]]] = {
+    'simple_v1': {
+        'landscape': (1280, 720),
+        'portrait': (720, 1280),
+    },
+}
 
 
 class ThumbnailGeminiError(Exception):
@@ -32,6 +41,88 @@ def _gemini_model_name() -> str:
         or getattr(settings, 'GEMINI_THUMBNAIL_MODEL', None)
         or DEFAULT_MODEL
     ).strip()
+
+def _detect_mime(data: bytes) -> str:
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/jpeg'
+
+def _build_generate_content_prompt(
+    user_prompt: str,
+    size: tuple[int, int],
+    orientation: str,
+    has_references: bool,
+) -> str:
+    w, h = size
+    ref_hint = (
+        'Use the attached reference image(s) for style, color palette, subject, or composition guidance.\n'
+        if has_references
+        else ''
+    )
+    return (
+        'Generate a professional YouTube/TikTok/Facebook thumbnail BACKGROUND image.\n'
+        f'- Target aspect ratio: {w}x{h} ({orientation})\n'
+        f'{ref_hint}'
+        '- Cinematic lighting, vibrant but natural colors\n'
+        '- Do NOT add any text, people, faces, logos, or watermarks\n'
+        '- Output a single full-frame background image\n'
+        f'User request:\n{user_prompt.strip()}'
+    )
+
+def generate_content_with_gemini(
+    prompt: str,
+    orientation: str,
+    reference_images: list[bytes] | None = None,
+    template: str = 'simple_v1',
+) -> Image.Image:
+    """
+    Tạo ảnh nội dung từ prompt (+ ảnh tham chiếu optional).
+    Trả PIL Image RGB đúng kích thước template.
+    """
+    import google.generativeai as genai
+    from google.api_core import exceptions as google_api_exceptions
+    user_prompt = (prompt or '').strip()
+    if not user_prompt:
+        raise ThumbnailGeminiError('Vui lòng nhập prompt mô tả ảnh nội dung')
+    if len(user_prompt) > MAX_CONTENT_PROMPT_LEN:
+        raise ThumbnailGeminiError(f'Prompt tối đa {MAX_CONTENT_PROMPT_LEN} ký tự')
+    orientation = (orientation or 'landscape').strip().lower()
+    if orientation not in ('landscape', 'portrait'):
+        raise ThumbnailGeminiError('Layout phải là landscape hoặc portrait')
+    sizes = TEMPLATE_SIZES.get(template)
+    if not sizes or orientation not in sizes:
+        raise ThumbnailGeminiError(f'Template không hỗ trợ: {template}/{orientation}')
+    size = sizes[orientation]
+    refs = reference_images or []
+    if len(refs) > MAX_REFERENCE_IMAGES:
+        raise ThumbnailGeminiError(f'Tối đa {MAX_REFERENCE_IMAGES} ảnh tham chiếu')
+    api_key = _gemini_api_key()
+    model_name = _gemini_model_name()
+    timeout_s = int(os.getenv('GEMINI_THUMBNAIL_TIMEOUT', DEFAULT_TIMEOUT_S))
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+    system_prompt = _build_generate_content_prompt(user_prompt, size, orientation, bool(refs))
+    parts: list = [system_prompt]
+    for ref_bytes in refs:
+        parts.append({'mime_type': _detect_mime(ref_bytes), 'data': ref_bytes})
+    logger.info(
+        '[THUMBNAIL-GEMINI] generate-content model=%s size=%s refs=%s',
+        model_name, size, len(refs),
+    )
+    try:
+        response = model.generate_content(
+            parts,
+            request_options={'timeout': timeout_s},
+        )
+    except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as exc:
+        raise ThumbnailGeminiError(f'Gemini timeout ({timeout_s}s)') from exc
+    except Exception as exc:
+        raise ThumbnailGeminiError(f'Gemini request failed: {exc}') from exc
+    raw_bytes = _extract_image_bytes(response)
+    img = Image.open(io.BytesIO(raw_bytes))
+    return _fit_to_size(img, size)
 
 # Gemini prompt
 def _build_prompt(size: Tuple[int, int], orientation: str) -> str:
