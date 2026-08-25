@@ -27,6 +27,9 @@ FONTS_DIR = os.path.join(ASSETS_DIR, 'fonts')
 
 MAX_TITLE_LEN = 200
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
+FONT_SIZE_MIN = 28
+FONT_SIZE_MAX = 120
+HEX_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
 DOWNLOAD_TIMEOUT_S = 20
 PERSON_SLUG_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
@@ -88,6 +91,30 @@ class ThumbnailInput:
     content_image_bytes: bytes
     person_image_bytes: bytes
     enhance_background: bool = False
+    font_size: int | None = None
+    text_color: str | None = None
+
+
+def parse_hex_color(hex_color: str) -> tuple[int, int, int, int]:
+    """Chuyển #RRGGBB → RGBA tuple cho PIL."""
+    hex_color = (hex_color or '').strip()
+    if not HEX_COLOR_RE.fullmatch(hex_color):
+        raise ValueError('Màu chữ phải là mã hex dạng #RRGGBB')
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    return r, g, b, 255
+
+
+def build_text_spec(base: dict[str, Any], font_size: int | None, text_color: str | None) -> dict[str, Any]:
+    """Merge override user vào spec text của template."""
+    spec = dict(base)
+    if font_size is not None:
+        spec['font_size_start'] = font_size
+    if text_color:
+        spec['color_mode'] = 'fixed'
+        spec['color'] = parse_hex_color(text_color)
+    return spec
 
 # Danh sách các template và fonts
 def list_templates() -> dict[str, list[dict[str, str | list[str]]]]:
@@ -381,7 +408,8 @@ def generate_thumbnail(data: ThumbnailInput) -> bytes:
 
     person = _open_rgba(data.person_image_bytes)
     _paste_person(canvas, person, spec['person'])
-    _draw_title(canvas, data.title, spec['text'], data.font_key)
+    text_spec = build_text_spec(spec['text'], data.font_size, data.text_color)
+    _draw_title(canvas, data.title, text_spec, data.font_key)
 
     canvas = _post_polish(canvas)
     out = io.BytesIO()

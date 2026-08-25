@@ -8,6 +8,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from video_management.services.thumbnail_service import (
+    FONT_SIZE_MAX,
+    FONT_SIZE_MIN,
     MAX_CONTENT_BYTES,
     MAX_TITLE_LEN,
     ThumbnailInput,
@@ -39,7 +41,8 @@ def _validate_generate_form(data, files):
     person_url = (data.get('person_image_url') or '').strip()
     content = files.get('content_image')
     enhance_background = _parse_bool(data.get('enhance_background'), default=True)
-    
+    font_size_raw = (data.get('font_size') or '').strip()
+    text_color = (data.get('text_color') or '').strip()
 
     if not title:
         return None, 'Vui lòng nhập tiêu đề'
@@ -52,6 +55,18 @@ def _validate_generate_form(data, files):
     if content.size > MAX_CONTENT_BYTES:
         return None, f'Ảnh nội dung tối đa {MAX_CONTENT_BYTES // (1024 * 1024)}MB'
 
+    font_size = None
+    if font_size_raw:
+        try:
+            font_size = int(font_size_raw)
+        except ValueError:
+            return None, f'Cỡ chữ phải là số nguyên từ {FONT_SIZE_MIN} đến {FONT_SIZE_MAX}'
+        if not FONT_SIZE_MIN <= font_size <= FONT_SIZE_MAX:
+            return None, f'Cỡ chữ phải từ {FONT_SIZE_MIN} đến {FONT_SIZE_MAX}'
+
+    if text_color and not text_color.startswith('#'):
+        text_color = f'#{text_color}'
+
     return {
         'title': title,
         'template': template,
@@ -61,6 +76,8 @@ def _validate_generate_form(data, files):
         'person_url': person_url,
         'content_bytes': content.read(),
         'enhance_background': enhance_background,
+        'font_size': font_size,
+        'text_color': text_color or None,
     }, None
 
 # API danh sách các template
@@ -101,6 +118,8 @@ def thumbnail_generate_api(request):
                 content_image_bytes=payload['content_bytes'],
                 person_image_bytes=person_bytes,
                 enhance_background=payload['enhance_background'],
+                font_size=payload['font_size'],
+                text_color=payload['text_color'],
             )
         )
     except ValueError as exc:

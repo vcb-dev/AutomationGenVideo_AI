@@ -10,10 +10,12 @@ from PIL import Image
 
 from video_management.services.thumbnail_service import (
     ThumbnailInput,
+    build_text_spec,
     download_image_bytes,
     generate_thumbnail,
     list_templates,
     load_person_bytes_by_slug,
+    parse_hex_color,
 )
 
 
@@ -32,6 +34,37 @@ def _transparent_person_png(size: tuple[int, int] = (200, 300)) -> bytes:
 
 
 class ThumbnailServiceTests(SimpleTestCase):
+    # Kiểm tra parse hex color hợp lệ / không hợp lệ
+    def test_parse_hex_color(self):
+        self.assertEqual(parse_hex_color('#FF0000'), (255, 0, 0, 255))
+        with self.assertRaises(ValueError):
+            parse_hex_color('red')
+
+    # Kiểm tra build_text_spec merge override
+    def test_build_text_spec_overrides(self):
+        base = {'color_mode': 'auto', 'font_size_start': 72}
+        spec = build_text_spec(base, 96, '#00FF00')
+        self.assertEqual(spec['font_size_start'], 96)
+        self.assertEqual(spec['color_mode'], 'fixed')
+        self.assertEqual(spec['color'], (0, 255, 0, 255))
+
+    # Kiểm tra generate với cỡ chữ và màu cố định
+    def test_generate_with_custom_font_size_and_color(self):
+        png = generate_thumbnail(
+            ThumbnailInput(
+                title='Custom style',
+                template='simple_v1',
+                orientation='landscape',
+                font_key='bevietnam_bold',
+                content_image_bytes=_solid_png((30, 120, 200)),
+                person_image_bytes=_transparent_person_png(),
+                font_size=96,
+                text_color='#FF0000',
+            )
+        )
+        img = Image.open(io.BytesIO(png))
+        self.assertEqual(img.size, (1280, 720))
+
     # Kiểm tra danh sách template chỉ trả về các font thực sự tồn tại trên hệ thống
     def test_list_templates_only_includes_existing_fonts(self):
         data = list_templates()
