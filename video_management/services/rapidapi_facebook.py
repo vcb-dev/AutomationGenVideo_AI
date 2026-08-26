@@ -28,16 +28,28 @@ def _rapidapi_reels_url() -> str:
     return f"https://{_rapidapi_host()}/get_facebook_reels_details"
 
 
-def _get_api_keys() -> list:
-    keys = []
-    primary = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY', '') or ''
-    backup = getattr(settings, 'RAPIDAPI_FACEBOOK_KEY_BACKUP', '') or ''
-    for raw in [primary, backup]:
-        for k in raw.split(','):
-            cleaned = k.strip()
-            if cleaned and cleaned not in keys:
-                keys.append(cleaned)
-    return keys
+def _get_api_key() -> str:
+    """Key RapidAPI duy nhất. Hết hạn mức thì thay trực tiếp trên Railway.
+
+    Bỏ cơ chế xoay vòng nhiều key: vận hành thực tế đơn giản hơn khi chỉ có một key, và
+    xoay vòng che mất thời điểm cần đi thay — log báo "chuyển sang key tiếp theo" nghe như
+    đã tự xử lý xong.
+
+    Biến môi trường cũ có thể còn nhiều key nối bằng dấu phẩy. Lấy nguyên chuỗi sẽ gửi
+    header "key1,key2,key3" và hỏng mọi request với lỗi 401/403 chung chung rất khó lần ra,
+    nên lấy key đầu và cảnh báo để người trực biết mà dọn lại biến môi trường.
+    """
+    raw = (getattr(settings, 'RAPIDAPI_FACEBOOK_KEY', '') or '').strip()
+    if ',' not in raw:
+        return raw
+
+    first = raw.split(',')[0].strip()
+    logger.warning(
+        "[FB-RAPIDAPI] RAPIDAPI_FACEBOOK_KEY đang chứa nhiều key nối bằng dấu phẩy. "
+        "Hệ thống chỉ dùng key đầu tiên — hãy sửa lại biến môi trường trên Railway để "
+        "chỉ còn một key."
+    )
+    return first
 
 
 def _is_soft_error_body(resp: requests.Response) -> bool:
@@ -56,46 +68,53 @@ def _is_soft_error_body(resp: requests.Response) -> bool:
     return isinstance(body, dict) and body.get('success') is False
 
 
-def _request_with_keys(url: str, params: dict, timeout: int = 30) -> Optional[requests.Response]:
-    """Thực hiện HTTP GET với cơ chế tự động xoay vòng key khi gặp 429 hoặc hết hạn mức."""
-    keys = _get_api_keys()
-    if not keys:
+def _request_with_key(url: str, params: dict, timeout: int = 30) -> Optional[requests.Response]:
+    """Gọi RapidAPI bằng key duy nhất. Trả None kèm log nêu rõ nguyên nhân khi hỏng.
+
+    Không thử lại: chỉ có một key nên thử lại chỉ tốn thêm lượt gọi mà kết quả không đổi.
+    Đổi lại, log phải nói rõ PHẢI LÀM GÌ — đây là điểm dừng chứ không còn key dự phòng.
+    """
+    api_key = _get_api_key()
+    if not api_key:
         logger.warning("[FB-RAPIDAPI] RAPIDAPI_FACEBOOK_KEY chưa được cấu hình.")
         return None
 
-    host = _rapidapi_host()
-    for idx, key in enumerate(keys):
-        headers = {
-            "x-rapidapi-key": key,
-            "x-rapidapi-host": host,
-            "Content-Type": "application/json",
-        }
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-            if resp.status_code == 429 or "exceeded the MONTHLY quota" in resp.text:
-                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} ({key[:8]}...) hết hạn mức (429). Đang chuyển sang key tiếp theo...")
-                continue
-            if resp.status_code == 403 and "not subscribed" in resp.text:
-                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} ({key[:8]}...) chưa subscribe API. Đang chuyển sang key tiếp theo...")
-                continue
-            # api4 báo lỗi bằng HTTP 209 + {"success": false} — 2xx nên raise_for_status()
-            # bỏ qua, và caller chỉ thấy payload sai kiểu rồi trả None. Nếu không bắt ở đây
-            # thì key bị chặn ('Access conflict') sẽ im lặng làm hỏng lượt cào mà không
-            # xoay sang key còn tốt.
-            if _is_soft_error_body(resp):
-                logger.warning(
-                    f"[FB-RAPIDAPI] Key #{idx + 1} ({key[:8]}...) bị nhà cung cấp từ chối "
-                    f"(HTTP {resp.status_code}): {resp.text[:160]}. Đang chuyển sang key tiếp theo..."
-                )
-                continue
-            resp.raise_for_status()
-            return resp
-        except Exception as e:
-            if idx < len(keys) - 1:
-                logger.warning(f"[FB-RAPIDAPI] Key #{idx + 1} gặp lỗi ({e}). Đang thử key tiếp theo...")
-            else:
-                logger.error(f"[FB-RAPIDAPI] Tất cả các RapidAPI key đều thất bại: {e}")
-    return None
+    headers = {
+        "x-rapidapi-key": api_key,
+        "x-rapidapi-host": _rapidapi_host(),
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+
+        if resp.status_code == 429 or "exceeded the MONTHLY quota" in resp.text:
+            logger.error(
+                "[FB-RAPIDAPI] Key đã HẾT HẠN MỨC tháng. Vào Railway thay "
+                "RAPIDAPI_FACEBOOK_KEY bằng key mới rồi restart service."
+            )
+            return None
+
+        if resp.status_code == 403 and "not subscribed" in resp.text:
+            logger.error(
+                "[FB-RAPIDAPI] Key CHƯA SUBSCRIBE API này. Vào RapidAPI subscribe cho đúng "
+                f"host '{_rapidapi_host()}', hoặc thay key khác trên Railway."
+            )
+            return None
+
+        # api4 báo lỗi bằng HTTP 209 + {"success": false} — 2xx nên raise_for_status() bỏ
+        # qua, và caller chỉ thấy payload sai kiểu rồi trả None mà không rõ vì sao.
+        if _is_soft_error_body(resp):
+            logger.error(
+                f"[FB-RAPIDAPI] Nhà cung cấp từ chối (HTTP {resp.status_code}): "
+                f"{resp.text[:160]}"
+            )
+            return None
+
+        resp.raise_for_status()
+        return resp
+    except Exception as e:
+        logger.error(f"[FB-RAPIDAPI] Gọi API thất bại: {e}")
+        return None
 
 
 def _is_scraper3(host: str) -> bool:
@@ -127,7 +146,7 @@ def fetch_page_profile(page_url: str) -> Optional[dict]:
     if _is_scraper3(host):
         url = f"https://{host}/page/details"
         params = {"url": page_url}
-        resp = _request_with_keys(url, params=params, timeout=30)
+        resp = _request_with_key(url, params=params, timeout=30)
         if not resp:
             return None
         try:
@@ -155,7 +174,7 @@ def fetch_page_profile(page_url: str) -> Optional[dict]:
         "proxy_country": "us",
         "page_section": "default",
     }
-    resp = _request_with_keys(url, params=params, timeout=30)
+    resp = _request_with_key(url, params=params, timeout=30)
     if not resp:
         return None
 
@@ -191,7 +210,7 @@ def _fetch_reels_page(page_url: str, cursor: Optional[str] = None, reels_page_id
         if cursor:
             params["cursor"] = cursor
 
-        resp = _request_with_keys(url, params=params, timeout=30)
+        resp = _request_with_key(url, params=params, timeout=30)
         if not resp:
             return [], None, False
         try:
@@ -209,7 +228,7 @@ def _fetch_reels_page(page_url: str, cursor: Optional[str] = None, reels_page_id
     if cursor:
         params["cursor"] = cursor
 
-    resp = _request_with_keys(url, params=params, timeout=30)
+    resp = _request_with_key(url, params=params, timeout=30)
     if not resp:
         return [], None, False
 
