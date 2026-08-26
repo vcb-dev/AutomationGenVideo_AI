@@ -323,6 +323,8 @@ CORS_ALLOW_HEADERS = [
 # ==========================================
 # RAPIDAPI CONFIGURATION
 # ==========================================
+# Một key duy nhất. Hết hạn mức thì thay trực tiếp trên Railway rồi restart service — không
+# nhét nhiều key nối bằng dấu phẩy, xem _get_api_key() trong services/rapidapi_facebook.py.
 RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
 RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
 
