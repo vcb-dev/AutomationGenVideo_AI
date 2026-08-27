@@ -926,6 +926,91 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> 
                 logger.error(f"[Gemini Transcribe] Failed to delete Gemini file {gemini_file.name}: {str(e)}")
 
 
+def run_transcribe_upload_core(
+    input_path: str,
+    ffmpeg_path: str,
+    *,
+    deadline: Optional[float],
+    request_started_at: float,
+    total_budget: int,
+    check_cancel=None,
+) -> dict:
+    """Chạy phần LÕI của transcribe-upload trên một file ĐÃ nằm sẵn trên đĩa.
+
+    Đo thời lượng → Gemini (Files API) → chuẩn hoá tiếng Việt. KHÔNG đụng tới
+    request/response và KHÔNG xoá file tạm (người gọi lo). Trả về một dict đã chuẩn
+    hoá để cả `transcribe_upload` (view đồng bộ) lẫn job nền content-transform dùng
+    CHUNG một đường map kết quả — tránh mỗi bên tự dựng lại logic phân loại lỗi:
+
+      thành công → {'success': True, 'transcript', 'duration_seconds', 'char_count'}
+      lỗi        → {'success': False, 'error_message', 'status_code': 400|499|500|504}
+
+    `check_cancel` (tuỳ chọn): callable trả True khi người dùng đã huỷ job — kiểm
+    trước khi lao vào lệnh gọi Gemini tính phí.
+    """
+    try:
+        duration = _get_media_duration(input_path, ffmpeg_path)
+        if duration is None:
+            return {
+                'success': False, 'status_code': 400,
+                'error_message': 'Không thể xác định thời lượng của file upload. Vui lòng kiểm tra lại định dạng file.',
+            }
+
+        if duration > 600:
+            return {
+                'success': False, 'status_code': 400,
+                'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.',
+            }
+
+        prep_elapsed = time.time() - request_started_at
+        remaining = 'vô hạn' if deadline is None else f'{deadline - time.time():.1f}s'
+        logger.info(
+            f"[Transcribe Upload] {os.path.getsize(input_path) / (1024 * 1024):.1f}MB / {duration:.0f}s — "
+            f"chuẩn bị mất {prep_elapsed:.1f}s; ngân sách {total_budget}s, còn {remaining} cho Gemini."
+        )
+
+        if check_cancel and check_cancel():
+            return {'success': False, 'status_code': 499, 'error_message': 'Đã huỷ bởi người dùng.'}
+
+        transcript = transcribe_with_gemini(input_path, deadline=deadline)
+        transcript = _normalize_transcript_vi(transcript)
+
+        logger.info(
+            f"[Transcribe Upload] Hoàn tất sau {time.time() - request_started_at:.1f}s "
+            f"(ngân sách {total_budget}s) — {len(transcript)} ký tự."
+        )
+        return {
+            'success': True,
+            'transcript': transcript,
+            'duration_seconds': round(duration, 2),
+            'char_count': len(transcript),
+        }
+
+    except ValueError as ve:
+        logger.warning(f"[Transcribe Upload] Validation error: {str(ve)}")
+        return {'success': False, 'status_code': 400, 'error_message': str(ve)}
+    except TimeoutError as te:
+        # Hết ngân sách ở một trong các giai đoạn Gemini (upload / PROCESSING / sinh
+        # transcript) — 504 kèm lý do THẬT của giai đoạn đó.
+        elapsed = time.time() - request_started_at
+        logger.error(
+            f"[Transcribe Upload] Hết ngân sách sau {elapsed:.1f}s/{total_budget}s: {str(te)}"
+        )
+        return {
+            'success': False, 'status_code': 504,
+            'error_message': (
+                f'Xử lý file quá lâu (đã chạy {elapsed:.0f}s). {str(te)} '
+                'Vui lòng thử lại với file ngắn/nhẹ hơn.'
+            ),
+        }
+    except Exception as e:
+        logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")
+        return {
+            'success': False, 'status_code': 500,
+            'error_message': f'Lỗi hệ thống trong quá trình xử lý: {str(e)}',
+        }
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([TranscribeUploadThrottle])
@@ -978,66 +1063,27 @@ def transcribe_upload(request):
             for chunk in uploaded_file.chunks():
                 dest.write(chunk)
 
-        # 1. Check duration
-        duration = _get_media_duration(input_path, ffmpeg_path)
-        if duration is None:
+        # Phần đo thời lượng + Gemini + chuẩn hoá đã tách ra run_transcribe_upload_core()
+        # để job nền content-transform dùng chung — xem docstring hàm đó.
+        result = run_transcribe_upload_core(
+            input_path,
+            ffmpeg_path,
+            deadline=deadline,
+            request_started_at=request_started_at,
+            total_budget=total_budget,
+        )
+        if result.get('success'):
             return Response({
-                'success': False,
-                'error_message': 'Không thể xác định thời lượng của file upload. Vui lòng kiểm tra lại định dạng file.'
-            }, status=400)
-
-        if duration > 600:
-            return Response({
-                'success': False,
-                'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.'
-            }, status=400)
-
-        prep_elapsed = time.time() - request_started_at
-        logger.info(
-            f"[Transcribe Upload] {file_size_mb:.1f}MB / {duration:.0f}s — ghi đĩa + ffprobe "
-            f"mất {prep_elapsed:.1f}s; ngân sách {total_budget}s, còn {deadline - time.time():.1f}s "
-            f"cho Gemini."
+                'success': True,
+                'transcript': result['transcript'],
+                'duration_seconds': result['duration_seconds'],
+                'char_count': result['char_count'],
+            })
+        return Response(
+            {'success': False, 'error_message': result['error_message']},
+            status=result.get('status_code', 500),
         )
 
-        # 2. Transcribe via Gemini Files API — truyền deadline TUYỆT ĐỐI (đã trừ sẵn phần
-        # thời gian vừa tiêu ở trên), để hàm đó tự chia cho upload/polling/generate.
-        transcript = transcribe_with_gemini(input_path, deadline=deadline)
-
-        # Vietnamese cleanups
-        transcript = _normalize_transcript_vi(transcript)
-
-        logger.info(
-            f"[Transcribe Upload] Hoàn tất sau {time.time() - request_started_at:.1f}s "
-            f"(ngân sách {total_budget}s) — {len(transcript)} ký tự."
-        )
-        return Response({
-            'success': True,
-            'transcript': transcript,
-            'duration_seconds': round(duration, 2),
-            'char_count': len(transcript)
-        })
-
-    except ValueError as ve:
-        logger.warning(f"[Transcribe Upload] Validation error: {str(ve)}")
-        return Response({
-            'success': False,
-            'error_message': str(ve)
-        }, status=400)
-    except TimeoutError as te:
-        # Hết ngân sách ở một trong các giai đoạn Gemini (upload / PROCESSING / sinh
-        # transcript) — trả 504 kèm lý do THẬT của giai đoạn đó, thay vì im lặng chạy
-        # tiếp để BE tự cắt (FE khi đó chỉ nhận được lỗi mạng chung chung).
-        elapsed = time.time() - request_started_at
-        logger.error(
-            f"[Transcribe Upload] Hết ngân sách sau {elapsed:.1f}s/{total_budget}s: {str(te)}"
-        )
-        return Response({
-            'success': False,
-            'error_message': (
-                f'Xử lý file quá lâu (đã chạy {elapsed:.0f}s). {str(te)} '
-                'Vui lòng thử lại với file ngắn/nhẹ hơn.'
-            )
-        }, status=504)
     except Exception as e:
         logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")
         return Response({

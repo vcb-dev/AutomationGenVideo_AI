@@ -159,6 +159,15 @@ urlpatterns += [
     path('api/content/transcribe-upload/', transcribe_views.transcribe_upload, name='content-transcribe-upload'),
 ]
 
+# Content-transform job nền + poll (transcribe / upgrade chạy lâu) — xem
+# content_transform_job_views. PR1 chỉ có status + cancel; endpoint tạo job ở PR2.
+from video_management.views import content_transform_job_views
+
+urlpatterns += [
+    path('api/content/transform-jobs/<str:job_id>/', content_transform_job_views.transform_job_status, name='content-transform-job-status'),
+    path('api/content/transform-jobs/<str:job_id>/cancel/', content_transform_job_views.transform_job_cancel, name='content-transform-job-cancel'),
+]
+
 # Video Downloader (Tiện ích → Tải video, dùng yt-dlp)
 from video_management.views import video_downloader_views
 
