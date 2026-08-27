@@ -10,25 +10,36 @@ Giải pháp: mô hình job nền + poll GIỐNG voice-clone (clone_voice_start_
 để tạo job → nhận job_id ngay → poll GET .../transform-jobs/<id>/ mỗi ~3s. Mọi round-trip
 đều < 1s nên không đụng bất kỳ trần timeout nào (app-level, gunicorn, hay edge proxy).
 
-PR1 (file này) chỉ dựng KHUNG dùng lại được: helper spawn/poll/cancel + 2 endpoint
-status/cancel. Các endpoint tạo job thật (transcribe/upgrade start) + phần đấu nối BE/FE
-nằm ở PR2.
+- PR1: helper spawn/poll/cancel + 2 endpoint status/cancel.
+- PR2 (file này, phần dưới): 2 endpoint TẠO job — transcribe_upload_start +
+  transform_content_upgrade_start — mỗi cái gói lại đúng phần lõi của endpoint đồng bộ
+  tương ứng (run_transcribe_upload_core / PaastAnalysisService.upgrade_scripted) và chạy
+  trong thread nền. Endpoint đồng bộ cũ GIỮ NGUYÊN cho tương thích ngược.
 
 Tái dùng mix_progress_store (Redis-backed, fallback RAM, TTL 4h) — cùng store mà
 voice-clone / mix / video-downloader đang dùng.
 """
 import logging
+import os
+import tempfile
 import threading
 import time
 import uuid
 from typing import Any, Callable, Dict, Optional
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes, throttle_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from video_management.views.mix_progress_store import progress_get, progress_set, progress_update
+from video_management.views.transcribe_views import (
+    MAX_UPLOAD_SIZE_MB,
+    TranscribeUploadThrottle,
+    _get_ffmpeg,
+    run_transcribe_upload_core,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,3 +163,124 @@ def transform_job_cancel(request, job_id: str):
         return Response({"success": True, "status": data.get("status"), "already_final": True})
     _write(job_id, status=JOB_CANCELLED, message="Đang huỷ...")
     return Response({"success": True, "status": JOB_CANCELLED})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PR2 — endpoint TẠO job. Mỗi cái mở gói phần lõi của endpoint đồng bộ tương ứng và
+# chạy trong thread nền; endpoint đồng bộ cũ giữ nguyên.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Ngân sách thời gian rộng cho job nền: không còn bị 1 kết nối HTTP đồng bộ bó lại, chỉ cần
+# đủ cho lần chạy Gemini/DeepSeek chậm nhất quan sát được cộng biên. Kẹp theo trần của
+# _read_transcribe_budget (900s).
+_JOB_TRANSCRIBE_BUDGET_S = 900
+_JOB_UPGRADE_BUDGET_S = 900
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([TranscribeUploadThrottle])
+@parser_classes([MultiPartParser, FormParser])
+def transcribe_upload_start(request):
+    """POST /api/content/transcribe-upload/start/ — bản job nền của transcribe_upload.
+
+    Validate + ghi file ra đĩa NGAY trong request (như clone_voice_start_api), rồi spawn
+    thread gọi run_transcribe_upload_core() với ngân sách rộng. Trả { success, job_id }.
+
+    Giữ đúng IsAuthenticated + TranscribeUploadThrottle (10/phút) như bản đồng bộ — mỗi job
+    vẫn tốn 1 lệnh gọi Gemini tính phí.
+    """
+    uploaded_file = request.FILES.get("file")
+    if not uploaded_file:
+        return Response({"success": False, "error_message": "No file uploaded"}, status=400)
+
+    file_size_mb = uploaded_file.size / (1024 * 1024)
+    if file_size_mb > MAX_UPLOAD_SIZE_MB:
+        return Response(
+            {"success": False, "error_message": f"Dung lượng tập tin vượt quá giới hạn cho phép ({file_size_mb:.1f}MB > {MAX_UPLOAD_SIZE_MB}MB)."},
+            status=400,
+        )
+
+    ffmpeg_path = _get_ffmpeg()
+    if not ffmpeg_path:
+        return Response({"success": False, "error_message": "FFmpeg not found on server"}, status=500)
+
+    uid = uuid.uuid4().hex[:8]
+    ext = os.path.splitext(uploaded_file.name)[1].lower() or ".mp4"
+    input_path = os.path.join(tempfile.gettempdir(), f"vcb_upload_job_{uid}{ext}")
+    with open(input_path, "wb+") as dest:
+        for chunk in uploaded_file.chunks():
+            dest.write(chunk)
+
+    budget = _JOB_TRANSCRIBE_BUDGET_S
+
+    def _work(check_cancel: Callable[[], bool]) -> Dict[str, Any]:
+        started = time.time()
+        try:
+            return run_transcribe_upload_core(
+                input_path,
+                ffmpeg_path,
+                deadline=started + budget,
+                request_started_at=started,
+                total_budget=budget,
+                check_cancel=check_cancel,
+            )
+        finally:
+            try:
+                if os.path.exists(input_path):
+                    os.remove(input_path)
+            except OSError as e:
+                logger.warning(f"[transcribe job] không xoá được file tạm {input_path}: {e}")
+
+    job_id = spawn_job("transcribe", _work, meta={"message": "Đang nghe và chuyển đổi nội dung..."})
+    return Response({"success": True, "job_id": job_id}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def transform_content_upgrade_start(request):
+    """POST /api/ai/transform-content/upgrade/start/ — bản job nền của transform_content_upgrade.
+
+    Body giống bản đồng bộ: write_system_prompt, write_user_prompt, max_tokens (mặc định
+    16000). Spawn thread gọi PaastAnalysisService.upgrade_scripted(); trả { success, job_id }.
+
+    Kết quả job (khi completed) có shape KHỚP response bản đồng bộ để BE map 1-1:
+      { success, output_text, score, score_error, usage, model_used }
+    Lỗi ở bước VIẾT (upgrade_scripted ném RuntimeError) → job status 'error'.
+    """
+    from video_management.services.paast_analysis_service import PaastAnalysisService
+
+    write_system_prompt = (request.data.get("write_system_prompt") or "").strip()
+    write_user_prompt = (request.data.get("write_user_prompt") or "").strip()
+    if not write_system_prompt or not write_user_prompt:
+        return Response(
+            {"success": False, "error": "write_system_prompt và write_user_prompt là bắt buộc"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    max_tokens_raw = request.data.get("max_tokens")
+    max_tokens = int(max_tokens_raw) if max_tokens_raw is not None else 16000
+    # Giữ nguyên để BE poll/reconcile lấy lại "previous" mà không cần thêm cột DB.
+    client_context = request.data.get("client_context")
+
+    def _work(_check_cancel: Callable[[], bool]) -> Dict[str, Any]:
+        result = PaastAnalysisService().upgrade_scripted(
+            write_system_prompt=write_system_prompt,
+            write_user_prompt=write_user_prompt,
+            max_tokens=max_tokens,
+            timeout_seconds=_JOB_UPGRADE_BUDGET_S,
+        )
+        return {
+            "success": True,
+            "output_text": result["output_text"],
+            "score": result["new_analysis"],
+            "score_error": result["score_error"],
+            "usage": result["usage"],
+            "model_used": result["model_used"],
+        }
+
+    meta = {"message": "Đang nâng cấp nội dung theo gợi ý..."}
+    if client_context is not None:
+        meta["client_context"] = client_context
+    job_id = spawn_job("upgrade", _work, meta=meta)
+    return Response({"success": True, "job_id": job_id}, status=status.HTTP_200_OK)

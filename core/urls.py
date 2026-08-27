@@ -160,10 +160,13 @@ urlpatterns += [
 ]
 
 # Content-transform job nền + poll (transcribe / upgrade chạy lâu) — xem
-# content_transform_job_views. PR1 chỉ có status + cancel; endpoint tạo job ở PR2.
+# content_transform_job_views. Endpoint đồng bộ transcribe-upload/ và transform-content/upgrade/
+# ở trên GIỮ NGUYÊN cho tương thích ngược.
 from video_management.views import content_transform_job_views
 
 urlpatterns += [
+    path('api/content/transcribe-upload/start/', content_transform_job_views.transcribe_upload_start, name='content-transcribe-upload-start'),
+    path('api/ai/transform-content/upgrade/start/', content_transform_job_views.transform_content_upgrade_start, name='transform-content-upgrade-start'),
     path('api/content/transform-jobs/<str:job_id>/', content_transform_job_views.transform_job_status, name='content-transform-job-status'),
     path('api/content/transform-jobs/<str:job_id>/cancel/', content_transform_job_views.transform_job_cancel, name='content-transform-job-cancel'),
 ]
