@@ -30,7 +30,9 @@ class TransformContentRequestParamsTests(SimpleTestCase):
     def _call(self, **body):
         request = self._post(**body)
         with patch.object(content_generation_views, 'ContentGenerationService') as ServiceCls:
-            ServiceCls.return_value._call_deepseek_checked.return_value = 'output đã viết lại'
+            ServiceCls.return_value._call_deepseek_checked.return_value = (
+                'output đã viết lại', {'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150},
+            )
             response = content_generation_views.transform_content(request)
             call_kwargs = ServiceCls.return_value._call_deepseek_checked.call_args.kwargs
         return response, call_kwargs
@@ -77,6 +79,17 @@ class TransformContentRequestParamsTests(SimpleTestCase):
         self.assertEqual(call_kwargs['timeout'], 90)
         self.assertEqual(call_kwargs['max_tokens'], 4096)
         self.assertEqual(call_kwargs['temperature'], 0.3)
+
+    def test_luon_xin_usage_va_tra_lai_trong_response(self):
+        """View phải xin usage (return_usage=True) và trả nguyên văn ra response — BE dùng số
+        token này tính chi phí AI cho content-transform."""
+        response, call_kwargs = self._call()
+
+        self.assertTrue(call_kwargs['return_usage'])
+        self.assertEqual(
+            response.data['usage'],
+            {'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150},
+        )
 
     def test_thieu_system_prompt_van_400_truoc_khi_doc_cac_tham_so(self):
         request = self.factory.post(

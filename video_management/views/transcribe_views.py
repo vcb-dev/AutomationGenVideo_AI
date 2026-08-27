@@ -5,6 +5,7 @@ trích audio bằng FFmpeg và gửi lên OpenAI Whisper (whisper-1).
 """
 import os
 import uuid
+import time
 import logging
 import tempfile
 import subprocess
@@ -26,17 +27,63 @@ logger = logging.getLogger(__name__)
 MAX_AUDIO_SIZE_MB = 24   # Whisper giới hạn 25MB
 DOWNLOAD_TIMEOUT  = 300  # seconds (yt-dlp) — 5 phút cho video dài hoặc kết nối chậm
 MAX_UPLOAD_SIZE_MB = 500  # khớp giới hạn Gemini Files API (transcribe_with_gemini)
-# Trần thời gian chờ Gemini Files API xử lý file (state PROCESSING -> ACTIVE).
-# Đặt 45s để nhỏ hơn timeout 60s mà BE đặt cho request forward sang AI service
-# (ai-integration.service.ts) — AI service kịp trả lỗi rõ ràng về trước khi BE tự
-# timeout, và không để 1 file kẹt PROCESSING chiếm worker vô thời hạn.
-GEMINI_FILE_PROCESSING_TIMEOUT = 45  # seconds
-# Tổng trần thời gian cho CẢ 2 giai đoạn gọi Gemini (chờ file PROCESSING + sinh
-# transcript), chừa ~5s biên cho overhead mạng/serialize so với timeout 60s của BE.
-GEMINI_TOTAL_BUDGET = 55  # seconds
-# Sàn thời gian luôn dành cho generate_content kể cả khi polling đã ăn gần hết ngân
-# sách — tránh trường hợp timeout bị co về 0 và huỷ ngay lập tức.
-GEMINI_GENERATE_MIN_TIMEOUT = 10  # seconds
+# ─────────────────────────────────────────────────────────────────────────────
+# NGÂN SÁCH THỜI GIAN CHO /api/content/transcribe-upload/
+#
+# Trước đây ngân sách (GEMINI_TOTAL_BUDGET = 55s) được neo tại `poll_started_at`,
+# tức là tính TỪ SAU khi genai.upload_file() đã xong. Nhưng chính upload_file()
+# mới là giai đoạn đắt nhất và tăng theo dung lượng file, nên nó nằm NGOÀI ngân
+# sách trong khi timeout của BE lại là đồng hồ treo tường phủ trọn mọi giai đoạn.
+# Đo thật bằng video thật (Gemini thật, không mock):
+#
+#   76.5MB / 297s  ->  upload 43.1s + poll  6.8s + generate  64.4s = 114.3s
+#   143.5MB / 557s ->  upload 61.0s + poll 20.2s + generate  28.7s = 109.8s
+#   76.5MB / 297s  ->  upload 30.8s + poll  8.9s + generate 195.7s = 239.6s
+#
+# Cả ba đều vượt xa mốc 60s mà BE chờ => BE luôn tự huỷ trước, để lại đúng lỗi
+# "timeout of 60000ms exceeded" thấy trong log. upload_file() ~0.5s/MB, nên riêng
+# nó ở mốc trần 200MB đã ~85s, tự nó đã lớn hơn cả ngân sách cũ. Và generate_content
+# dao động 28.7s -> 195.7s TRÊN CÙNG MỘT FILE, nên mọi con số dưới đây được chọn theo
+# mức xấu nhất quan sát được, không phải mức trung bình.
+#
+# Nay ngân sách được neo tại LÚC VÀO VIEW và phủ mọi giai đoạn (ghi đĩa, ffprobe,
+# upload, polling, generate), đồng thời nhận `timeout_seconds` do BE gửi kèm để
+# hai phía không thể lệch nhau âm thầm — cùng quy ước mà /api/ai/transform-content/
+# và /api/ai/paast/* đã dùng.
+# ─────────────────────────────────────────────────────────────────────────────
+# Ngân sách mặc định khi BE không gửi `timeout_seconds` (client gọi thẳng, test...).
+TRANSCRIBE_TOTAL_BUDGET_DEFAULT = 420  # seconds — khớp CONTENT_TRANSFORM_TRANSCRIBE_TIMEOUT_MS ở BE
+# Chặn trên/dưới cho giá trị BE gửi sang — chặn cả số rác lẫn số quá lớn giữ worker.
+TRANSCRIBE_TOTAL_BUDGET_MIN = 60   # seconds
+TRANSCRIBE_TOTAL_BUDGET_MAX = 900  # seconds
+# Biên chừa lại để serialize + trả response về BE trước khi BE hết kiên nhẫn.
+TRANSCRIBE_RESPONSE_MARGIN = 5  # seconds
+# Trần riêng cho giai đoạn chờ Gemini xử lý file (PROCESSING -> ACTIVE), để một file
+# kẹt PROCESSING không ăn hết ngân sách của giai đoạn sinh transcript phía sau.
+# Đo thật: tối đa 20.2s với file 143.5MB — 90s là dư ~4 lần.
+GEMINI_FILE_PROCESSING_TIMEOUT = 90  # seconds
+# Sàn thời gian luôn dành cho generate_content kể cả khi các giai đoạn trước đã ăn
+# gần hết ngân sách — tránh trường hợp timeout bị co về 0 và huỷ ngay lập tức.
+# Đo thật: generate_content dao động rất mạnh (28.7s -> 64.4s trên cùng cỡ file),
+# nên sàn 10s cũ là vô nghĩa; 30s mới đủ để một lần gọi có cơ hội thành công thật.
+GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
+
+
+def _read_transcribe_budget(request) -> int:
+    """
+    Ngân sách thời gian (giây) cho cả request transcribe, lấy từ field `timeout_seconds`
+    do BE gửi kèm. Giá trị rác/thiếu -> dùng mặc định; giá trị hợp lệ -> kẹp vào
+    [MIN, MAX] để một client gọi thẳng không thể giữ worker bao lâu tuỳ thích.
+    """
+    raw = request.data.get('timeout_seconds')
+    if raw in (None, ''):
+        return TRANSCRIBE_TOTAL_BUDGET_DEFAULT
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning(f"[Transcribe Upload] timeout_seconds không hợp lệ ({raw!r}) — dùng mặc định")
+        return TRANSCRIBE_TOTAL_BUDGET_DEFAULT
+    return max(TRANSCRIBE_TOTAL_BUDGET_MIN, min(TRANSCRIBE_TOTAL_BUDGET_MAX, value))
 
 
 class TranscribeUploadThrottle(SimpleRateThrottle):
@@ -756,14 +803,25 @@ def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
     return None
 
 
-def transcribe_with_gemini(file_path: str) -> str:
+def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> str:
     """
     Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
     Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
+
+    `deadline` là MỐC THỜI GIAN TUYỆT ĐỐI (time.time() + ngân sách còn lại) mà toàn bộ
+    hàm này phải kết thúc trước — do người gọi tính từ lúc vào view, nên nó đã trừ sẵn
+    phần thời gian đã tiêu cho ghi đĩa + ffprobe. Truyền None = không giới hạn (chỉ dùng
+    cho script đo/khảo sát, không dùng ở đường request thật).
     """
     import google.generativeai as genai
     from google.api_core import exceptions as google_api_exceptions
     import time
+
+    def _remaining() -> float:
+        """Số giây còn lại trước deadline (vô hạn nếu không đặt deadline)."""
+        if deadline is None:
+            return float('inf')
+        return deadline - time.time()
 
     # 1. Validate file size on disk before upload
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -788,18 +846,39 @@ def transcribe_with_gemini(file_path: str) -> str:
 
     gemini_file = None
     try:
+        upload_started_at = time.time()
         gemini_file = genai.upload_file(file_path)
-        logger.info(f"[Gemini Transcribe] Polling file state for: {gemini_file.name}")
-        
-        # Poll state until ACTIVE — có trần thời gian để không treo worker vô hạn
-        # nếu Gemini kẹt ở PROCESSING. Thoát bằng exception nên vẫn đi qua khối
-        # finally bên dưới (xoá file trên Gemini) và finally của transcribe_upload
-        # (xoá file tạm trên đĩa).
+        upload_elapsed = time.time() - upload_started_at
+        logger.info(
+            f"[Gemini Transcribe] upload_file xong sau {upload_elapsed:.1f}s "
+            f"({file_size_mb:.1f}MB); ngân sách còn {_remaining():.1f}s. "
+            f"Polling file state for: {gemini_file.name}"
+        )
+
+        # upload_file() không nhận timeout riêng nên không cắt được giữa chừng; kiểm tra
+        # NGAY SAU khi nó xong. Hết ngân sách ở đây thì dừng luôn thay vì lao tiếp vào
+        # generate_content để rồi bị BE cắt ngang — cách đó vừa tốn thêm 1 lệnh gọi Gemini
+        # tính phí, vừa khiến FE chỉ nhận được lỗi mạng chung chung thay vì lý do thật.
+        if _remaining() <= GEMINI_GENERATE_MIN_TIMEOUT:
+            raise TimeoutError(
+                f"Tải {file_size_mb:.1f}MB lên Gemini đã mất {upload_elapsed:.0f}s, "
+                f"không còn đủ thời gian để sinh transcript."
+            )
+
+        # Poll state until ACTIVE — trần thời gian là min(trần riêng của giai đoạn này,
+        # phần ngân sách còn lại sau khi đã chừa sàn cho generate_content) để một file kẹt
+        # PROCESSING không nuốt luôn phần thời gian của bước sinh transcript. Thoát bằng
+        # exception nên vẫn đi qua khối finally bên dưới (xoá file trên Gemini) và finally
+        # của transcribe_upload (xoá file tạm trên đĩa).
         poll_started_at = time.time()
+        poll_budget = min(
+            GEMINI_FILE_PROCESSING_TIMEOUT,
+            max(0.0, _remaining() - GEMINI_GENERATE_MIN_TIMEOUT),
+        )
         while gemini_file.state.name == "PROCESSING":
-            if time.time() - poll_started_at > GEMINI_FILE_PROCESSING_TIMEOUT:
+            if time.time() - poll_started_at > poll_budget:
                 raise TimeoutError(
-                    f"Gemini xử lý file quá lâu (>{GEMINI_FILE_PROCESSING_TIMEOUT}s) và vẫn ở trạng thái PROCESSING."
+                    f"Gemini xử lý file quá lâu (>{poll_budget:.0f}s) và vẫn ở trạng thái PROCESSING."
                 )
             time.sleep(2)
             gemini_file = genai.get_file(gemini_file.name)
@@ -814,14 +893,12 @@ def transcribe_with_gemini(file_path: str) -> str:
             "không thêm bất kỳ lời giải thích, tiêu đề, hay ghi chú nào khác. "
             "Chú ý viết đúng chính tả các từ: Huy Ca, Viễn Chí Bảo, bạc 925, bạc S925, moissanite, kim cương, CZ, nhẫn, dây chuyền."
         )
-        # Phần ngân sách thời gian còn lại sau giai đoạn polling được dồn hết cho bước
-        # sinh transcript: bình thường polling chỉ tốn vài giây nên bước này vẫn được
-        # gần trọn 55s (đủ cho file dài sát mốc 600s), còn khi polling chậm bất thường
-        # thì timeout tự co lại để TỔNG vẫn nằm dưới 60s timeout của BE.
-        generate_timeout = max(
-            GEMINI_GENERATE_MIN_TIMEOUT,
-            GEMINI_TOTAL_BUDGET - (time.time() - poll_started_at),
-        )
+        # Toàn bộ ngân sách CÒN LẠI (đã trừ mọi giai đoạn trước: ghi đĩa, ffprobe, upload,
+        # polling) được dồn hết cho bước sinh transcript. Đây là bước dao động mạnh nhất —
+        # đo thật trên cùng cỡ file cho ra 28.7s rồi 64.4s — nên cho nó phần dư là đúng.
+        # Sàn GEMINI_GENERATE_MIN_TIMEOUT đảm bảo không bao giờ gọi Gemini với timeout bé
+        # tới mức chắc chắn thất bại.
+        generate_timeout = max(GEMINI_GENERATE_MIN_TIMEOUT, _remaining())
         logger.info(f"[Gemini Transcribe] Invoking model {model_name} (timeout {generate_timeout:.1f}s)...")
         model = genai.GenerativeModel(model_name)
         try:
@@ -863,7 +940,18 @@ def transcribe_upload(request):
     Yêu cầu đăng nhập + throttle riêng — mỗi request hợp lệ tốn 1 lệnh gọi Gemini
     (tính phí) và ghi nguyên file ra đĩa server trước khi kiểm tra thời lượng,
     khác transcribe_video() (AllowAny) chỉ nhận URL rồi tự tải qua yt-dlp.
+
+    Form field tuỳ chọn `timeout_seconds`: ngân sách NGOÀI mà BE thực sự chờ request
+    này. Nhận từ BE để hai phía không lệch nhau âm thầm — cùng quy ước đã dùng ở
+    /api/ai/transform-content/ và /api/ai/paast/*.
     """
+    # Neo ngân sách NGAY khi vào view: mọi giai đoạn sau đây (ghi file ra đĩa, ffprobe,
+    # upload lên Gemini, polling, sinh transcript) đều nằm trong cùng một đồng hồ, đúng
+    # như cách timeout phía BE đếm. Neo muộn hơn là tái lập đúng lỗi cũ.
+    request_started_at = time.time()
+    total_budget = _read_transcribe_budget(request)
+    deadline = request_started_at + total_budget - TRANSCRIBE_RESPONSE_MARGIN
+
     uploaded_file = request.FILES.get('file')
     if not uploaded_file:
         return Response({'success': False, 'error_message': 'No file uploaded'}, status=400)
@@ -904,12 +992,24 @@ def transcribe_upload(request):
                 'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.'
             }, status=400)
 
-        # 2. Transcribe via Gemini Files API
-        transcript = transcribe_with_gemini(input_path)
+        prep_elapsed = time.time() - request_started_at
+        logger.info(
+            f"[Transcribe Upload] {file_size_mb:.1f}MB / {duration:.0f}s — ghi đĩa + ffprobe "
+            f"mất {prep_elapsed:.1f}s; ngân sách {total_budget}s, còn {deadline - time.time():.1f}s "
+            f"cho Gemini."
+        )
+
+        # 2. Transcribe via Gemini Files API — truyền deadline TUYỆT ĐỐI (đã trừ sẵn phần
+        # thời gian vừa tiêu ở trên), để hàm đó tự chia cho upload/polling/generate.
+        transcript = transcribe_with_gemini(input_path, deadline=deadline)
 
         # Vietnamese cleanups
         transcript = _normalize_transcript_vi(transcript)
 
+        logger.info(
+            f"[Transcribe Upload] Hoàn tất sau {time.time() - request_started_at:.1f}s "
+            f"(ngân sách {total_budget}s) — {len(transcript)} ký tự."
+        )
         return Response({
             'success': True,
             'transcript': transcript,
@@ -924,12 +1024,19 @@ def transcribe_upload(request):
             'error_message': str(ve)
         }, status=400)
     except TimeoutError as te:
-        # Gemini kẹt ở PROCESSING quá lâu — trả lỗi rõ ràng cho FE thay vì để BE
-        # tự timeout ở 60s (FE chỉ nhận được lỗi mạng chung chung).
-        logger.error(f"[Transcribe Upload] Gemini processing timeout: {str(te)}")
+        # Hết ngân sách ở một trong các giai đoạn Gemini (upload / PROCESSING / sinh
+        # transcript) — trả 504 kèm lý do THẬT của giai đoạn đó, thay vì im lặng chạy
+        # tiếp để BE tự cắt (FE khi đó chỉ nhận được lỗi mạng chung chung).
+        elapsed = time.time() - request_started_at
+        logger.error(
+            f"[Transcribe Upload] Hết ngân sách sau {elapsed:.1f}s/{total_budget}s: {str(te)}"
+        )
         return Response({
             'success': False,
-            'error_message': 'Xử lý file quá lâu, vui lòng thử lại với file ngắn hơn hoặc thử lại sau.'
+            'error_message': (
+                f'Xử lý file quá lâu (đã chạy {elapsed:.0f}s). {str(te)} '
+                'Vui lòng thử lại với file ngắn/nhẹ hơn.'
+            )
         }, status=504)
     except Exception as e:
         logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")

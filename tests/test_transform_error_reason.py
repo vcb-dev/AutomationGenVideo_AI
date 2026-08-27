@@ -39,7 +39,9 @@ def _goi(loi=None, tra_ve=None):
         if loi is not None:
             instance._call_deepseek_checked.side_effect = loi
         else:
-            instance._call_deepseek_checked.return_value = tra_ve
+            # View gọi return_usage=True nên nhận về tuple (output_text, usage) — bọc sẵn usage
+            # rỗng, các test ở đây không quan tâm số token.
+            instance._call_deepseek_checked.return_value = (tra_ve, {})
         return transform_content(request)
 
 

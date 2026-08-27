@@ -794,7 +794,8 @@ class ContentGenerationService:
         log_prefix: str = "DeepSeek",
         rate_limit_retries: int = 2,
         extra_params: Optional[Dict[str, Any]] = None,
-    ) -> str:
+        return_usage: bool = False,
+    ):
         """
         Gọi DeepSeek và NÉM DeepSeekError có phân loại thay vì trả None.
 
@@ -802,6 +803,12 @@ class ContentGenerationService:
         rất dễ chạm rate limit, mà 429 thì chờ một nhịp là qua — nên backoff tại chỗ (tôn trọng
         `Retry-After` nếu server có trả) thay vì để cả lượt phân tích hỏng rồi retry từ đầu.
         Backoff này CHỈ dành cho 429; timeout/5xx để tầng trên quyết định thử lại.
+
+        `return_usage=True` đổi kiểu trả về từ `str` sang `(str, dict)` — dict `usage` là
+        nguyên văn field `usage` của response DeepSeek (`prompt_tokens`/`completion_tokens`/
+        `total_tokens`), dùng để BE tính chi phí AI theo token thực tế đã dùng (xem
+        content-transform team-summary). Mặc định False để KHÔNG đổi hành vi của ~14 nơi gọi
+        hàm này hiện có — chỉ nơi nào chủ động xin mới nhận thêm usage.
         """
         if not self.deepseek_key:
             raise DeepSeekError('no_key', 'Chưa cấu hình DEEPSEEK_API_KEY')
@@ -901,6 +908,8 @@ class ContentGenerationService:
                 f"(finish_reason={choice.get('finish_reason')}, max_tokens={max_tokens}, "
                 f"completion_tokens={usage.get('completion_tokens')}, reasoning_tokens={reasoning})"
             )
+            if return_usage:
+                return content, usage
             return content
 
         raise DeepSeekError('rate_limit', 'DeepSeek đang giới hạn tần suất (429)', 429)

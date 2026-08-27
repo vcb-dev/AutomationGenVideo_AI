@@ -271,9 +271,13 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
         status_options: str,
         max_tokens: int,
         deadline: float,
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
         Phân loại 1 nhóm, tự thử lại TẠI CHỖ tối đa MAX_GROUP_ATTEMPTS lượt.
+
+        Trả kèm `usage` (token thực tế của LƯỢT THÀNH CÔNG, không cộng dồn các lượt thử lại
+        hỏng — lượt hỏng không sinh nội dung dùng được nên DeepSeek gần như không tính phí đáng
+        kể, và ta không có cách nào lấy usage của 1 lệnh gọi đã ném lỗi).
 
         Thử lại trong worker của chính nhóm này thay vì để BE chạy lại cả 5 nhóm: retry ở BE
         vứt bỏ cả 4 nhóm vừa thành công rồi tung lại xúc xắc 5 mặt, trong khi lỗi ở đây thường
@@ -297,7 +301,7 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
                 break
 
             try:
-                raw = self._gen._call_deepseek_checked(
+                raw, usage = self._gen._call_deepseek_checked(
                     prompt=prompt,
                     system_msg=system_msg,
                     # temperature=0: phân loại phải TẤT ĐỊNH — cùng 1 nội dung phải luôn ra cùng
@@ -312,6 +316,7 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
                     timeout=int(min(remaining, PER_ATTEMPT_TIMEOUT_CAP_S)),
                     log_prefix=f"PAAST analyze/{group_key} lượt {attempt}/{MAX_GROUP_ATTEMPTS} (DeepSeek)",
                     extra_params=DISABLE_THINKING_PARAMS,
+                    return_usage=True,
                 )
             except DeepSeekError as e:
                 last_err = str(e)
@@ -336,11 +341,22 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
 
             if attempt > 1:
                 self.logger.warning(f"PAAST analyze/{group_key}: thành công ở lượt {attempt}/{MAX_GROUP_ATTEMPTS}")
-            return parsed.get(group_key, [])
+            return parsed.get(group_key, []), usage
 
         raise RuntimeError(f"nhóm {group_key}: {last_err or 'hết ngân sách thời gian'}")
 
-    def _classify(self, content: str, timeout_s: int) -> Dict[str, Any]:
+    @staticmethod
+    def _sum_usage(usages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Cộng dồn usage của nhiều lệnh gọi DeepSeek độc lập (vd 5 nhóm phân loại chạy song
+        song, hoặc bước viết + bước chấm nối tiếp) thành 1 tổng duy nhất — dict rỗng/thiếu field
+        tính là 0, không làm hỏng phép cộng."""
+        totals = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+        for u in usages:
+            for key in totals:
+                totals[key] += int((u or {}).get(key) or 0)
+        return totals
+
+    def _classify(self, content: str, timeout_s: int) -> Tuple[Dict[str, Any], Dict[str, int]]:
         """Chạy 5 lệnh gọi LLM (1 lệnh/lớp) song song thay vì 1 lệnh gộp cả 30+6 tiêu chí —
         thời gian chờ = lệnh chậm nhất trong 5, không phải tổng cộng dồn (xem CLASSIFICATION_GROUPS).
 
@@ -351,9 +367,13 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
         KHÔNG degrade partial: 1 nhóm hỏng sau khi đã tự thử lại ⇒ hỏng cả lượt (quyết định
         nghiệp vụ — thà báo lỗi còn hơn trả điểm thiếu lớp, vì điểm thiếu lớp luôn thấp hơn
         thực tế mà người dùng không có cách nào biết).
+
+        Trả kèm tổng usage của cả 5 lệnh gọi (cộng dồn qua `_sum_usage`) — dùng để BE tính chi
+        phí AI cho lượt chấm điểm này.
         """
         deadline = time.monotonic() + timeout_s
         result: Dict[str, Any] = {}
+        usages: List[Dict[str, Any]] = []
         errors: List[str] = []
         with ThreadPoolExecutor(max_workers=len(CLASSIFICATION_GROUPS)) as executor:
             future_to_key = {
@@ -365,13 +385,15 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
-                    result[key] = future.result()
+                    items_result, usage = future.result()
+                    result[key] = items_result
+                    usages.append(usage)
                 except Exception as e:
                     errors.append(str(e))
 
         if errors:
             raise RuntimeError("Lỗi phân tích PAAST: " + "; ".join(errors))
-        return result
+        return result, self._sum_usage(usages)
 
     @staticmethod
     def _index_by_code(items: Optional[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
@@ -557,7 +579,7 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
     def _analyze_inner(self, content: str, inner_budget_s: int) -> Dict[str, Any]:
         """Nhận thẳng ngân sách TRONG (đã trừ biên) — để `upgrade` chia budget cho 2 lượt gọi
         nối tiếp mà không bị trừ biên an toàn hai lần."""
-        raw_classification = self._classify(content, inner_budget_s)
+        raw_classification, classify_usage = self._classify(content, inner_budget_s)
         classification = self._normalize_classification(raw_classification)
         scores = self.compute_scores(classification)
         verdict = self.compute_verdict(scores)
@@ -577,6 +599,9 @@ Trả về DUY NHẤT một JSON object theo đúng shape sau, không thêm text
             # BE ghi thẳng vào cột model_used. Trả từ đây vì AI mới là bên quyết model —
             # BE tự đoán thì bảng lịch sử ghi sai như trước.
             "model_used": DEEPSEEK_DEFAULT_MODEL,
+            # Tổng token thật của 5 lệnh gọi phân loại song song — BE dùng tính chi phí AI cho
+            # lượt chấm điểm này (xem content-transform team-summary "Chi phí AI").
+            "usage": classify_usage,
         }
 
     def upgrade(
@@ -701,7 +726,7 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
         user_prompt: str,
         max_tokens: int,
         budget_s: int,
-    ) -> str:
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Viết lại kịch bản (giữ nguyên giọng nhân vật — system_prompt/user_prompt đã được BE dựng
         sẵn qua buildPaastUpgradeSystemPrompt/buildPaastUpgradeUserPrompt), tự thử lại TẠI CHỖ
@@ -722,12 +747,13 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
                 break
 
             try:
-                raw = self._gen._call_deepseek_checked(
+                raw, usage = self._gen._call_deepseek_checked(
                     prompt=user_prompt,
                     system_msg=system_prompt,
                     max_tokens=max_tokens,
                     timeout=int(remaining),
                     log_prefix=f"Content transform upgrade - viết lượt {attempt}/{MAX_SCRIPTED_WRITE_ATTEMPTS} (DeepSeek)",
+                    return_usage=True,
                 )
             except DeepSeekError as e:
                 last_err = str(e)
@@ -747,7 +773,7 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
                 self.logger.warning(
                     f"Content transform upgrade - viết: thành công ở lượt {attempt}/{MAX_SCRIPTED_WRITE_ATTEMPTS}"
                 )
-            return raw
+            return raw, usage
 
         raise RuntimeError(f"viết lại kịch bản nâng cấp: {last_err or 'hết ngân sách thời gian'}")
 
@@ -781,12 +807,16 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
         write_budget = max(MIN_RETRY_BUDGET_S, int(inner_total * 0.4))
         analyze_budget = max(MIN_RETRY_BUDGET_S, inner_total - write_budget)
 
-        new_output_text = self._write_scripted_upgrade(write_system_prompt, write_user_prompt, max_tokens, write_budget)
+        new_output_text, write_usage = self._write_scripted_upgrade(
+            write_system_prompt, write_user_prompt, max_tokens, write_budget
+        )
 
         new_analysis: Optional[Dict[str, Any]] = None
         score_error: Optional[str] = None
+        analyze_usage: Dict[str, Any] = {}
         try:
             new_analysis = self._analyze_inner(new_output_text, analyze_budget)
+            analyze_usage = new_analysis.get("usage") or {}
         except Exception as e:
             self.logger.error(f"Content transform upgrade - chấm điểm bản mới thất bại: {e}")
             score_error = str(e)
@@ -795,6 +825,11 @@ Trả về DUY NHẤT một JSON object, không thêm text ngoài JSON:
             "output_text": new_output_text,
             "new_analysis": new_analysis,
             "score_error": score_error,
+            # Tổng token của CẢ 2 lượt gọi nối tiếp (viết lại + chấm PAAST bản mới) — kể cả khi
+            # bước chấm lỗi (analyze_usage rỗng khi đó), phần viết vẫn tính phí thật nên vẫn phải
+            # có mặt trong tổng.
+            "usage": self._sum_usage([write_usage, analyze_usage]),
+            "model_used": DEEPSEEK_DEFAULT_MODEL,
         }
 
 

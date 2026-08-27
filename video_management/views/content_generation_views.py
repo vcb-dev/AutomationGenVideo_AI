@@ -6,7 +6,11 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from video_management.models import ScrapedVideo, GeneratedContent, Product
-from video_management.services.content_generation_service import ContentGenerationService, DeepSeekError
+from video_management.services.content_generation_service import (
+    ContentGenerationService,
+    DeepSeekError,
+    DEEPSEEK_DEFAULT_MODEL,
+)
 import logging
 
 # Câu báo cho từng loại lỗi DeepSeek. Viết tiếng Việt vì chuỗi này đi thẳng ra toast của người
@@ -428,10 +432,11 @@ def transform_content(request):
         # cho người dùng cuối (BE lưu vào error_message, FE hiện nguyên văn), nên sai là họ đi
         # sửa nhầm chỗ.
         try:
-            output_text = service._call_deepseek_checked(
+            output_text, usage = service._call_deepseek_checked(
                 prompt=input_text,
                 system_msg=system_prompt,
                 log_prefix="Content transform (DeepSeek)",
+                return_usage=True,
                 **call_kwargs,
             )
         except DeepSeekError as e:
@@ -450,7 +455,14 @@ def transform_content(request):
 
         return Response({
             'success': True,
-            'output_text': output_text
+            'output_text': output_text,
+            # prompt_tokens/completion_tokens thật từ DeepSeek — BE dùng để tính chi phí AI theo
+            # đơn giá model (xem content-transform team-summary "Chi phí AI").
+            'usage': usage,
+            # Model THẬT đã chạy — view này không truyền `model=` riêng nên luôn là default. Trả
+            # từ đây (không để BE tự đoán) để tránh lặp lại bug từng ghi cứng 'deepseek-chat'
+            # trong khi thực tế chạy model khác.
+            'model_used': DEEPSEEK_DEFAULT_MODEL,
         })
 
     except Exception as e:

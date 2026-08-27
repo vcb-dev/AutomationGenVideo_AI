@@ -48,13 +48,15 @@ class ClassifyGroupRetryTests(SimpleTestCase):
                 patch.object(self.service._gen, '_extract_json_dict') as mock_extract:
             mock_call.side_effect = [
                 DeepSeekError('timeout', 'DeepSeek không trả lời trong 45s'),
-                '{"action": [{"code": "STOP", "status": "pass", "evidence": "..."}]}',
+                ('{"action": [{"code": "STOP", "status": "pass", "evidence": "..."}]}',
+                 {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}),
             ]
             mock_extract.return_value = {'action': [{'code': 'STOP', 'status': 'pass', 'evidence': '...'}]}
 
-            result = self.service._classify_group(deadline=_far_deadline(), **GROUP_ARGS)
+            items, usage = self.service._classify_group(deadline=_far_deadline(), **GROUP_ARGS)
 
-        self.assertEqual(result, [{'code': 'STOP', 'status': 'pass', 'evidence': '...'}])
+        self.assertEqual(items, [{'code': 'STOP', 'status': 'pass', 'evidence': '...'}])
+        self.assertEqual(usage, {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15})
         self.assertEqual(mock_call.call_count, 2)
 
     def test_loi_client_nem_ngay_khong_thu_lai(self):
@@ -82,12 +84,12 @@ class ClassifyGroupRetryTests(SimpleTestCase):
         được coi như lỗi retriable, không phải lỗi tất định."""
         with patch.object(self.service._gen, '_call_deepseek_checked') as mock_call, \
                 patch.object(self.service._gen, '_extract_json_dict') as mock_extract:
-            mock_call.side_effect = ['not json trước', '{"action": [...]}']
+            mock_call.side_effect = [('not json trước', {}), ('{"action": [...]}', {})]
             mock_extract.side_effect = [{}, {'action': [{'code': 'STOP', 'status': 'pass', 'evidence': 'e'}]}]
 
-            result = self.service._classify_group(deadline=_far_deadline(), **GROUP_ARGS)
+            items, _usage = self.service._classify_group(deadline=_far_deadline(), **GROUP_ARGS)
 
-        self.assertEqual(result, [{'code': 'STOP', 'status': 'pass', 'evidence': 'e'}])
+        self.assertEqual(items, [{'code': 'STOP', 'status': 'pass', 'evidence': 'e'}])
         self.assertEqual(mock_call.call_count, 2)
 
     def test_het_MAX_GROUP_ATTEMPTS_luot_thi_nem_loi_CUOI_CUNG(self):

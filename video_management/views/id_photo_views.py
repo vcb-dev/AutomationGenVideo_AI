@@ -7,8 +7,8 @@ transform_content (content_generation_views.py). BE gửi thẳng ảnh dạng b
 sẵn trong bộ nhớ tạm của BE từ bước upload trước đó qua uploadId) — KHÔNG dùng Gemini Files
 API (không cần polling): ảnh giới hạn 10MB, nằm gọn trong giới hạn inline data của
 generateContent, nên gọi 1 lượt duy nhất là đủ, tránh hẳn lớp phức tạp polling + 2 timeout
-lồng nhau mà transcribe_with_gemini() từng phải xử lý (GEMINI_FILE_PROCESSING_TIMEOUT +
-GEMINI_TOTAL_BUDGET) cho trường hợp Files API.
+lồng nhau mà transcribe_with_gemini() phải xử lý (GEMINI_FILE_PROCESSING_TIMEOUT + phần ngân
+sách còn lại cho generate_content) cho trường hợp Files API.
 """
 import os
 import time
@@ -30,7 +30,7 @@ DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image'
 
 # BE cam kết timeout 90s cho lượt gọi này (id-photo.service.ts#MERGE_OUTFIT_TIMEOUT_MS). Đặt
 # ngân sách nội bộ thấp hơn hẳn để AI service LUÔN kịp trả lỗi rõ ràng về trước khi bị BE tự
-# timeout ở giữa chừng (bài học từ GEMINI_TOTAL_BUDGET=55/60 ở transcribe_with_gemini) — không
+# timeout ở giữa chừng (cùng bài học với ngân sách của transcribe_with_gemini) — không
 # có giai đoạn polling nào ăn vào ngân sách này (khác transcribe), toàn bộ 75s dành hết cho 1
 # lệnh gọi generate_content duy nhất.
 MERGE_OUTFIT_TIMEOUT_SECONDS = 75

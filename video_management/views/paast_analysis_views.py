@@ -177,6 +177,10 @@ def transform_content_upgrade(request):
             'output_text': result['output_text'],
             'score': result['new_analysis'],
             'score_error': result['score_error'],
+            # Tổng token của cả 2 lượt gọi (viết lại + chấm PAAST bản mới) — BE dùng tính chi phí
+            # AI cho bản ghi lịch sử mới sinh ra từ lượt nâng cấp này.
+            'usage': result['usage'],
+            'model_used': result['model_used'],
         })
 
     except RuntimeError as e:
