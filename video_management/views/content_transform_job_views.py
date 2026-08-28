@@ -80,20 +80,30 @@ def is_cancelled(job_id: str) -> bool:
     return bool(data) and data.get("status") == JOB_CANCELLED
 
 
+def _is_terminal(job_id: str) -> bool:
+    data = get_job(job_id)
+    return bool(data) and data.get("status") in _TERMINAL_STATUSES
+
+
 def spawn_job(
     kind: str,
-    work_fn: Callable[[Callable[[], bool]], Dict[str, Any]],
+    work_fn: Callable[[Callable[[], bool], Callable[..., None]], Dict[str, Any]],
     *,
     meta: Optional[Dict[str, Any]] = None,
+    hard_timeout_s: Optional[float] = None,
 ) -> str:
     """Tạo job nền, trả job_id NGAY.
 
-    `work_fn(check_cancel)` chạy trong thread daemon và nên trả về một dict chuẩn hoá:
+    `work_fn(check_cancel, heartbeat)` chạy trong thread daemon và nên trả về một dict chuẩn hoá:
       thành công        → {'success': True, ...payload...}
       lỗi có kiểm soát  → {'success': False, 'error_message': '...'}
     Ném exception cũng được — sẽ thành status 'error' với message là str(exc).
 
-    `check_cancel()` trả True khi người dùng đã huỷ; work_fn nên kiểm giữa các bước dài.
+    - `check_cancel()` trả True khi người dùng đã huỷ; work_fn nên kiểm giữa các bước dài.
+    - `heartbeat(msg=None)` làm mới `updated_at` trong store (báo "còn sống") + đổi message.
+    - `hard_timeout_s`: watchdog daemon — quá mốc này mà job chưa terminal thì tự đánh 'error'
+      và BỎ thread nền (nó là daemon, chết theo process). Chống job treo vô thời hạn khi một
+      lệnh gọi blocking (Gemini/DeepSeek) không bao giờ trả về.
     """
     job_id = uuid.uuid4().hex
     now = time.time()
@@ -106,19 +116,27 @@ def spawn_job(
         **(meta or {}),
     })
 
+    def _heartbeat(msg: Optional[str] = None) -> None:
+        fields: Dict[str, Any] = {}
+        if msg:
+            fields["message"] = msg
+        _write(job_id, **fields)  # _write luôn set updated_at
+
     def _runner() -> None:
         _write(job_id, status=JOB_RUNNING, message="Đang xử lý...")
         try:
-            result = work_fn(lambda: is_cancelled(job_id))
+            result = work_fn(lambda: is_cancelled(job_id), _heartbeat)
         except Exception as e:  # noqa: BLE001 — mọi lỗi của work_fn phải thành status error, không nuốt im
             logger.error(f"[content-transform job {job_id}/{kind}] lỗi: {e}", exc_info=True)
-            _write(job_id, status=JOB_ERROR, message=str(e), error=str(e))
+            if not _is_terminal(job_id):
+                _write(job_id, status=JOB_ERROR, message=str(e), error=str(e))
             return
 
-        if is_cancelled(job_id):
-            # Người dùng huỷ trong lúc work_fn còn chạy — giữ nguyên trạng thái cancelled và
-            # bỏ kết quả (kể cả khi work_fn vừa chạy xong): client đã thôi chờ.
-            _write(job_id, message="Đã huỷ bởi người dùng.")
+        # Watchdog / cancel đã kết thúc job trong lúc work_fn còn chạy — không ghi đè.
+        current = get_job(job_id)
+        if current and current.get("status") in _TERMINAL_STATUSES:
+            if current.get("status") == JOB_CANCELLED:
+                _write(job_id, message="Đã huỷ bởi người dùng.")
             return
 
         if isinstance(result, dict) and result.get("success") is False:
@@ -128,7 +146,23 @@ def spawn_job(
 
         _write(job_id, status=JOB_COMPLETED, message="Hoàn tất.", result=result)
 
+    def _watchdog() -> None:
+        time.sleep(hard_timeout_s)
+        if not _is_terminal(job_id):
+            logger.error(
+                f"[content-transform job {job_id}/{kind}] watchdog: quá {hard_timeout_s:.0f}s "
+                f"chưa xong — đánh dấu lỗi, bỏ thread nền."
+            )
+            _write(
+                job_id,
+                status=JOB_ERROR,
+                message="Xử lý quá lâu nên đã tự dừng. Vui lòng thử lại — thường lần sau sẽ nhanh.",
+                error="watchdog timeout",
+            )
+
     threading.Thread(target=_runner, name=f"ct_job_{kind}_{job_id}", daemon=True).start()
+    if hard_timeout_s:
+        threading.Thread(target=_watchdog, name=f"ct_job_wd_{job_id}", daemon=True).start()
     return job_id
 
 
@@ -170,11 +204,15 @@ def transform_job_cancel(request, job_id: str):
 # chạy trong thread nền; endpoint đồng bộ cũ giữ nguyên.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Ngân sách thời gian rộng cho job nền: không còn bị 1 kết nối HTTP đồng bộ bó lại, chỉ cần
-# đủ cho lần chạy Gemini/DeepSeek chậm nhất quan sát được cộng biên. Kẹp theo trần của
-# _read_transcribe_budget (900s).
-_JOB_TRANSCRIBE_BUDGET_S = 900
-_JOB_UPGRADE_BUDGET_S = 900
+# Ngân sách thời gian cho job nền. KHÔNG đặt quá rộng: transcribe_with_gemini nay CẮT + GỌI
+# LẠI mỗi 180s (GEMINI_GENERATE_MAX_PER_CALL) thay vì chờ 1 lần, nên ~480s là dư cho
+# upload + poll + 2-3 lần thử generate. Đặt 900s như trước chỉ khiến 1 lượt "câm" của Gemini
+# kéo job chạy 15 phút (đo thật) trước khi bỏ cuộc.
+_JOB_TRANSCRIBE_BUDGET_S = 480
+# Upgrade gọi 2 lượt LLM (DeepSeek) nối tiếp trong upgrade_scripted — cho rộng hơn 1 chút.
+_JOB_UPGRADE_BUDGET_S = 600
+# Watchdog cắt cứng: quá (budget + biên) mà job chưa terminal → tự đánh 'error', bỏ thread nền.
+_JOB_WATCHDOG_MARGIN_S = 90
 
 
 @api_view(["POST"])
@@ -214,7 +252,7 @@ def transcribe_upload_start(request):
 
     budget = _JOB_TRANSCRIBE_BUDGET_S
 
-    def _work(check_cancel: Callable[[], bool]) -> Dict[str, Any]:
+    def _work(check_cancel: Callable[[], bool], heartbeat: Callable[..., None]) -> Dict[str, Any]:
         started = time.time()
         try:
             return run_transcribe_upload_core(
@@ -224,6 +262,7 @@ def transcribe_upload_start(request):
                 request_started_at=started,
                 total_budget=budget,
                 check_cancel=check_cancel,
+                heartbeat=heartbeat,
             )
         finally:
             try:
@@ -232,7 +271,11 @@ def transcribe_upload_start(request):
             except OSError as e:
                 logger.warning(f"[transcribe job] không xoá được file tạm {input_path}: {e}")
 
-    job_id = spawn_job("transcribe", _work, meta={"message": "Đang nghe và chuyển đổi nội dung..."})
+    job_id = spawn_job(
+        "transcribe", _work,
+        meta={"message": "Đang nghe và chuyển đổi nội dung..."},
+        hard_timeout_s=budget + _JOB_WATCHDOG_MARGIN_S,
+    )
     return Response({"success": True, "job_id": job_id}, status=status.HTTP_200_OK)
 
 
@@ -263,7 +306,8 @@ def transform_content_upgrade_start(request):
     # Giữ nguyên để BE poll/reconcile lấy lại "previous" mà không cần thêm cột DB.
     client_context = request.data.get("client_context")
 
-    def _work(_check_cancel: Callable[[], bool]) -> Dict[str, Any]:
+    def _work(_check_cancel: Callable[[], bool], heartbeat: Callable[..., None]) -> Dict[str, Any]:
+        heartbeat("Đang viết lại kịch bản...")
         result = PaastAnalysisService().upgrade_scripted(
             write_system_prompt=write_system_prompt,
             write_user_prompt=write_user_prompt,
@@ -282,5 +326,8 @@ def transform_content_upgrade_start(request):
     meta = {"message": "Đang nâng cấp nội dung theo gợi ý..."}
     if client_context is not None:
         meta["client_context"] = client_context
-    job_id = spawn_job("upgrade", _work, meta=meta)
+    job_id = spawn_job(
+        "upgrade", _work, meta=meta,
+        hard_timeout_s=_JOB_UPGRADE_BUDGET_S + _JOB_WATCHDOG_MARGIN_S,
+    )
     return Response({"success": True, "job_id": job_id}, status=status.HTTP_200_OK)

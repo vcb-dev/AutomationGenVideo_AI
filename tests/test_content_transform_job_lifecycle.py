@@ -46,7 +46,7 @@ class _Authed:
 
 class SpawnJobTests(SimpleTestCase):
     def test_work_fn_thanh_cong_thi_completed_va_giu_payload(self):
-        job_id = jobs.spawn_job("test", lambda _cc: {"success": True, "transcript": "xin chào", "char_count": 8})
+        job_id = jobs.spawn_job("test", lambda _cc, _hb: {"success": True, "transcript": "xin chào", "char_count": 8})
         data = _wait_for(job_id, {jobs.JOB_COMPLETED, jobs.JOB_ERROR})
         self.assertEqual(data["status"], jobs.JOB_COMPLETED)
         self.assertEqual(data["result"]["transcript"], "xin chào")
@@ -55,7 +55,7 @@ class SpawnJobTests(SimpleTestCase):
     def test_work_fn_tra_success_false_thi_error_giu_nguyen_message(self):
         job_id = jobs.spawn_job(
             "test",
-            lambda _cc: {"success": False, "error_message": "Thời lượng file quá dài (900 giây > 600 giây).", "status_code": 400},
+            lambda _cc, _hb: {"success": False, "error_message": "Thời lượng file quá dài (900 giây > 600 giây).", "status_code": 400},
         )
         data = _wait_for(job_id, {jobs.JOB_COMPLETED, jobs.JOB_ERROR})
         self.assertEqual(data["status"], jobs.JOB_ERROR)
@@ -65,7 +65,7 @@ class SpawnJobTests(SimpleTestCase):
         self.assertEqual(data["result"]["status_code"], 400)
 
     def test_work_fn_nem_exception_thi_error_khong_nuot_im(self):
-        def boom(_cc):
+        def boom(_cc, _hb):
             raise RuntimeError("Gemini sinh transcript quá lâu")
 
         job_id = jobs.spawn_job("test", boom)
@@ -76,7 +76,7 @@ class SpawnJobTests(SimpleTestCase):
     def test_huy_giua_chung_thi_cancelled_va_bo_ket_qua(self):
         started = {"v": False}
 
-        def slow(check_cancel):
+        def slow(check_cancel, _hb):
             started["v"] = True
             for _ in range(200):
                 if check_cancel():
@@ -99,10 +99,45 @@ class SpawnJobTests(SimpleTestCase):
         self.assertNotIn("result", data if data else {})
 
     def test_heartbeat_updated_at_tang_theo_moi_lan_ghi(self):
-        job_id = jobs.spawn_job("test", lambda _cc: {"success": True})
+        job_id = jobs.spawn_job("test", lambda _cc, _hb: {"success": True})
         first = jobs.get_job(job_id)["updated_at"]
         data = _wait_for(job_id, {jobs.JOB_COMPLETED})
         self.assertGreaterEqual(data["updated_at"], first)
+
+    def test_heartbeat_doi_message_va_bump_updated_at(self):
+        seen = {}
+
+        def work(_cc, heartbeat):
+            time.sleep(0.05)
+            heartbeat("Đang sinh transcript (lần thử 1)...")
+            seen["after_beat"] = jobs.get_job(job_id)
+            time.sleep(0.05)
+            return {"success": True}
+
+        job_id = jobs.spawn_job("test", work)
+        data = _wait_for(job_id, {jobs.JOB_COMPLETED})
+        self.assertEqual(data["status"], jobs.JOB_COMPLETED)
+        self.assertEqual(seen["after_beat"]["message"], "Đang sinh transcript (lần thử 1)...")
+        self.assertGreater(seen["after_beat"]["updated_at"], seen["after_beat"]["created_at"])
+
+    def test_watchdog_ket_job_treo_thanh_error_bo_thread_nen(self):
+        """work_fn không bao giờ trả về (mô phỏng Gemini/DeepSeek treo) → watchdog tự đánh error."""
+        def hang(_cc, _hb):
+            time.sleep(30)  # daemon thread — chết theo process test
+            return {"success": True}
+
+        job_id = jobs.spawn_job("test", hang, hard_timeout_s=0.4)
+        data = _wait_for(job_id, {jobs.JOB_ERROR}, timeout=5)
+        self.assertEqual(data["status"], jobs.JOB_ERROR)
+        self.assertIn("watchdog", data.get("error", ""))
+        self.assertIn("Xử lý quá lâu", data["message"])
+
+    def test_watchdog_khong_dong_vao_job_da_xong_truoc_deadline(self):
+        job_id = jobs.spawn_job("test", lambda _cc, _hb: {"success": True, "x": 1}, hard_timeout_s=2)
+        data = _wait_for(job_id, {jobs.JOB_COMPLETED})
+        self.assertEqual(data["status"], jobs.JOB_COMPLETED)
+        time.sleep(2.2)  # để watchdog chạy qua mốc
+        self.assertEqual(jobs.get_job(job_id)["status"], jobs.JOB_COMPLETED)  # vẫn completed, không bị ghi đè
 
 
 class JobEndpointTests(SimpleTestCase):
@@ -128,7 +163,7 @@ class JobEndpointTests(SimpleTestCase):
         self.assertEqual(resp.status_code, 404)
 
     def test_status_tra_ve_du_field_khi_job_hoan_tat(self):
-        job_id = jobs.spawn_job("transcribe", lambda _cc: {"success": True, "transcript": "abc"})
+        job_id = jobs.spawn_job("transcribe", lambda _cc, _hb: {"success": True, "transcript": "abc"})
         _wait_for(job_id, {jobs.JOB_COMPLETED})
         resp = self._get_status(job_id)
         self.assertEqual(resp.status_code, 200)
@@ -138,7 +173,7 @@ class JobEndpointTests(SimpleTestCase):
         self.assertEqual(resp.data["result"]["transcript"], "abc")
 
     def test_cancel_job_da_o_trang_thai_cuoi_la_no_op(self):
-        job_id = jobs.spawn_job("test", lambda _cc: {"success": True})
+        job_id = jobs.spawn_job("test", lambda _cc, _hb: {"success": True})
         _wait_for(job_id, {jobs.JOB_COMPLETED})
         resp = self._post_cancel(job_id)
         self.assertEqual(resp.status_code, 200)
