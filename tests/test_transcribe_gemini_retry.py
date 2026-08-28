@@ -38,6 +38,14 @@ class _RetryError(Exception):
     pass
 
 
+class _NotFound(Exception):
+    pass
+
+
+class _PermissionDenied(Exception):
+    pass
+
+
 def _install_fake_genai(generate_side_effects):
     """Cài google.generativeai + google.api_core.exceptions giả. Trả về list ghi lại
     request_options['timeout'] của từng lần gọi generate_content."""
@@ -67,13 +75,19 @@ def _install_fake_genai(generate_side_effects):
     exc_mod = types.ModuleType("google.api_core.exceptions")
     exc_mod.DeadlineExceeded = _DeadlineExceeded
     exc_mod.RetryError = _RetryError
+    exc_mod.NotFound = _NotFound
+    exc_mod.PermissionDenied = _PermissionDenied
     api_core.exceptions = exc_mod
 
     return genai, api_core, exc_mod, timeouts
 
 
-@override_settings(GEMINI_API_KEY="fake-key", GEMINI_MODEL="gemini-2.5-flash")
+@override_settings(GEMINI_API_KEY="fake-key", GEMINI_MODEL="gemini-flash-lite-latest")
 class GeminiRetryTests(SimpleTestCase):
+    def setUp(self):
+        from video_management.views import transcribe_views as tv
+        tv._gemini_working_model = None  # cache model — reset để test không dính nhau
+
     def _run(self, side_effects, deadline_offset=600):
         genai, api_core, exc_mod, timeouts = _install_fake_genai(list(side_effects))
         beats = []
@@ -107,6 +121,14 @@ class GeminiRetryTests(SimpleTestCase):
         self.assertEqual(result, "xong ở lần 3")
         self.assertEqual(len(timeouts), 3)  # đã gọi lại 2 lần
         self.assertEqual(len([b for b in beats if b and "lần thử" in b]), 3)
+
+    def test_model_404_thi_doi_model_ngay_khong_thu_lai(self):
+        """NotFound (model sai với key) → sang model kế tiếp NGAY, không phí 2 lần thử."""
+        from video_management.views import transcribe_views as tv
+        result, timeouts, _ = self._run([_NotFound("404"), "ok từ model 2"], deadline_offset=5000)
+        self.assertEqual(result, "ok từ model 2")
+        self.assertEqual(len(timeouts), 2)  # model1: 1 lần rồi bỏ (không thử lại), model2: 1 lần OK
+        self.assertEqual(tv._gemini_working_model, tv._GEMINI_TRANSCRIBE_MODELS[1])
 
     def test_khong_du_ngan_sach_cho_generate_thi_raise_timeout(self):
         # Ngân sách quá ít để sinh transcript → raise TimeoutError (không lao vào gọi generate

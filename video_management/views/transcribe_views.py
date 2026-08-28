@@ -72,6 +72,9 @@ GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
 # lần thử lại xong trong 61s. Gemini thỉnh thoảng stall ở phía server; chờ hết ngân sách
 # 1 lần là vô nghĩa. Cắt ở mốc này rồi GỌI LẠI (xem vòng lặp trong transcribe_with_gemini).
 GEMINI_GENERATE_MAX_PER_CALL = 180  # seconds
+# Lần THỬ ĐẦU với 1 model CHƯA xác nhận chạy được: timeout ngắn. Model không trả nổi transcript
+# trong 60s (kể cả file lớn) thì hoặc hỏng hoặc quá tải — đổi model ngay thay vì phí 180s.
+GEMINI_MODEL_PROBE_TIMEOUT = 60  # seconds
 
 
 def _read_transcribe_budget(request) -> int:
@@ -843,10 +846,36 @@ def extract_audio_for_gemini(input_path: str, ffmpeg_path: str, out_path: str) -
     return False
 
 
+# Model Gemini cho transcribe. THỨ TỰ ƯU TIÊN. `gemini-flash-lite-latest` đứng đầu: đo thật
+# transcribe audio 12s xong trong ~7s, rẻ nhất, quá đủ cho nhận diện tiếng nói.
+#
+# Vì sao cần LIST + fallback: alias `-latest` của Google TRÔI theo thời gian và có thể trỏ vào
+# model đang lỗi/quá tải với 1 API key cụ thể. Đo thật 2026-08: key hiện tại gọi
+# `gemini-flash-latest` (giá trị .env cũ) → DeadlineExceeded kể cả prompt "say hello"; còn
+# `gemini-2.5-flash` → 404 "no longer available to new users". `gemini-3.5-flash` /
+# `gemini-flash-lite-latest` → 2-7s, chuẩn. Fallback tự động sang model chạy được thay vì để
+# cả tính năng chết theo 1 alias.
+_GEMINI_TRANSCRIBE_MODELS = ['gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-2.5-flash']
+# Model đầu tiên chạy được trong process này — thử trước ở các lần sau, khỏi dò lại từ đầu.
+_gemini_working_model: Optional[str] = None
+
+
+def _gemini_model_candidates() -> list:
+    """Danh sách model để thử, không trùng: [model đã biết chạy được] + [GEMINI_MODEL cấu hình]
+    + [_GEMINI_TRANSCRIBE_MODELS mặc định]."""
+    configured = (getattr(settings, 'GEMINI_MODEL', None) or os.getenv('GEMINI_MODEL', '') or '').strip()
+    out: list = []
+    for m in [_gemini_working_model, configured, *_GEMINI_TRANSCRIBE_MODELS]:
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
 def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, heartbeat=None) -> str:
     """
-    Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
-    Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
+    Upload file (nên là audio-only — xem extract_audio_for_gemini) lên Gemini Files API và
+    sinh transcript. Thử lần lượt các model trong _gemini_model_candidates() + retry per-call.
+    Kiểm tra dung lượng (≤500MB) và dọn file trên server Google sau khi xong.
 
     `deadline` là MỐC THỜI GIAN TUYỆT ĐỐI (time.time() + ngân sách còn lại) mà toàn bộ
     hàm này phải kết thúc trước — do người gọi tính từ lúc vào view, nên nó đã trừ sẵn
@@ -885,10 +914,7 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
     if not api_key:
         raise ValueError("Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.")
 
-    model_name = getattr(settings, 'GEMINI_MODEL', None)
-    if not model_name:
-        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
-    model_name = str(model_name).strip()
+    model_candidates = _gemini_model_candidates() or ['gemini-flash-lite-latest']
 
     # 3. Configure and upload
     genai.configure(api_key=api_key)
@@ -949,34 +975,56 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
             "không thêm bất kỳ lời giải thích, tiêu đề, hay ghi chú nào khác. "
             "Chú ý viết đúng chính tả các từ: Huy Ca, Viễn Chí Bảo, bạc 925, bạc S925, moissanite, kim cương, CZ, nhẫn, dây chuyền."
         )
-        model = genai.GenerativeModel(model_name)
+        global _gemini_working_model
         attempt = 0
-        last_ge = None
-        while True:
-            attempt += 1
-            per_call = min(GEMINI_GENERATE_MAX_PER_CALL, _remaining() - TRANSCRIBE_RESPONSE_MARGIN)
-            if per_call < GEMINI_GENERATE_MIN_TIMEOUT:
-                raise TimeoutError(
-                    f"Gemini sinh transcript quá lâu — đã thử {attempt - 1} lần (mỗi lần tới "
-                    f"{GEMINI_GENERATE_MAX_PER_CALL}s), không còn ngân sách để thử tiếp."
-                ) from last_ge
-            logger.info(
-                f"[Gemini Transcribe] generate_content lần {attempt} "
-                f"(timeout {per_call:.0f}s, ngân sách còn {_remaining():.0f}s)..."
-            )
-            _beat(f"Đang sinh transcript (lần thử {attempt})...")
-            try:
-                response = model.generate_content(
-                    [gemini_file, prompt],
-                    request_options={'timeout': per_call},
+        last_err = None
+        # Thử lần lượt từng model ứng viên:
+        #  - NotFound/PermissionDenied  → model sai với key này, đổi model NGAY.
+        #  - Model CHƯA xác nhận + lần đầu: timeout ngắn (PROBE); DeadlineExceeded → đổi model
+        #    ngay (khỏi phí 180s cho model hỏng/quá tải như `gemini-flash-latest` hiện tại).
+        #  - Model ĐÃ xác nhận chạy được (_gemini_working_model): full timeout + tối đa 3 lần thử.
+        for model_name in model_candidates:
+            is_known = model_name == _gemini_working_model
+            model = genai.GenerativeModel(model_name)
+            max_tries = 3 if is_known else 2
+            for k in range(1, max_tries + 1):
+                attempt += 1
+                budget_left = _remaining() - TRANSCRIBE_RESPONSE_MARGIN
+                if budget_left < GEMINI_GENERATE_MIN_TIMEOUT:
+                    raise TimeoutError(
+                        f"Gemini sinh transcript quá lâu — đã thử {attempt - 1} lượt, không còn ngân sách."
+                    ) from last_err
+                probe = (not is_known) and k == 1
+                per_call = min(GEMINI_MODEL_PROBE_TIMEOUT if probe else GEMINI_GENERATE_MAX_PER_CALL, budget_left)
+                logger.info(
+                    f"[Gemini Transcribe] generate_content [{model_name}]{' (probe)' if probe else ''} "
+                    f"lần {attempt} (timeout {per_call:.0f}s, ngân sách còn {_remaining():.0f}s)..."
                 )
-                return response.text.strip()
-            except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
-                last_ge = ge
-                logger.warning(
-                    f"[Gemini Transcribe] generate_content lần {attempt} timeout sau ~{per_call:.0f}s "
-                    f"(ngân sách còn {_remaining():.0f}s) — thử lại."
-                )
+                _beat(f"Đang sinh transcript (lần thử {attempt})...")
+                try:
+                    response = model.generate_content(
+                        [gemini_file, prompt],
+                        request_options={'timeout': per_call},
+                    )
+                    _gemini_working_model = model_name
+                    return response.text.strip()
+                except (google_api_exceptions.NotFound, google_api_exceptions.PermissionDenied) as ce:
+                    last_err = ce
+                    logger.warning(f"[Gemini Transcribe] model {model_name} không dùng được với key này ({ce}) — đổi model.")
+                    break
+                except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
+                    last_err = ge
+                    logger.warning(
+                        f"[Gemini Transcribe] [{model_name}] lần {attempt} timeout ~{per_call:.0f}s "
+                        f"(còn {_remaining():.0f}s)."
+                    )
+                    if probe:
+                        break  # probe hỏng → đổi model ngay, không thử lại model này
+
+        raise TimeoutError(
+            f"Gemini không sinh được transcript sau khi thử {len(model_candidates)} model "
+            f"({', '.join(model_candidates)}). Có thể API key đang bị giới hạn quota. Lỗi cuối: {last_err}"
+        ) from last_err
 
     finally:
         if gemini_file:
