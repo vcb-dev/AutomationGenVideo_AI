@@ -808,6 +808,41 @@ def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
     return None
 
 
+# Định dạng audio gửi Gemini: mp3 mono 16kHz 64kbps — thừa cho nhận diện tiếng nói, mà cực nhẹ.
+# 30 giây ≈ 240KB, 10 phút ≈ 4.8MB (so với video HEVC 1080x1920 gốc có thể 10-100MB).
+_GEMINI_AUDIO_ARGS = ['-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k']
+_GEMINI_AUDIO_EXTRACT_TIMEOUT = 180  # ffmpeg tách audio — dài dự phòng cho file 10 phút / máy chậm
+
+
+def extract_audio_for_gemini(input_path: str, ffmpeg_path: str, out_path: str) -> bool:
+    """Tách RIÊNG track âm thanh ra mp3 để gửi Gemini thay vì cả video.
+
+    Transcribe chỉ cần tiếng nói. Gửi cả video buộc Gemini phải giải mã + lập chỉ mục
+    khung hình — với video HEVC 1080x1920 (dọc) đây là chỗ Gemini hay "đơ" (đo thật: cùng
+    1 file 30s, gửi cả video stall >889s qua nhiều lần thử; audio-only xong trong vài giây).
+    Đồng thời cắt dung lượng upload ~20-50 lần.
+
+    Trả True nếu ra file audio hợp lệ (>500 byte); False để caller fallback gửi file gốc
+    (vd file không có audio stream, container lạ ffmpeg không đọc được).
+    """
+    try:
+        result = subprocess.run(
+            [ffmpeg_path, '-i', input_path, *_GEMINI_AUDIO_ARGS, '-y', out_path],
+            capture_output=True, text=True, timeout=_GEMINI_AUDIO_EXTRACT_TIMEOUT,
+        )
+        if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+            return True
+        logger.warning(
+            f"[Gemini Transcribe] Tách audio thất bại (rc={result.returncode}) — "
+            f"gửi file gốc: {(result.stderr or '')[-300:]}"
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[Gemini Transcribe] Tách audio quá {_GEMINI_AUDIO_EXTRACT_TIMEOUT}s — gửi file gốc.")
+    except OSError as e:
+        logger.warning(f"[Gemini Transcribe] Tách audio lỗi ({e}) — gửi file gốc.")
+    return False
+
+
 def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, heartbeat=None) -> str:
     """
     Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
@@ -999,7 +1034,28 @@ def run_transcribe_upload_core(
         if check_cancel and check_cancel():
             return {'success': False, 'status_code': 499, 'error_message': 'Đã huỷ bởi người dùng.'}
 
-        transcript = transcribe_with_gemini(input_path, deadline=deadline, heartbeat=heartbeat)
+        # Tách audio-only TRƯỚC khi gửi Gemini — bước giảm tải lớn nhất (xem extract_audio_for_gemini).
+        if heartbeat:
+            heartbeat('Đang tách âm thanh...')
+        audio_path = os.path.splitext(input_path)[0] + '.gemini16k.mp3'
+        gemini_input = input_path
+        if extract_audio_for_gemini(input_path, ffmpeg_path, audio_path):
+            gemini_input = audio_path
+            logger.info(
+                f"[Transcribe Upload] Gửi Gemini audio-only {os.path.getsize(audio_path) / 1024:.0f}KB "
+                f"(thay vì {os.path.getsize(input_path) / (1024 * 1024):.1f}MB cả video)."
+            )
+        else:
+            audio_path = None  # không có file audio để dọn
+
+        try:
+            transcript = transcribe_with_gemini(gemini_input, deadline=deadline, heartbeat=heartbeat)
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except OSError:
+                    pass
         transcript = _normalize_transcript_vi(transcript)
 
         logger.info(
