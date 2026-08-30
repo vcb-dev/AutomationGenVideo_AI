@@ -110,7 +110,11 @@ class SpawnJobTests(SimpleTestCase):
         def work(_cc, heartbeat):
             time.sleep(0.05)
             heartbeat("Đang sinh transcript (lần thử 1)...")
-            seen["after_beat"] = jobs.get_job(job_id)
+            # Chụp SNAPSHOT ngay tại đây: với Redis, get_job() trả bản json.loads mới mỗi
+            # lần; với RAM fallback nó trả chính dict sống, mà _runner sẽ mutate thành
+            # "Hoàn tất." sau khi work_fn return. dict(...) khoá giá trị lúc heartbeat để
+            # test độc lập với store backend.
+            seen["after_beat"] = dict(jobs.get_job(job_id))
             time.sleep(0.05)
             return {"success": True}
 
