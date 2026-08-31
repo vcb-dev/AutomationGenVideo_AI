@@ -32,53 +32,325 @@ FONT_SIZE_MAX = 120
 HEX_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
 DOWNLOAD_TIMEOUT_S = 20
 PERSON_SLUG_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+PREVIEWS_DIR = os.path.join(ASSETS_DIR, 'previews')
 
-# MVP: 1 template. Mở rộng sau bằng cách thêm key mới.
+# Kích thước chuẩn theo orientation (YouTube/FB 16:9, TikTok/Reels 9:16)
+ORIENTATION_SIZES: dict[str, tuple[int, int]] = {
+    'landscape': (1280, 720),
+    'portrait': (720, 1280),
+}
+
+_L = 'landscape'
+_P = 'portrait'
+_STD_BG = {'fit': 'cover', 'blur': 0}
+_STD_TEXT = {'color_mode': 'auto', 'font_size_min': 28}
+
 TEMPLATES: dict[str, dict[str, dict[str, Any]]] = {
+    # YouTube + Facebook classic — chữ giữa trên, người giữa dưới
     'simple_v1': {
-        #landscape là hình ảnh ngang
-        'landscape': {
-            'size': (1280, 720),
-            'content_bg': {'fit': 'cover', 'blur': 0},
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': dict(_STD_BG),
             'overlay': {'color': (0, 0, 0, 90)},
-            'person': {
-                'anchor': 'bottom_center',
-                'max_height_ratio': 0.62,
-                'bottom_padding': 0,
-            },
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.62, 'bottom_padding': 0},
             'text': {
+                **_STD_TEXT,
                 'area': (60, 40, 1220, 260),
-                'color_mode': 'auto',   # quan trọng — không fixed white
                 'align': 'center',
                 'max_lines': 3,
                 'font_size_start': 72,
-                'font_size_min': 28,
             },
         },
-        #portrait là hình ảnh dọc
-        'portrait': {
-            'size': (720, 1280),
-            'content_bg': {'fit': 'cover', 'blur': 0},
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': dict(_STD_BG),
             'overlay': {'color': (0, 0, 0, 100)},
-            'person': {
-                'anchor': 'bottom_center',
-                'max_height_ratio': 0.55,
-                'bottom_padding': 0,
-            },
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.55, 'bottom_padding': 0},
             'text': {
+                **_STD_TEXT,
                 'area': (40, 80, 680, 340),
-                'color_mode': 'auto',
                 'align': 'center',
                 'max_lines': 4,
                 'font_size_start': 72,
-                'font_size_min': 28,
+            },
+        },
+    },
+    # YouTube drama / CTR cao — chữ trái, người phải
+    'bold_left_v1': {
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 115)},
+            'person': {
+                'anchor': 'bottom_right',
+                'max_height_ratio': 0.68,
+                'bottom_padding': 0,
+                'side_padding': 16,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (48, 70, 700, 380),
+                'align': 'left',
+                'max_lines': 3,
+                'font_size_start': 76,
+            },
+        },
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 120)},
+            'person': {
+                'anchor': 'bottom_right',
+                'max_height_ratio': 0.52,
+                'bottom_padding': 0,
+                'side_padding': 0,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (36, 90, 420, 480),
+                'align': 'left',
+                'max_lines': 4,
+                'font_size_start': 68,
+            },
+        },
+    },
+    # YouTube drama / CTR cao — chữ phải, người trái
+    'bold_right_v1': {
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 115)},
+            'person': {
+                'anchor': 'bottom_left',
+                'max_height_ratio': 0.68,
+                'bottom_padding': 0,
+                'side_padding': 16,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (580, 70, 1232, 380),
+                'align': 'left',
+                'max_lines': 3,
+                'font_size_start': 76,
+            },
+        },
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 120)},
+            'person': {
+                'anchor': 'bottom_left',
+                'max_height_ratio': 0.52,
+                'bottom_padding': 0,
+                'side_padding': 0,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (300, 90, 684, 480),
+                'align': 'left',
+                'max_lines': 4,
+                'font_size_start': 68,
+            },
+        },
+    },
+    # Facebook feed sạch — chữ gọn phía trên
+    'fb_minimal_v1': {
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0,  0, 0, 55)},
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.58, 'bottom_padding': 0},
+            'text': {
+                **_STD_TEXT,
+                'area': (80, 28, 1200, 210),
+                'align': 'center',
+                'max_lines': 2,
+                'font_size_start': 64,
+            },
+        },
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 70)},
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.52, 'bottom_padding': 0},
+            'text': {
+                **_STD_TEXT,
+                'area': (48, 60, 672, 280),
+                'align': 'center',
+                'max_lines': 3,
+                'font_size_start': 66,
+            },
+        },
+    },
+    # TikTok hook — chữ lớn phía trên, người chiếm phần dưới
+    'tiktok_hook_v1': {
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 95)},
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.60, 'bottom_padding': 0},
+            'text': {
+                **_STD_TEXT,
+                'area': (60, 36, 1220, 240),
+                'align': 'center',
+                'max_lines': 2,
+                'font_size_start': 78,
+            },
+        },
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': dict(_STD_BG),
+            'overlay': {'color': (0, 0, 0, 105)},
+            'person': {'anchor': 'bottom_center', 'max_height_ratio': 0.56, 'bottom_padding': 0},
+            'text': {
+                **_STD_TEXT,
+                'area': (32, 56, 688, 340),
+                'align': 'center',
+                'max_lines': 3,
+                'font_size_start': 82,
+            },
+        },
+    },
+    # Reels / Shorts / IG Story — chữ trái giữa, người phải
+    'reels_story_v1': {
+        _L: {
+            'size': ORIENTATION_SIZES[_L],
+            'content_bg': {'fit': 'cover', 'blur': 1},
+            'overlay': {'color': (0, 0, 0, 100)},
+            'person': {
+                'anchor': 'bottom_right',
+                'max_height_ratio': 0.64,
+                'bottom_padding': 0,
+                'side_padding': 24,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (52, 100, 720, 400),
+                'align': 'left',
+                'max_lines': 3,
+                'font_size_start': 70,
+            },
+        },
+        _P: {
+            'size': ORIENTATION_SIZES[_P],
+            'content_bg': {'fit': 'cover', 'blur': 1},
+            'overlay': {'color': (0, 0, 0, 110)},
+            'person': {
+                'anchor': 'bottom_right',
+                'max_height_ratio': 0.50,
+                'bottom_padding': 0,
+                'side_padding': 0,
+            },
+            'text': {
+                **_STD_TEXT,
+                'area': (36, 120, 480, 520),
+                'align': 'left',
+                'max_lines': 4,
+                'font_size_start': 72,
             },
         },
     },
 }
 
+TEMPLATE_CATALOG: dict[str, dict[str, Any]] = {
+    'simple_v1': {
+        'label': 'Classic Center',
+        'description': 'Chữ giữa trên, người giữa dưới — chuẩn YouTube & Facebook',
+        'platforms': ['youtube', 'facebook'],
+        'best_orientation': 'landscape',
+    },
+    'bold_left_v1': {
+        'label': 'Person Right',
+        'description': 'Chữ căn trái, người bên phải — drama, CTR cao',
+        'platforms': ['youtube', 'facebook'],
+        'best_orientation': 'landscape',
+    },
+    'bold_right_v1': {
+        'label': 'Person Left',
+        'description': 'Chữ bên phải, người bên trái — drama, CTR cao',
+        'platforms': ['youtube', 'facebook'],
+        'best_orientation': 'landscape',
+    },
+    'fb_minimal_v1': {
+        'label': 'Facebook Clean',
+        'description': 'Chữ gọn phía trên, nền sáng — feed Facebook',
+        'platforms': ['facebook'],
+        'best_orientation': 'landscape',
+    },
+    'tiktok_hook_v1': {
+        'label': 'TikTok Hook',
+        'description': 'Hook chữ lớn phía trên — TikTok, Shorts dọc',
+        'platforms': ['tiktok', 'youtube'],
+        'best_orientation': 'portrait',
+    },
+    'reels_story_v1': {
+        'label': 'Reels Story',
+        'description': 'Chữ trái, người phải — Reels, IG Story, Shorts',
+        'platforms': ['tiktok', 'instagram', 'youtube'],
+        'best_orientation': 'portrait',
+    },
+}
+
 FONT_MAP: dict[str, str] = {
     'bevietnam_bold': 'BeVietnamPro-Bold.ttf',
+    'noto_sans_bold': 'NotoSans-Bold.ttf',
+    'montserrat_black': 'Montserrat-Black.ttf',
+    'oswald_bold': 'Oswald-Bold.ttf',
+    'anton': 'Anton-Regular.ttf',
+    'noto_sans_jp_bold': 'NotoSansJP-Bold.ttf',
+    'noto_sans_thai_bold': 'NotoSansThai-Bold.ttf',
+}
+
+FONT_CATALOG: dict[str, dict[str, Any]] = {
+    'bevietnam_bold': {
+        'label': 'Be Vietnam Pro Bold',
+        'sample': 'TIÊU ĐỀ THUMBNAIL',
+        'regions': ['vietnam'],
+        'note': 'Tối ưu tiếng Việt',
+    },
+    'noto_sans_bold': {
+        'label': 'Noto Sans Bold',
+        'sample': 'GLOBAL THUMBNAIL TITLE',
+        'regions': ['global', 'malaysia', 'indonesia'],
+        'note': 'Đa ngôn ngữ Latin — MY, ID, EN',
+    },
+    'montserrat_black': {
+        'label': 'Montserrat Black',
+        'sample': 'YOUTUBE THUMBNAIL',
+        'regions': ['global', 'youtube'],
+        'note': 'Phổ biến YouTube quốc tế',
+    },
+    'oswald_bold': {
+        'label': 'Oswald Bold',
+        'sample': 'BREAKING NEWS',
+        'regions': ['global', 'youtube', 'facebook'],
+        'note': 'Condensed — nhiều chữ, dễ đọc',
+    },
+    'anton': {
+        'label': 'Anton',
+        'sample': 'CLICK BAIT TITLE',
+        'regions': ['global'],
+        'note': 'Display bold — thumbnail classic',
+    },
+    'noto_sans_jp_bold': {
+        'label': 'Noto Sans JP Bold',
+        'sample': 'サムネイルタイトル',
+        'regions': ['japan'],
+        'note': 'Tiếng Nhật',
+    },
+    'noto_sans_thai_bold': {
+        'label': 'Noto Sans Thai Bold',
+        'sample': 'หัวข้อภาพปก',
+        'regions': ['thailand'],
+        'note': 'Tiếng Thái',
+    },
+}
+
+PLATFORM_LABELS: dict[str, str] = {
+    'youtube': 'YouTube',
+    'facebook': 'Facebook',
+    'tiktok': 'TikTok',
+    'instagram': 'Instagram',
 }
 
 
@@ -116,22 +388,72 @@ def build_text_spec(base: dict[str, Any], font_size: int | None, text_color: str
         spec['color'] = parse_hex_color(text_color)
     return spec
 
-# Danh sách các template và fonts
-def list_templates() -> dict[str, list[dict[str, str | list[str]]]]:
-    fonts = [
-        {'id': key, 'label': key.replace('_', ' ').title()}
-        for key, filename in FONT_MAP.items()
-        if os.path.isfile(os.path.join(FONTS_DIR, filename))
-    ]
-    templates = [
-        {
+# Danh sách các template và fonts (kèm preview + metadata cho FE)
+def list_templates() -> dict[str, list[dict[str, Any]]]:
+    fonts: list[dict[str, Any]] = []
+    for key, filename in FONT_MAP.items():
+        if not os.path.isfile(os.path.join(FONTS_DIR, filename)):
+            continue
+        meta = FONT_CATALOG.get(key, {})
+        fonts.append({
+            'id': key,
+            'label': meta.get('label', key.replace('_', ' ').title()),
+            'sample': meta.get('sample', 'THUMBNAIL TITLE'),
+            'regions': meta.get('regions', []),
+            'note': meta.get('note', ''),
+            'filename': filename,
+        })
+
+    templates: list[dict[str, Any]] = []
+    for template_id, cfg in TEMPLATES.items():
+        meta = TEMPLATE_CATALOG.get(template_id, {})
+        previews: dict[str, str] = {}
+        for orient in cfg.keys():
+            fn = f'{template_id}_{orient}.png'
+            if os.path.isfile(os.path.join(PREVIEWS_DIR, fn)):
+                previews[orient] = fn
+
+        platforms = meta.get('platforms', [])
+        templates.append({
             'id': template_id,
-            'label': template_id.replace('_', ' ').title(),
+            'label': meta.get('label', template_id.replace('_', ' ').title()),
+            'description': meta.get('description', ''),
             'orientations': list(cfg.keys()),
-        }
-        for template_id, cfg in TEMPLATES.items()
-    ]
+            'platforms': platforms,
+            'platform_labels': [PLATFORM_LABELS.get(p, p) for p in platforms],
+            'best_orientation': meta.get('best_orientation', 'landscape'),
+            'previews': previews,
+        })
     return {'templates': templates, 'fonts': fonts}
+
+
+def resolve_preview_path(filename: str) -> str:
+    """Trả path tuyệt đối file preview — chống path traversal."""
+    filename = (filename or '').strip()
+    if not re.fullmatch(r'^[a-zA-Z0-9_-]+\.png$', filename):
+        raise ValueError('Tên file preview không hợp lệ')
+    path = os.path.realpath(os.path.join(PREVIEWS_DIR, filename))
+    root = os.path.realpath(PREVIEWS_DIR)
+    if not path.startswith(root + os.sep):
+        raise ValueError('Tên file preview không hợp lệ')
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Không tìm thấy preview: {filename}')
+    return path
+
+
+def resolve_font_path(filename: str) -> str:
+    """Trả path tuyệt đối file font — chỉ file trong FONT_MAP."""
+    filename = (filename or '').strip()
+    allowed = set(FONT_MAP.values())
+    if filename not in allowed:
+        raise ValueError('Font không hợp lệ')
+    path = os.path.realpath(os.path.join(FONTS_DIR, filename))
+    root = os.path.realpath(FONTS_DIR)
+    if not path.startswith(root + os.sep):
+        raise ValueError('Font không hợp lệ')
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Không tìm thấy font: {filename}')
+    return path
 
 # Load font từ assets
 def _load_font(font_key: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -151,9 +473,14 @@ def _open_rgba(data: bytes) -> Image.Image:
 def _fit_cover(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
     return ImageOps.fit(img, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
-# Paste người vào ảnh
+# Paste người vào ảnh (hỗ trợ anchor: bottom_center | bottom_left | bottom_right)
 def _paste_person(canvas: Image.Image, person: Image.Image, spec: dict[str, Any]) -> None:
     cw, ch = canvas.size
+    visible_alpha = person.getchannel('A').point(lambda value: 255 if value >= 16 else 0)
+    alpha_bbox = visible_alpha.getbbox()
+    if alpha_bbox:
+        person = person.crop(alpha_bbox)
+
     max_h = int(ch * float(spec.get('max_height_ratio', 0.6)))
     ratio = max_h / max(person.height, 1)
     new_w = max(1, int(person.width * ratio))
@@ -161,9 +488,27 @@ def _paste_person(canvas: Image.Image, person: Image.Image, spec: dict[str, Any]
     person = person.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     bottom_pad = int(spec.get('bottom_padding', 0))
-    x = (cw - new_w) // 2
+    side_pad = int(spec.get('side_padding', 0))
+    anchor = spec.get('anchor', 'bottom_center')
     y = ch - new_h - bottom_pad
+
+    if anchor == 'bottom_right':
+        x = cw - new_w - side_pad
+    elif anchor == 'bottom_left':
+        x = side_pad
+    else:
+        x = (cw - new_w) // 2
+
     canvas.alpha_composite(person, (x, y))
+
+
+def _apply_overlay(canvas: Image.Image, spec: dict[str, Any]) -> None:
+    overlay = spec.get('overlay') or {}
+    color = overlay.get('color')
+    if not color:
+        return
+    layer = Image.new('RGBA', canvas.size, tuple(color))
+    canvas.alpha_composite(layer)
 
 # Wrap title là viết dài thành nhiều dòng
 def _wrap_title(
@@ -299,6 +644,26 @@ def _pick_text_style(
     )
     return best_fill, stroke, stroke_width
 
+def _layout_text_lines(
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    lines: list[str],
+    line_gap: int,
+    stroke_width: int,
+) -> tuple[list[tuple[tuple[int, int, int, int], int]], int]:
+    """Tính baseline theo visual bbox để dấu đa ngôn ngữ không chồng dòng."""
+    layouts: list[tuple[tuple[int, int, int, int], int]] = []
+    cursor_y = 0
+
+    for line in lines:
+        bbox = font.getbbox(line, anchor='ls', stroke_width=stroke_width)
+        baseline_y = cursor_y - bbox[1]
+        layouts.append((bbox, baseline_y))
+        cursor_y += bbox[3] - bbox[1] + line_gap
+
+    total_height = max(0, cursor_y - line_gap)
+    return layouts, total_height
+
+
 # Vẽ tiêu đề lên ảnh
 def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key: str) -> None:
     left, top, right, bottom = spec['area']
@@ -316,8 +681,8 @@ def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key:
     while font_size >= font_size_min:
         font = _load_font(font_key, font_size)
         lines = _wrap_title(title, font, max_width, max_lines)
-        line_heights = [font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines]
-        total_h = sum(line_heights) + (len(lines) - 1) * int(font_size * 0.15)
+        line_gap = int(font_size * 0.15)
+        layouts, total_h = _layout_text_lines(font, lines, line_gap, stroke_width)
         if total_h <= max_height:
             break
         font_size -= 2
@@ -326,19 +691,21 @@ def _draw_title(canvas: Image.Image, title: str, spec: dict[str, Any], font_key:
 
     draw = ImageDraw.Draw(canvas)
     line_gap = int(font_size * 0.15)
-    line_heights = [font.getbbox(line)[3] - font.getbbox(line)[1] for line in lines]
-    total_h = sum(line_heights) + (len(lines) - 1) * line_gap
-    y = top + (max_height - total_h) // 2
+    layouts, total_h = _layout_text_lines(font, lines, line_gap, stroke_width)
+    block_top = top + (max_height - total_h) // 2
 
-    for i, line in enumerate(lines):
-        bbox = font.getbbox(line)
+    for line, (bbox, baseline_y) in zip(lines, layouts):
         text_w = bbox[2] - bbox[0]
-        x = left + (max_width - text_w) // 2 if align == 'center' else left
-        draw.text(
-            (x, y), line, font=font, fill=fill,
-            stroke_width=stroke_width, stroke_fill=stroke_fill,
+        x = (
+            left + (max_width - text_w) // 2 - bbox[0]
+            if align == 'center'
+            else left - bbox[0]
         )
-        y += line_heights[i] + line_gap
+        draw.text(
+            (x, block_top + baseline_y), line, font=font, fill=fill,
+            stroke_width=stroke_width, stroke_fill=stroke_fill,
+            anchor='ls',
+        )
 
 # Tạo lớp nền — Gemini nếu bật, fallback PIL crop.
 def _build_background(
@@ -405,6 +772,7 @@ def generate_thumbnail(data: ThumbnailInput) -> bytes:
         data.enhance_background,
     )
     canvas = bg.copy()
+    _apply_overlay(canvas, spec)
 
     person = _open_rgba(data.person_image_bytes)
     _paste_person(canvas, person, spec['person'])

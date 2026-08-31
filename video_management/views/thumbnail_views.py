@@ -1,5 +1,7 @@
 import base64
 import logging
+
+from django.http import FileResponse
 import io
 
 from rest_framework import status
@@ -18,6 +20,8 @@ from video_management.services.thumbnail_service import (
     generate_thumbnail,
     list_templates,
     load_person_bytes_by_slug,
+    resolve_font_path,
+    resolve_preview_path,
 )
 
 from video_management.services.thumbnail_gemini_service import (
@@ -121,6 +125,30 @@ def _validate_generate_content_form(data, files):
 @permission_classes([IsAuthenticated])
 def thumbnail_templates_api(request):
     return Response({'success': True, **list_templates()})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def thumbnail_preview_file_api(request, filename: str):
+    try:
+        path = resolve_preview_path(filename)
+    except ValueError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except FileNotFoundError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    return FileResponse(open(path, 'rb'), content_type='image/png')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def thumbnail_font_file_api(request, filename: str):
+    try:
+        path = resolve_font_path(filename)
+    except ValueError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except FileNotFoundError as exc:
+        return Response({'success': False, 'error': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    return FileResponse(open(path, 'rb'), content_type='font/ttf')
 
 # API tạo thumbnail
 @api_view(['POST'])

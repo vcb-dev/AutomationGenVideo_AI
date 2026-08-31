@@ -15,12 +15,10 @@ DEFAULT_MODEL = 'gemini-2.5-flash-image'
 DEFAULT_TIMEOUT_S = 45
 MAX_CONTENT_PROMPT_LEN = 2000
 MAX_REFERENCE_IMAGES = 3
-# Kích thước template simple_v1 — đồng bộ với thumbnail_service.TEMPLATES
-TEMPLATE_SIZES: dict[str, dict[str, tuple[int, int]]] = {
-    'simple_v1': {
-        'landscape': (1280, 720),
-        'portrait': (720, 1280),
-    },
+# Kích thước theo orientation — mọi template dùng chung
+ORIENTATION_SIZES: dict[str, tuple[int, int]] = {
+    'landscape': (1280, 720),
+    'portrait': (720, 1280),
 }
 
 
@@ -91,10 +89,9 @@ def generate_content_with_gemini(
     orientation = (orientation or 'landscape').strip().lower()
     if orientation not in ('landscape', 'portrait'):
         raise ThumbnailGeminiError('Layout phải là landscape hoặc portrait')
-    sizes = TEMPLATE_SIZES.get(template)
-    if not sizes or orientation not in sizes:
-        raise ThumbnailGeminiError(f'Template không hỗ trợ: {template}/{orientation}')
-    size = sizes[orientation]
+    if orientation not in ORIENTATION_SIZES:
+        raise ThumbnailGeminiError(f'Layout không hỗ trợ: {orientation}')
+    size = ORIENTATION_SIZES[orientation]
     refs = reference_images or []
     if len(refs) > MAX_REFERENCE_IMAGES:
         raise ThumbnailGeminiError(f'Tối đa {MAX_REFERENCE_IMAGES} ảnh tham chiếu')

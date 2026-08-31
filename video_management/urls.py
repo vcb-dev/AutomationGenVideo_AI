@@ -51,9 +51,11 @@ from .views.voice_views import (
      serve_minimax_tts_file, delete_voice_api,
 )
 from .views.thumbnail_views import (
-    thumbnail_templates_api, 
-    thumbnail_generate_api, 
-    thumbnail_generate_content_api
+    thumbnail_templates_api,
+    thumbnail_generate_api,
+    thumbnail_generate_content_api,
+    thumbnail_preview_file_api,
+    thumbnail_font_file_api,
 )
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
@@ -159,9 +161,6 @@ urlpatterns = [
     # Serve file TTS đã sinh — thay cho /media/minimax_tts/... vốn chỉ hoạt động khi DEBUG=True
     path('voice/tts/file/<str:filename>', serve_minimax_tts_file, name='voice-tts-file'),
 
-    # AI Thumbnail Generator (Tiện ích — layout deterministic, Pillow composite)
-    path('thumbnail/templates/', thumbnail_templates_api, name='thumbnail-templates'),
-    path('thumbnail/generate/', thumbnail_generate_api, name='thumbnail-generate'),
 
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
     
@@ -315,6 +314,8 @@ urlpatterns = [
     path('thumbnail/templates/', thumbnail_templates_api, name='thumbnail-templates'),
     path('thumbnail/generate/', thumbnail_generate_api, name='thumbnail-generate'),
     path('thumbnail/generate-content/', thumbnail_generate_content_api, name='thumbnail-generate-content'),
+    path('thumbnail/fonts/<str:filename>', thumbnail_font_file_api, name='thumbnail-font-file'),
+    path('thumbnail/previews/<str:filename>', thumbnail_preview_file_api, name='thumbnail-preview-file'),
     
     # Collections (router URLs)
     path('', include(router.urls)),
