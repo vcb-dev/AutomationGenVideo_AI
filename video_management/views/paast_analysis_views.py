@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from video_management.services.file_text_extract import read_drive_file
 from video_management.services.paast_analysis_service import PaastAnalysisService, PaastAnalysisServiceV2
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,41 @@ def analyze_content(request):
         return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
     except Exception as e:
         logger.error(f"Error in analyze_content view: {str(e)}", exc_info=True)
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+def extract_text(request):
+    """
+    Trích text thuần từ link Google Docs / Google Drive (PDF, text) — dùng khi nội
+    dung cần chấm điểm PAAST nằm trong file thay vì được dán thẳng. BE gọi endpoint
+    này để lấy text rồi mới đưa qua /paast/analyze/ như bình thường.
+
+    POST /api/ai/paast/extract-text/
+    Body: { "file_url": "https://docs.google.com/document/d/..." }
+    """
+    try:
+        file_url = (request.data.get('file_url') or '').strip()
+        if not file_url:
+            return Response({'error': 'file_url là bắt buộc'}, status=status.HTTP_400_BAD_REQUEST)
+
+        text = read_drive_file(file_url)
+        if not text:
+            return Response(
+                {
+                    'error': (
+                        'Không đọc được nội dung từ file. Kiểm tra quyền chia sẻ '
+                        '(đặt "Bất kỳ ai có đường liên kết" — Người xem), hoặc file là '
+                        'bản scan/ảnh không có chữ. Có thể dán nội dung trực tiếp thay thế.'
+                    )
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response({'success': True, 'text': text, 'char_count': len(text)})
+
+    except Exception as e:
+        logger.error(f"Error in extract_text view: {str(e)}", exc_info=True)
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
