@@ -27,6 +27,7 @@ from video_management.services.paast_analysis_service import (
     PREFER_SECONDARY_LEVEL_THRESHOLD,
     PaastAnalysisService,
 )
+from video_management.services import file_text_extract
 from video_management.views import paast_analysis_views
 
 
@@ -577,3 +578,131 @@ class NoMaxLengthGateTests(SimpleTestCase):
     def test_module_khong_con_dinh_nghia_MAX_CONTENT_LENGTH(self):
         """Chốt luôn cả hằng số — tránh ai đó lỡ tay khai báo lại rồi quên gắn vào view."""
         self.assertFalse(hasattr(paast_analysis_views, 'MAX_CONTENT_LENGTH'))
+
+
+class ExtractTextViewTests(SimpleTestCase):
+    """`extract_text` — trích text từ link file (Google Docs/Drive) để chấm PAAST khi nội dung
+    dài được đính kèm thay vì dán thẳng."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def test_thieu_file_url_thi_400(self):
+        request = self.factory.post('/api/ai/paast/extract-text/', {}, format='json')
+        response = paast_analysis_views.extract_text(request)
+        self.assertEqual(response.status_code, 400)
+
+    def test_doc_duoc_text_thi_tra_ve_kem_char_count(self):
+        request = self.factory.post(
+            '/api/ai/paast/extract-text/',
+            {'file_url': 'https://docs.google.com/document/d/abc/edit'},
+            format='json',
+        )
+        with patch.object(paast_analysis_views, 'read_drive_file', return_value='nội dung file') as reader:
+            response = paast_analysis_views.extract_text(request)
+
+        reader.assert_called_once_with('https://docs.google.com/document/d/abc/edit')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['text'], 'nội dung file')
+        self.assertEqual(response.data['char_count'], len('nội dung file'))
+
+    def test_khong_doc_duoc_thi_422(self):
+        request = self.factory.post(
+            '/api/ai/paast/extract-text/',
+            {'file_url': 'https://drive.google.com/file/d/abc/view'},
+            format='json',
+        )
+        with patch.object(paast_analysis_views, 'read_drive_file', return_value=None):
+            response = paast_analysis_views.extract_text(request)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('chia sẻ', str(response.data['error']))
+
+
+def _make_docx_bytes(paragraphs):
+    """Dựng 1 file .docx tối giản trong bộ nhớ (ZIP + word/document.xml) cho test."""
+    import zipfile
+    from io import BytesIO
+
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = "".join(
+        f'<w:p><w:r><w:t xml:space="preserve">{p}</w:t></w:r></w:p>' for p in paragraphs
+    )
+    doc_xml = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>'
+    )
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("word/document.xml", doc_xml)
+    return buf.getvalue()
+
+
+class ReadDriveFileTests(SimpleTestCase):
+    """`read_drive_file` — nhánh Google Docs export txt (đường phổ biến nhất: content dài để trong
+    1 Google Doc) và nhánh Google Drive file .docx/.pdf/text."""
+
+    def _fake_response(self, *, ok=True, text='', content=None, headers=None):
+        class _R:
+            pass
+        r = _R()
+        r.ok = ok
+        r.text = text
+        r.headers = headers or {}
+        r.content = content if content is not None else text.encode('utf-8')
+        return r
+
+    def test_google_docs_tra_ve_text_thuan(self):
+        with patch.object(file_text_extract, 'requests') as req:
+            req.get.return_value = self._fake_response(text='  Kịch bản content dài  ')
+            out = file_text_extract.read_drive_file('https://docs.google.com/document/d/DOC123/edit')
+
+        self.assertEqual(out, 'Kịch bản content dài')
+        called_url = req.get.call_args.args[0]
+        self.assertIn('/document/d/DOC123/export?format=txt', called_url)
+
+    def test_doc_khong_mo_quyen_tra_trang_html_thi_coi_nhu_that_bai(self):
+        html = '<!DOCTYPE html><html><head><title>Sign in</title></head><body>...</body></html>'
+        with patch.object(file_text_extract, 'requests') as req:
+            req.get.return_value = self._fake_response(text=html)
+            out = file_text_extract.read_drive_file('https://docs.google.com/document/d/DOC123/edit')
+
+        self.assertIsNone(out)
+
+    def test_response_khong_ok_thi_None(self):
+        with patch.object(file_text_extract, 'requests') as req:
+            req.get.return_value = self._fake_response(ok=False, text='nope')
+            out = file_text_extract.read_drive_file('https://docs.google.com/document/d/DOC123/edit')
+
+        self.assertIsNone(out)
+
+    def test_drive_file_docx_trich_text_theo_tung_doan(self):
+        docx = _make_docx_bytes(['Đoạn mở đầu', 'Đoạn thân bài', 'Chốt hạ'])
+        with patch.object(file_text_extract, 'requests') as req:
+            req.get.return_value = self._fake_response(
+                content=docx,
+                headers={'content-type': file_text_extract.DOCX_MIME},
+            )
+            out = file_text_extract.read_drive_file('https://drive.google.com/file/d/FILE1/view')
+
+        self.assertEqual(out, 'Đoạn mở đầu\nĐoạn thân bài\nChốt hạ')
+
+    def test_drive_file_docx_khi_header_khong_ro_van_nhan_dien_qua_magic_bytes(self):
+        docx = _make_docx_bytes(['Nội dung Word không kèm content-type rõ ràng'])
+        with patch.object(file_text_extract, 'requests') as req:
+            req.get.return_value = self._fake_response(
+                content=docx,
+                headers={'content-type': 'application/octet-stream'},
+            )
+            out = file_text_extract.read_drive_file('https://drive.google.com/file/d/FILE1/view')
+
+        self.assertEqual(out, 'Nội dung Word không kèm content-type rõ ràng')
+
+    def test_extract_docx_text_zip_khong_phai_docx_thi_None(self):
+        import zipfile
+        from io import BytesIO
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, 'w') as zf:
+            zf.writestr('xl/workbook.xml', '<workbook/>')  # giả .xlsx
+        self.assertIsNone(file_text_extract._extract_docx_text(buf.getvalue()))
