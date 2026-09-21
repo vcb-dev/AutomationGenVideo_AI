@@ -323,8 +323,16 @@ CORS_ALLOW_HEADERS = [
 # ==========================================
 # RAPIDAPI CONFIGURATION
 # ==========================================
+# Một key duy nhất. Hết hạn mức thì thay trực tiếp trên Railway rồi restart service — không
+# nhét nhiều key nối bằng dấu phẩy, xem _get_api_key() trong services/rapidapi_facebook.py.
 RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
+RAPIDAPI_FACEBOOK_KEY_BACKUP = env('RAPIDAPI_FACEBOOK_KEY_BACKUP', default='')
 RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
+
+# ==========================================
+# APIFY API CONFIGURATION
+# ==========================================
+APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
 
 # ==========================================
 # TIKHUB API CONFIGURATION
@@ -406,8 +414,7 @@ MINIMAX_API_KEY = env('MINIMAX_API_KEY', default='')
 # Key kiểu mới "sk-api-..." tự gắn group nên để trống; chỉ key JWT cũ (eyJ...) mới cần.
 MINIMAX_GROUP_ID = env('MINIMAX_GROUP_ID', default='')
 MINIMAX_API_BASE_URL = env('MINIMAX_API_BASE_URL', default='https://api.minimax.io/v1')
-# speech-2.8-hd: model HD mới nhất (01/2026), độ giống giọng clone cao nhất. Giọng
-# clone nghe chưa giống thì thử 'speech-2.6-hd' (MiniMax ghi nhận cloning similarity tốt).
+# speech-2.8-hd: model chất lượng HD phòng thu cao cấp ($100/1M ký tự ~2.600đ/1.000 ký tự).
 MINIMAX_TTS_MODEL = env('MINIMAX_TTS_MODEL', default='speech-2.8-hd')
 
 # ==========================================

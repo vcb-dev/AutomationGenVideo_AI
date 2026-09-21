@@ -237,6 +237,7 @@ def clone_voice_start_api(request):
         # thì luật chặn trùng vô nghĩa ("KOC Lan " lọt qua vì so với "KOC Lan").
         voice_name = (request.data.get('voice_name') or '').strip()
         gender = (request.data.get('gender') or 'female').strip().lower()
+        prompt_text = (request.data.get('prompt_text') or '').strip() or None
 
         if not audio_file:
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -248,7 +249,7 @@ def clone_voice_start_api(request):
         if existing:
             return Response({'error': _duplicate_voice_error(existing)}, status=status.HTTP_400_BAD_REQUEST)
 
-        logger.info(f"🎤 Minimax Voice Cloning (bg): name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes")
+        logger.info(f"🎤 Minimax Voice Cloning (bg): name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes, prompt_text_len={len(prompt_text) if prompt_text else 0}")
 
         temp_dir = tempfile.gettempdir()
         _, ext = os.path.splitext(audio_file.name)
@@ -272,7 +273,11 @@ def clone_voice_start_api(request):
             progress_update(job_key, {'status': 'running', 'message': 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'})
             try:
                 clone_service = get_voice_clone_service(api_key=minimax_key)
-                clone_result = clone_service.clone_voice_from_file(audio_path=temp_path, voice_name=voice_name)
+                clone_result = clone_service.clone_voice_from_file(
+                    audio_path=temp_path,
+                    voice_name=voice_name,
+                    prompt_text=prompt_text,
+                )
 
                 voice_id = clone_result.get('voice_id')
                 if not voice_id:
@@ -350,13 +355,15 @@ def voice_tts_api(request):
         pitch = int(request.data.get('pitch', 0))
         volume = int(request.data.get('volume', 100))
         language = request.data.get('language') or None
+        model = request.data.get('model') or None
+        emotion = request.data.get('emotion') or 'calm'
 
         if not text:
             return Response({'error': 'text is required'}, status=status.HTTP_400_BAD_REQUEST)
         if not voice_id:
             return Response({'error': 'voice_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        logger.info(f"🎤 Minimax TTS Request: voice={voice_id}, text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}")
+        logger.info(f"🎤 Minimax TTS Request: voice={voice_id}, model={model}, emotion={emotion}, text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}")
 
         # Check the voice belongs to Minimax before forwarding — a HeyGen/ElevenLabs
         # voice_id would otherwise be sent straight to Minimax and fail with an opaque error.
@@ -387,8 +394,10 @@ def voice_tts_api(request):
             speed=speed,
             vol=vol_minimax,
             pitch=pitch,
+            emotion=emotion,
             language_boost=language,
-            output_path=output_path
+            output_path=output_path,
+            model=model,
         )
         
         # Generate the public URL to serve this media file. Nếu vì lý do nào đó
@@ -416,6 +425,8 @@ def voice_tts_api(request):
                 import base64
                 audio_base64 = base64.b64encode(f.read()).decode('ascii')
 
+        usage_chars = extra_info.get('usage_characters') or extra_info.get('character_count') or len(text)
+
         return Response({
             'success': True,
             'audio_url': audio_url,
@@ -423,7 +434,8 @@ def voice_tts_api(request):
             'duration': result.get('duration', 0),
             # Số ký tự MiniMax thực tính phí (khớp đơn vị "điểm âm thanh" của gói) —
             # BE dùng để ghi log tiêu dùng theo user.
-            'usage_characters': extra_info.get('usage_characters', 0),
+            'usage_characters': int(usage_chars),
+            'model': model or tts_service.model,
         }, status=status.HTTP_200_OK)
         
     except Exception as e:

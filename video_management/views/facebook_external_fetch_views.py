@@ -5,13 +5,71 @@ scraper_fanpage_metrics_history. AI chỉ gọi RapidAPI + parse dữ liệu, tr
 thô cho BE tự lưu.
 """
 
+import re
+
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from ..services.rapidapi_facebook import (
-    fetch_page_profile, fetch_reels_only, parse_fanpage_profile, parse_facebook_reels,
-)
+from ..services import apify_facebook as apify_svc
+from ..services import rapidapi_facebook as rapidapi_svc
+
+# Handle không phải tên page — không dùng làm định danh fallback được.
+_NON_PAGE_HANDLES = {'profile.php', 'watch', 'reel', 'reels', 'groups', 'share'}
+
+
+def _extract_page_handle(page_url: str) -> str:
+    """Trích handle từ URL fanpage. Trả '' nếu URL không chứa tên page."""
+    m = re.search(r'facebook\.com/([^/?&#]+)', page_url or '')
+    handle = m.group(1) if m else ''
+    return '' if handle in _NON_PAGE_HANDLES else handle
+
+
+def _fallback_from_cache(handle: str) -> dict:
+    """Fallback Cấp 1: metadata đã cache từ lần fetch trước (còn hạn TTL 24h)."""
+    try:
+        from ..models import FacebookPageCache
+        cached = (
+            FacebookPageCache.objects
+            .filter(username=handle, expires_at__gt=timezone.now())
+            .first()
+        )
+    except Exception:
+        return {}
+    if not cached:
+        return {}
+    return {
+        'name': cached.page_name or handle,
+        'avatar_url': cached.avatar_url or '',
+        'followers_count': int(cached.followers_count or 0),
+    }
+
+
+def _build_fallback_profile(page_url: str) -> dict:
+    """Dựng profile tạm khi RapidAPI không trả được gì, để BE vẫn tạo/giữ được kênh.
+
+    profile_id phải mang tiền tố 'tmp_' — đó là dấu hiệu BE dùng để nhận biết bản
+    ghi tạm và ghi đè bằng page_id thật khi RapidAPI hồi phục (xem
+    facebook-external-scraper.service.ts::applyFanpageUpdate).
+
+    is_verified để None (không phải False) vì đây là "chưa biết", không phải "không
+    có tick" — BE chỉ ghi đè field này khi khác None.
+    """
+    handle = _extract_page_handle(page_url)
+    if not handle:
+        return {}
+
+    cached = _fallback_from_cache(handle)
+    return {
+        'profile_id': f'tmp_{handle}',
+        'name': cached.get('name') or handle,
+        'page_url': page_url,
+        'handle': handle,
+        'avatar_url': cached.get('avatar_url', ''),
+        'is_verified': None,
+        'followers_count': cached.get('followers_count', 0),
+    }
 
 
 @api_view(['POST'])
@@ -23,9 +81,11 @@ def fetch_facebook_page_reels(request):
     (khớp hành vi scrape_reels_sync cũ — dùng cho cả periodic lẫn manual trigger,
     caller tự quyết định coi profile_api_ok=False là lỗi hay không).
 
-    - profile_api_ok: RapidAPI profile-detail call có trả dữ liệu hay không (raw).
-    - profile: dict đã parse+merge (ưu tiên profile API, fallback author trong reel
-      đầu tiên nếu profile API fail) — None nếu không resolve được profile_id nào cả.
+    - profile_api_ok: có lấy được dữ liệu THẬT từ RapidAPI hay không (profile API,
+      hoặc author trong reel đầu tiên). False nghĩa là `profile` bên dưới chỉ là dữ
+      liệu tạm dựng từ URL/cache — BE phải xử lý khác đi, đừng ghi đè dữ liệu tốt.
+    - fallback_used: nghịch đảo của profile_api_ok khi vẫn dựng được profile tạm.
+    - profile: dict đã parse+merge — None nếu không resolve được gì, kể cả fallback.
 
     Body: { "page_url": "...", "num_of_posts": 30, "exclude_post_ids": [...], "start_date": "2026-07-01" }
     """
@@ -34,43 +94,62 @@ def fetch_facebook_page_reels(request):
     if not page_url:
         return Response({'error': 'page_url is required'}, status=400)
 
-    num = int(data.get('num_of_posts') or 30)
+    num = int(data.get('num_of_posts') or 50)
     exclude_post_ids = data.get('exclude_post_ids') or []
     start_date = (data.get('start_date') or '').strip()
 
-    profile = fetch_page_profile(page_url)
-    reels_raw = fetch_reels_only(
+    # Ưu tiên 1: Sử dụng Apify
+    profile = None
+    reels_raw = []
+    apify_profile = None
+
+    if apify_svc._get_apify_token():
+        reels_raw = apify_svc.fetch_reels_only(
+            page_url=page_url,
+            num_of_posts=num,
+            exclude_post_ids=exclude_post_ids,
+            start_date=start_date,
+        )
+        first_reel = reels_raw[0] if reels_raw else {}
+        apify_profile = apify_svc.parse_fanpage_profile(None, first_reel)
+
+        # Nếu chưa lấy được profile từ reels hoặc không có reels, gọi pages-scraper bổ sung
+        if not apify_profile:
+            profile = apify_svc.fetch_page_profile(page_url)
+            if profile:
+                apify_profile = apify_svc.parse_fanpage_profile(profile, first_reel)
+
+        if apify_profile or reels_raw:
+            parsed_profile = apify_profile or _build_fallback_profile(page_url) or None
+            parsed_reels = apify_svc.parse_facebook_reels(reels_raw)
+            return Response({
+                'profile_api_ok': apify_profile is not None,
+                'fallback_used': apify_profile is None and parsed_profile is not None,
+                'profile': parsed_profile,
+                'reels': parsed_reels,
+            })
+
+    # Ưu tiên 2: Fallback sang RapidAPI nếu Apify không trả được gì
+    profile = rapidapi_svc.fetch_page_profile(page_url)
+    reels_raw = rapidapi_svc.fetch_reels_only(
         page_url=page_url,
         num_of_posts=num,
         exclude_post_ids=exclude_post_ids,
         start_date=start_date,
+        profile=profile,
     )
 
-    parsed_profile = None
+    rapidapi_profile = None
     if profile or reels_raw:
         first_reel = reels_raw[0] if reels_raw else {}
-        parsed_profile = parse_fanpage_profile(profile, first_reel)
+        rapidapi_profile = rapidapi_svc.parse_fanpage_profile(profile, first_reel)
 
-    # Fallback: Nếu RapidAPI chưa cấu hình hoặc tạm thời không trả dữ liệu,
-    # trích xuất thông tin cơ bản từ URL để tạo kênh trong hệ thống không bị crash 500
-    if not parsed_profile:
-        import re
-        m = re.search(r'facebook\.com/([^/?&#]+)', page_url)
-        handle = m.group(1) if m else ''
-        if handle and handle not in ('profile.php', 'watch', 'reel'):
-            parsed_profile = {
-                'profile_id': handle,
-                'name': handle,
-                'page_url': page_url,
-                'handle': handle,
-                'avatar_url': '',
-                'is_verified': False,
-                'followers_count': 0,
-            }
+    parsed_profile = rapidapi_profile or _build_fallback_profile(page_url) or None
+    parsed_reels = rapidapi_svc.parse_facebook_reels(reels_raw)
 
-    parsed_reels = parse_facebook_reels(reels_raw)
     return Response({
-        'profile_api_ok': profile is not None or parsed_profile is not None,
+        'profile_api_ok': rapidapi_profile is not None,
+        'fallback_used': rapidapi_profile is None and parsed_profile is not None,
         'profile': parsed_profile,
         'reels': parsed_reels,
     })

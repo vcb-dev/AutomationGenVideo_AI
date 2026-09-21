@@ -70,7 +70,8 @@ class MinimaxTTSService:
         pitch: int = 0,
         emotion: Optional[str] = None,
         language_boost: Optional[str] = None,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate audio from text using Minimax TTS.
@@ -86,6 +87,7 @@ class MinimaxTTSService:
                      ép cứng 1 emotion cho mọi câu dễ làm giọng đọc bị "kịch"/méo).
             language_boost: Minimax language hint (e.g. "Vietnamese", "English", "auto")
             output_path: Optional local path to save audio file
+            model: Optional model override (e.g. "speech-2.8-turbo", "speech-2.8-hd")
 
         Returns:
             Dictionary with:
@@ -98,7 +100,8 @@ class MinimaxTTSService:
             }
         """
         try:
-            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Text: {len(text)} chars")
+            chosen_model = model or self.model
+            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Model: {chosen_model}, Text: {len(text)} chars")
             
             # Build request payload
             voice_setting = {
@@ -114,7 +117,7 @@ class MinimaxTTSService:
                 voice_setting["emotion"] = emotion
 
             payload = {
-                "model": self.model,
+                "model": chosen_model,
                 "text": text,
                 "stream": False,
                 "voice_setting": voice_setting,

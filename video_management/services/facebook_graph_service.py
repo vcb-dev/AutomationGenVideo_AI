@@ -348,9 +348,13 @@ class FacebookGraphService:
                 data = response.json()
             except requests.exceptions.HTTPError as e:
                 logger.error(f"❌ Backfill trang {page_num} lỗi: {e.response.text[:200]}")
+                if page_num == 1:
+                    raise
                 break
             except Exception as e:
                 logger.error(f"❌ Backfill trang {page_num} exception: {e}")
+                if page_num == 1:
+                    raise
                 break
 
             posts = data.get('data', [])

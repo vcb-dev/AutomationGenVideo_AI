@@ -89,6 +89,37 @@ def _decrypt_token(encrypted: str) -> str:
         return ''
 
 
+def _format_facebook_error(e: Exception) -> str:
+    """Format lỗi từ Facebook Graph API thành thông báo dễ hiểu cho người dùng."""
+    if hasattr(e, 'response') and getattr(e, 'response', None) is not None:
+        try:
+            err_data = e.response.json().get('error', {})
+            code = err_data.get('code')
+            msg = err_data.get('message', '')
+
+            # Lỗi granular scopes / chưa cấp quyền cho Page cụ thể
+            if code == 100 or 'pages_read_engagement' in msg or 'Object does not exist' in msg:
+                return "Tài khoản Meta chưa cấp quyền cho Page này (vào Kênh MXH kết nối lại và tích chọn Page trong popup Facebook)"
+
+            # Token hết hạn / thu hồi
+            if code == 190 or 'access token' in msg.lower():
+                return "Access token Facebook đã hết hạn hoặc bị thu hồi (vào Kênh MXH kết nối lại tài khoản)"
+
+            # Thiếu quyền chung
+            if code == 200 or 'permission' in msg.lower():
+                return f"Thiếu quyền truy cập Facebook ({msg})"
+
+            # Rate limit
+            if code in (4, 17, 32, 613) or 'request limit reached' in msg.lower():
+                return "Facebook API bị giới hạn tần suất (Rate limit). Vui lòng thử lại sau ít phút."
+
+            if msg:
+                return f"Facebook Graph API: {msg}"
+        except Exception:
+            pass
+    return str(e)
+
+
 def _merge_batch_metrics(videos: list, graph: FacebookGraphService) -> list:
     """Gọi batch API lấy view/like/comment/share thật, merge vào từng video (chia nhóm 50 id)."""
     video_ids = [v.get('id') for v in videos if v.get('id')]
@@ -220,7 +251,10 @@ def fetch_page_sync(request):
     try:
         meta = graph.get_page_metadata(page_id)
     except Exception as e:
-        return Response({'error': f'Lỗi lấy metadata: {e}'}, status=502)
+        friendly = _format_facebook_error(e)
+        logger.warning(f"Lỗi lấy metadata cho page {page_id}: {friendly} (gốc: {e})")
+        status_code = 403 if ("chưa cấp quyền" in friendly or "hết hạn" in friendly) else 502
+        return Response({'error': friendly}, status=status_code)
 
     raw_posts = graph.get_page_posts(page_id, max_results=max_posts, access_token=token or None)
     video_posts = [p for p in raw_posts if p.get('is_video') is True]
@@ -261,9 +295,16 @@ def fetch_page_backfill(request):
     graph = FacebookGraphService()
     graph.access_token = token
 
-    raw_posts = graph.get_page_posts_deep(
-        page_id=page_id, max_total=max_total, page_size=100, cooldown=1.0, access_token=token,
-    )
+    try:
+        raw_posts = graph.get_page_posts_deep(
+            page_id=page_id, max_total=max_total, page_size=100, cooldown=1.0, access_token=token,
+        )
+    except Exception as e:
+        friendly = _format_facebook_error(e)
+        logger.warning(f"Lỗi backfill cho page {page_id}: {friendly} (gốc: {e})")
+        status_code = 403 if ("chưa cấp quyền" in friendly or "hết hạn" in friendly) else 502
+        return Response({'error': friendly}, status=status_code)
+
     video_posts = [p for p in raw_posts if p.get('is_video')]
     videos = _merge_batch_metrics(video_posts, graph) if video_posts else []
 

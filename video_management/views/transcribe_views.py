@@ -67,14 +67,6 @@ GEMINI_FILE_PROCESSING_TIMEOUT = 90  # seconds
 # Đo thật: generate_content dao động rất mạnh (28.7s -> 64.4s trên cùng cỡ file),
 # nên sàn 10s cũ là vô nghĩa; 30s mới đủ để một lần gọi có cơ hội thành công thật.
 GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
-# TRẦN cho MỖI LẦN gọi generate_content. Trước đây dồn TOÀN BỘ ngân sách còn lại vào 1
-# lệnh gọi duy nhất — đo thật: cùng 1 file 30s, lần đầu Gemini "câm" >889s rồi mới lỗi,
-# lần thử lại xong trong 61s. Gemini thỉnh thoảng stall ở phía server; chờ hết ngân sách
-# 1 lần là vô nghĩa. Cắt ở mốc này rồi GỌI LẠI (xem vòng lặp trong transcribe_with_gemini).
-GEMINI_GENERATE_MAX_PER_CALL = 180  # seconds
-# Lần THỬ ĐẦU với 1 model CHƯA xác nhận chạy được: timeout ngắn. Model không trả nổi transcript
-# trong 60s (kể cả file lớn) thì hoặc hỏng hoặc quá tải — đổi model ngay thay vì phí 180s.
-GEMINI_MODEL_PROBE_TIMEOUT = 60  # seconds
 
 
 def _read_transcribe_budget(request) -> int:
@@ -811,79 +803,15 @@ def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
     return None
 
 
-# Định dạng audio gửi Gemini: mp3 mono 16kHz 64kbps — thừa cho nhận diện tiếng nói, mà cực nhẹ.
-# 30 giây ≈ 240KB, 10 phút ≈ 4.8MB (so với video HEVC 1080x1920 gốc có thể 10-100MB).
-_GEMINI_AUDIO_ARGS = ['-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k']
-_GEMINI_AUDIO_EXTRACT_TIMEOUT = 180  # ffmpeg tách audio — dài dự phòng cho file 10 phút / máy chậm
-
-
-def extract_audio_for_gemini(input_path: str, ffmpeg_path: str, out_path: str) -> bool:
-    """Tách RIÊNG track âm thanh ra mp3 để gửi Gemini thay vì cả video.
-
-    Transcribe chỉ cần tiếng nói. Gửi cả video buộc Gemini phải giải mã + lập chỉ mục
-    khung hình — với video HEVC 1080x1920 (dọc) đây là chỗ Gemini hay "đơ" (đo thật: cùng
-    1 file 30s, gửi cả video stall >889s qua nhiều lần thử; audio-only xong trong vài giây).
-    Đồng thời cắt dung lượng upload ~20-50 lần.
-
-    Trả True nếu ra file audio hợp lệ (>500 byte); False để caller fallback gửi file gốc
-    (vd file không có audio stream, container lạ ffmpeg không đọc được).
+def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> str:
     """
-    try:
-        result = subprocess.run(
-            [ffmpeg_path, '-i', input_path, *_GEMINI_AUDIO_ARGS, '-y', out_path],
-            capture_output=True, text=True, timeout=_GEMINI_AUDIO_EXTRACT_TIMEOUT,
-        )
-        if result.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 500:
-            return True
-        logger.warning(
-            f"[Gemini Transcribe] Tách audio thất bại (rc={result.returncode}) — "
-            f"gửi file gốc: {(result.stderr or '')[-300:]}"
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning(f"[Gemini Transcribe] Tách audio quá {_GEMINI_AUDIO_EXTRACT_TIMEOUT}s — gửi file gốc.")
-    except OSError as e:
-        logger.warning(f"[Gemini Transcribe] Tách audio lỗi ({e}) — gửi file gốc.")
-    return False
-
-
-# Model Gemini cho transcribe. THỨ TỰ ƯU TIÊN. `gemini-flash-lite-latest` đứng đầu: đo thật
-# transcribe audio 12s xong trong ~7s, rẻ nhất, quá đủ cho nhận diện tiếng nói.
-#
-# Vì sao cần LIST + fallback: alias `-latest` của Google TRÔI theo thời gian và có thể trỏ vào
-# model đang lỗi/quá tải với 1 API key cụ thể. Đo thật 2026-08: key hiện tại gọi
-# `gemini-flash-latest` (giá trị .env cũ) → DeadlineExceeded kể cả prompt "say hello"; còn
-# `gemini-2.5-flash` → 404 "no longer available to new users". `gemini-3.5-flash` /
-# `gemini-flash-lite-latest` → 2-7s, chuẩn. Fallback tự động sang model chạy được thay vì để
-# cả tính năng chết theo 1 alias.
-_GEMINI_TRANSCRIBE_MODELS = ['gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-2.5-flash']
-# Model đầu tiên chạy được trong process này — thử trước ở các lần sau, khỏi dò lại từ đầu.
-_gemini_working_model: Optional[str] = None
-
-
-def _gemini_model_candidates() -> list:
-    """Danh sách model để thử, không trùng: [model đã biết chạy được] + [GEMINI_MODEL cấu hình]
-    + [_GEMINI_TRANSCRIBE_MODELS mặc định]."""
-    configured = (getattr(settings, 'GEMINI_MODEL', None) or os.getenv('GEMINI_MODEL', '') or '').strip()
-    out: list = []
-    for m in [_gemini_working_model, configured, *_GEMINI_TRANSCRIBE_MODELS]:
-        if m and m not in out:
-            out.append(m)
-    return out
-
-
-def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, heartbeat=None) -> str:
-    """
-    Upload file (nên là audio-only — xem extract_audio_for_gemini) lên Gemini Files API và
-    sinh transcript. Thử lần lượt các model trong _gemini_model_candidates() + retry per-call.
-    Kiểm tra dung lượng (≤500MB) và dọn file trên server Google sau khi xong.
+    Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
+    Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
 
     `deadline` là MỐC THỜI GIAN TUYỆT ĐỐI (time.time() + ngân sách còn lại) mà toàn bộ
     hàm này phải kết thúc trước — do người gọi tính từ lúc vào view, nên nó đã trừ sẵn
     phần thời gian đã tiêu cho ghi đĩa + ffprobe. Truyền None = không giới hạn (chỉ dùng
     cho script đo/khảo sát, không dùng ở đường request thật).
-
-    `heartbeat(msg=None)` (tuỳ chọn): gọi ở đầu mỗi giai đoạn để job nền làm mới `updated_at`
-    trong progress store — nhờ vậy một job đang chờ Gemini không bị nhìn nhầm là "chết".
     """
     import google.generativeai as genai
     from google.api_core import exceptions as google_api_exceptions
@@ -894,13 +822,6 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
         if deadline is None:
             return float('inf')
         return deadline - time.time()
-
-    def _beat(msg=None) -> None:
-        if heartbeat:
-            try:
-                heartbeat(msg)
-            except Exception:  # noqa: BLE001 — heartbeat hỏng không được làm chết transcribe
-                pass
 
     # 1. Validate file size on disk before upload
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -914,7 +835,10 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
     if not api_key:
         raise ValueError("Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.")
 
-    model_candidates = _gemini_model_candidates() or ['gemini-flash-lite-latest']
+    model_name = getattr(settings, 'GEMINI_MODEL', None)
+    if not model_name:
+        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+    model_name = str(model_name).strip()
 
     # 3. Configure and upload
     genai.configure(api_key=api_key)
@@ -922,11 +846,9 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
 
     gemini_file = None
     try:
-        _beat("Đang tải file lên Gemini...")
         upload_started_at = time.time()
         gemini_file = genai.upload_file(file_path)
         upload_elapsed = time.time() - upload_started_at
-        _beat("Đã tải xong, đang chờ Gemini xử lý...")
         logger.info(
             f"[Gemini Transcribe] upload_file xong sau {upload_elapsed:.1f}s "
             f"({file_size_mb:.1f}MB); ngân sách còn {_remaining():.1f}s. "
@@ -958,73 +880,42 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
                 raise TimeoutError(
                     f"Gemini xử lý file quá lâu (>{poll_budget:.0f}s) và vẫn ở trạng thái PROCESSING."
                 )
-            _beat("Gemini đang xử lý file...")
             time.sleep(2)
             gemini_file = genai.get_file(gemini_file.name)
 
         if gemini_file.state.name == "FAILED":
             raise Exception("Tải file lên Gemini File API thất bại hoặc định dạng không được hỗ trợ.")
 
-        # 4. Request transcription — CẮT MỖI LẦN GỌI ở GEMINI_GENERATE_MAX_PER_CALL rồi GỌI LẠI,
-        # thay vì dồn cả ngân sách vào 1 lệnh gọi. Gemini thỉnh thoảng stall server-side (đo
-        # thật: cùng 1 file, lần đầu >889s không phản hồi, lần 2 xong trong 61s) — thử lại rẻ
-        # hơn và nhanh hơn nhiều so với chờ 1 lần cho tới hết giờ.
+        # 4. Request transcription
         prompt = (
             "Hãy nghe file âm thanh/video này và chuyển toàn bộ nội dung giọng nói thành văn bản tiếng Việt. "
             "Chỉ trả về phần văn bản đã nhận diện được dưới dạng thô, giữ nguyên các đại từ và câu chữ gốc, "
             "không thêm bất kỳ lời giải thích, tiêu đề, hay ghi chú nào khác. "
             "Chú ý viết đúng chính tả các từ: Huy Ca, Viễn Chí Bảo, bạc 925, bạc S925, moissanite, kim cương, CZ, nhẫn, dây chuyền."
         )
-        global _gemini_working_model
-        attempt = 0
-        last_err = None
-        # Thử lần lượt từng model ứng viên:
-        #  - NotFound/PermissionDenied  → model sai với key này, đổi model NGAY.
-        #  - Model CHƯA xác nhận + lần đầu: timeout ngắn (PROBE); DeadlineExceeded → đổi model
-        #    ngay (khỏi phí 180s cho model hỏng/quá tải như `gemini-flash-latest` hiện tại).
-        #  - Model ĐÃ xác nhận chạy được (_gemini_working_model): full timeout + tối đa 3 lần thử.
-        for model_name in model_candidates:
-            is_known = model_name == _gemini_working_model
-            model = genai.GenerativeModel(model_name)
-            max_tries = 3 if is_known else 2
-            for k in range(1, max_tries + 1):
-                attempt += 1
-                budget_left = _remaining() - TRANSCRIBE_RESPONSE_MARGIN
-                if budget_left < GEMINI_GENERATE_MIN_TIMEOUT:
-                    raise TimeoutError(
-                        f"Gemini sinh transcript quá lâu — đã thử {attempt - 1} lượt, không còn ngân sách."
-                    ) from last_err
-                probe = (not is_known) and k == 1
-                per_call = min(GEMINI_MODEL_PROBE_TIMEOUT if probe else GEMINI_GENERATE_MAX_PER_CALL, budget_left)
-                logger.info(
-                    f"[Gemini Transcribe] generate_content [{model_name}]{' (probe)' if probe else ''} "
-                    f"lần {attempt} (timeout {per_call:.0f}s, ngân sách còn {_remaining():.0f}s)..."
-                )
-                _beat(f"Đang sinh transcript (lần thử {attempt})...")
-                try:
-                    response = model.generate_content(
-                        [gemini_file, prompt],
-                        request_options={'timeout': per_call},
-                    )
-                    _gemini_working_model = model_name
-                    return response.text.strip()
-                except (google_api_exceptions.NotFound, google_api_exceptions.PermissionDenied) as ce:
-                    last_err = ce
-                    logger.warning(f"[Gemini Transcribe] model {model_name} không dùng được với key này ({ce}) — đổi model.")
-                    break
-                except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
-                    last_err = ge
-                    logger.warning(
-                        f"[Gemini Transcribe] [{model_name}] lần {attempt} timeout ~{per_call:.0f}s "
-                        f"(còn {_remaining():.0f}s)."
-                    )
-                    if probe:
-                        break  # probe hỏng → đổi model ngay, không thử lại model này
-
-        raise TimeoutError(
-            f"Gemini không sinh được transcript sau khi thử {len(model_candidates)} model "
-            f"({', '.join(model_candidates)}). Có thể API key đang bị giới hạn quota. Lỗi cuối: {last_err}"
-        ) from last_err
+        # Toàn bộ ngân sách CÒN LẠI (đã trừ mọi giai đoạn trước: ghi đĩa, ffprobe, upload,
+        # polling) được dồn hết cho bước sinh transcript. Đây là bước dao động mạnh nhất —
+        # đo thật trên cùng cỡ file cho ra 28.7s rồi 64.4s — nên cho nó phần dư là đúng.
+        # Sàn GEMINI_GENERATE_MIN_TIMEOUT đảm bảo không bao giờ gọi Gemini với timeout bé
+        # tới mức chắc chắn thất bại.
+        generate_timeout = max(GEMINI_GENERATE_MIN_TIMEOUT, _remaining())
+        logger.info(f"[Gemini Transcribe] Invoking model {model_name} (timeout {generate_timeout:.1f}s)...")
+        model = genai.GenerativeModel(model_name)
+        try:
+            response = model.generate_content(
+                [gemini_file, prompt],
+                request_options={'timeout': generate_timeout},
+            )
+        except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
+            # Quy về cùng loại lỗi với timeout polling để transcribe_upload trả 504 kèm
+            # message rõ ràng cho FE, thay vì để BE tự timeout ở 60s. Raise trong khối
+            # try nên vẫn đi qua finally dọn file Gemini bên dưới + finally dọn file tạm
+            # của transcribe_upload.
+            raise TimeoutError(
+                f"Gemini sinh transcript quá lâu (>{generate_timeout:.0f}s), request bị huỷ giữa chừng."
+            ) from ge
+        transcript = response.text.strip()
+        return transcript
 
     finally:
         if gemini_file:
@@ -1033,113 +924,6 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None, hea
                 genai.delete_file(gemini_file.name)
             except Exception as e:
                 logger.error(f"[Gemini Transcribe] Failed to delete Gemini file {gemini_file.name}: {str(e)}")
-
-
-def run_transcribe_upload_core(
-    input_path: str,
-    ffmpeg_path: str,
-    *,
-    deadline: Optional[float],
-    request_started_at: float,
-    total_budget: int,
-    check_cancel=None,
-    heartbeat=None,
-) -> dict:
-    """Chạy phần LÕI của transcribe-upload trên một file ĐÃ nằm sẵn trên đĩa.
-
-    Đo thời lượng → Gemini (Files API) → chuẩn hoá tiếng Việt. KHÔNG đụng tới
-    request/response và KHÔNG xoá file tạm (người gọi lo). Trả về một dict đã chuẩn
-    hoá để cả `transcribe_upload` (view đồng bộ) lẫn job nền content-transform dùng
-    CHUNG một đường map kết quả — tránh mỗi bên tự dựng lại logic phân loại lỗi:
-
-      thành công → {'success': True, 'transcript', 'duration_seconds', 'char_count'}
-      lỗi        → {'success': False, 'error_message', 'status_code': 400|499|500|504}
-
-    `check_cancel` (tuỳ chọn): callable trả True khi người dùng đã huỷ job — kiểm
-    trước khi lao vào lệnh gọi Gemini tính phí.
-    """
-    try:
-        duration = _get_media_duration(input_path, ffmpeg_path)
-        if duration is None:
-            return {
-                'success': False, 'status_code': 400,
-                'error_message': 'Không thể xác định thời lượng của file upload. Vui lòng kiểm tra lại định dạng file.',
-            }
-
-        if duration > 600:
-            return {
-                'success': False, 'status_code': 400,
-                'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.',
-            }
-
-        prep_elapsed = time.time() - request_started_at
-        remaining = 'vô hạn' if deadline is None else f'{deadline - time.time():.1f}s'
-        logger.info(
-            f"[Transcribe Upload] {os.path.getsize(input_path) / (1024 * 1024):.1f}MB / {duration:.0f}s — "
-            f"chuẩn bị mất {prep_elapsed:.1f}s; ngân sách {total_budget}s, còn {remaining} cho Gemini."
-        )
-
-        if check_cancel and check_cancel():
-            return {'success': False, 'status_code': 499, 'error_message': 'Đã huỷ bởi người dùng.'}
-
-        # Tách audio-only TRƯỚC khi gửi Gemini — bước giảm tải lớn nhất (xem extract_audio_for_gemini).
-        if heartbeat:
-            heartbeat('Đang tách âm thanh...')
-        audio_path = os.path.splitext(input_path)[0] + '.gemini16k.mp3'
-        gemini_input = input_path
-        if extract_audio_for_gemini(input_path, ffmpeg_path, audio_path):
-            gemini_input = audio_path
-            logger.info(
-                f"[Transcribe Upload] Gửi Gemini audio-only {os.path.getsize(audio_path) / 1024:.0f}KB "
-                f"(thay vì {os.path.getsize(input_path) / (1024 * 1024):.1f}MB cả video)."
-            )
-        else:
-            audio_path = None  # không có file audio để dọn
-
-        try:
-            transcript = transcribe_with_gemini(gemini_input, deadline=deadline, heartbeat=heartbeat)
-        finally:
-            if audio_path and os.path.exists(audio_path):
-                try:
-                    os.remove(audio_path)
-                except OSError:
-                    pass
-        transcript = _normalize_transcript_vi(transcript)
-
-        logger.info(
-            f"[Transcribe Upload] Hoàn tất sau {time.time() - request_started_at:.1f}s "
-            f"(ngân sách {total_budget}s) — {len(transcript)} ký tự."
-        )
-        return {
-            'success': True,
-            'transcript': transcript,
-            'duration_seconds': round(duration, 2),
-            'char_count': len(transcript),
-        }
-
-    except ValueError as ve:
-        logger.warning(f"[Transcribe Upload] Validation error: {str(ve)}")
-        return {'success': False, 'status_code': 400, 'error_message': str(ve)}
-    except TimeoutError as te:
-        # Hết ngân sách ở một trong các giai đoạn Gemini (upload / PROCESSING / sinh
-        # transcript) — 504 kèm lý do THẬT của giai đoạn đó.
-        elapsed = time.time() - request_started_at
-        logger.error(
-            f"[Transcribe Upload] Hết ngân sách sau {elapsed:.1f}s/{total_budget}s: {str(te)}"
-        )
-        return {
-            'success': False, 'status_code': 504,
-            'error_message': (
-                f'Xử lý file quá lâu (đã chạy {elapsed:.0f}s). {str(te)} '
-                'Vui lòng thử lại với file ngắn/nhẹ hơn.'
-            ),
-        }
-    except Exception as e:
-        logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")
-        return {
-            'success': False, 'status_code': 500,
-            'error_message': f'Lỗi hệ thống trong quá trình xử lý: {str(e)}',
-        }
 
 
 @api_view(['POST'])
@@ -1194,27 +978,66 @@ def transcribe_upload(request):
             for chunk in uploaded_file.chunks():
                 dest.write(chunk)
 
-        # Phần đo thời lượng + Gemini + chuẩn hoá đã tách ra run_transcribe_upload_core()
-        # để job nền content-transform dùng chung — xem docstring hàm đó.
-        result = run_transcribe_upload_core(
-            input_path,
-            ffmpeg_path,
-            deadline=deadline,
-            request_started_at=request_started_at,
-            total_budget=total_budget,
-        )
-        if result.get('success'):
+        # 1. Check duration
+        duration = _get_media_duration(input_path, ffmpeg_path)
+        if duration is None:
             return Response({
-                'success': True,
-                'transcript': result['transcript'],
-                'duration_seconds': result['duration_seconds'],
-                'char_count': result['char_count'],
-            })
-        return Response(
-            {'success': False, 'error_message': result['error_message']},
-            status=result.get('status_code', 500),
+                'success': False,
+                'error_message': 'Không thể xác định thời lượng của file upload. Vui lòng kiểm tra lại định dạng file.'
+            }, status=400)
+
+        if duration > 600:
+            return Response({
+                'success': False,
+                'error_message': f'Thời lượng file quá dài ({round(duration)} giây > 600 giây). Chỉ chấp nhận file dưới 10 phút.'
+            }, status=400)
+
+        prep_elapsed = time.time() - request_started_at
+        logger.info(
+            f"[Transcribe Upload] {file_size_mb:.1f}MB / {duration:.0f}s — ghi đĩa + ffprobe "
+            f"mất {prep_elapsed:.1f}s; ngân sách {total_budget}s, còn {deadline - time.time():.1f}s "
+            f"cho Gemini."
         )
 
+        # 2. Transcribe via Gemini Files API — truyền deadline TUYỆT ĐỐI (đã trừ sẵn phần
+        # thời gian vừa tiêu ở trên), để hàm đó tự chia cho upload/polling/generate.
+        transcript = transcribe_with_gemini(input_path, deadline=deadline)
+
+        # Vietnamese cleanups
+        transcript = _normalize_transcript_vi(transcript)
+
+        logger.info(
+            f"[Transcribe Upload] Hoàn tất sau {time.time() - request_started_at:.1f}s "
+            f"(ngân sách {total_budget}s) — {len(transcript)} ký tự."
+        )
+        return Response({
+            'success': True,
+            'transcript': transcript,
+            'duration_seconds': round(duration, 2),
+            'char_count': len(transcript)
+        })
+
+    except ValueError as ve:
+        logger.warning(f"[Transcribe Upload] Validation error: {str(ve)}")
+        return Response({
+            'success': False,
+            'error_message': str(ve)
+        }, status=400)
+    except TimeoutError as te:
+        # Hết ngân sách ở một trong các giai đoạn Gemini (upload / PROCESSING / sinh
+        # transcript) — trả 504 kèm lý do THẬT của giai đoạn đó, thay vì im lặng chạy
+        # tiếp để BE tự cắt (FE khi đó chỉ nhận được lỗi mạng chung chung).
+        elapsed = time.time() - request_started_at
+        logger.error(
+            f"[Transcribe Upload] Hết ngân sách sau {elapsed:.1f}s/{total_budget}s: {str(te)}"
+        )
+        return Response({
+            'success': False,
+            'error_message': (
+                f'Xử lý file quá lâu (đã chạy {elapsed:.0f}s). {str(te)} '
+                'Vui lòng thử lại với file ngắn/nhẹ hơn.'
+            )
+        }, status=504)
     except Exception as e:
         logger.exception(f"[Transcribe Upload] Unexpected error: {str(e)}")
         return Response({
