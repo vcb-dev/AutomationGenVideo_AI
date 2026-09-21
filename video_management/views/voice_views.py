@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 # là "mix" nhưng cơ chế lưu trữ generic — key-value + TTL, không liên quan mix video).
 _CLONE_JOB_PREFIX = "voice_clone:"
 
-# Tên file TTS do voice_tts_api sinh: tts_<uuid4 hex>.mp3 — dùng để whitelist
+# Tên file TTS do voice_tts_api sinh: tts_<uuid4 hex>.mp3 hoặc tts_<uuid4 hex>.srt — dùng để whitelist
 # khi serve file, chặn path traversal / lấy file media tùy ý.
-_TTS_FILENAME_RE = re.compile(r'^tts_[0-9a-f]{32}\.mp3$')
+_TTS_FILENAME_RE = re.compile(r'^tts_[0-9a-f]{32}\.(mp3|srt)$')
 
 
 # Lấy thẳng từ model thay vì gõ lại số: đổi max_length của cột mà quên sửa chỗ
@@ -69,12 +69,12 @@ _RANGE_RE = re.compile(r'^bytes=(\d*)-(\d*)$')
 
 def serve_minimax_tts_file(request, filename):
     """
-    Serve file TTS đã sinh (media/minimax_tts/tts_*.mp3) — hoạt động cả khi DEBUG=False.
+    Serve file TTS đã sinh (media/minimax_tts/tts_*.mp3 hoặc tts_*.srt) — hoạt động cả khi DEBUG=False.
 
     Django chỉ serve /media/ qua static() khi DEBUG=True, nên trên server production
     link /media/minimax_tts/... luôn 404. BE proxy file này về trình duyệt qua
     GET api/ai/voice/tts/stream/<filename> khi chưa cấu hình Google Drive.
-    Chỉ phục vụ đúng file TTS (whitelist tên tts_<hex32>.mp3), không cho lấy file khác.
+    Chỉ phục vụ đúng file TTS (whitelist tên tts_<hex32>.(mp3|srt)), không cho lấy file khác.
 
     Hỗ trợ HTTP Range: FileResponse trần không set Accept-Ranges/206 — <audio> của
     trình duyệt (đặc biệt Chrome) cần Range để đọc duration của mp3 streamed, thiếu
@@ -85,6 +85,12 @@ def serve_minimax_tts_file(request, filename):
     path = os.path.join(default_storage.location, 'minimax_tts', filename)
     if not os.path.isfile(path):
         raise Http404
+
+    # File phụ đề .srt: trả thẳng Content-Type text/plain hoặc application/x-subrip với UTF-8
+    if filename.endswith('.srt'):
+        resp = FileResponse(open(path, 'rb'), content_type='application/x-subrip; charset=utf-8')
+        resp['Content-Disposition'] = f'inline; filename="{filename}"'
+        return resp
 
     file_size = os.path.getsize(path)
     range_match = _RANGE_RE.match(request.META.get('HTTP_RANGE', '').strip())
@@ -427,6 +433,16 @@ def voice_tts_api(request):
 
         usage_chars = extra_info.get('usage_characters') or extra_info.get('character_count') or len(text)
 
+        # Trả thông tin file phụ đề SRT nếu có
+        srt_content = result.get('srt_content')
+        srt_filename = None
+        srt_url = None
+        if srt_content:
+            base_filename, _ = os.path.splitext(filename)
+            srt_filename = f"{base_filename}.srt"
+            if result.get('srt_file_path') and os.path.exists(result['srt_file_path']):
+                srt_url = f"{ai_url}/media/minimax_tts/{srt_filename}"
+
         return Response({
             'success': True,
             'audio_url': audio_url,
@@ -436,6 +452,9 @@ def voice_tts_api(request):
             # BE dùng để ghi log tiêu dùng theo user.
             'usage_characters': int(usage_chars),
             'model': model or tts_service.model,
+            'srt_content': srt_content,
+            'srt_filename': srt_filename,
+            'srt_url': srt_url,
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
