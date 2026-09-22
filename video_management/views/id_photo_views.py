@@ -14,7 +14,6 @@ import os
 import time
 import base64
 import logging
-from pathlib import Path
 
 from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
@@ -22,12 +21,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
-
-# Logo công ty dùng làm ảnh tham chiếu cho outfit "workshop" (đồng phục áo polo có thêu logo
-# ngực trái) — copy riêng 1 bản từ AutomationGenVideo_BE/assets/logo-vcb-update.png vì AI
-# service (Django, repo/deploy riêng, Dockerfile.railway của chính nó) không có volume/monorepo
-# path chung với BE để đọc thẳng file bên đó.
-LOGO_WORKSHOP_PATH = Path(settings.BASE_DIR) / 'assets' / 'logo-vcb-update.png'
 
 # Model image-editing của Gemini ("nano banana") — nhận ảnh + prompt text, trả về ảnh đã sửa
 # trong cùng 1 lượt generateContent (không cần Files API/polling vì input chỉ vài MB, xa dưới
@@ -82,48 +75,6 @@ MERGE_OUTFIT_PROMPT = (
     "retouch the face in any form. No cartoon, painting, CGI style. No AI-like appearance."
 )
 
-# Prompt cho outfit_type=workshop — áo polo đen có logo công ty thêu ngực trái. Ảnh logo thật
-# (LOGO_WORKSHOP_PATH) được gửi kèm làm image part thứ 2 để Gemini chép chính xác pixel, không
-# tự vẽ lại logo từ mô tả text (tránh sai chữ/dấu tiếng Việt).
-MERGE_OUTFIT_PROMPT_WORKSHOP = (
-    "Keep 100% of the original face, facial structure, expression, eyes, skin tone, "
-    "hairstyle, and facial lighting exactly as in the original image. Absolutely do not "
-    "modify the face, do not recreate the face, do not blur, and do not alter any facial "
-    "details in any way. ONLY CHANGE THE OUTFIT TO MATCH THE REFERENCE AND MAKE IT AN ID "
-    "PHOTO.\n"
-    "OUTFIT: Black short-sleeve polo shirt, classic polo collar with two folded flaps, "
-    "short button placket with 2-3 dark buttons. Matte black fabric, subtle natural "
-    "textile texture, regular fit, wrinkle-free. On the wearer's LEFT chest, there is an "
-    "embroidered emblem. The SECOND attached image shows this exact emblem as a LOCKED "
-    "GRAPHIC ASSET — copy it pixel-accurately, do not redesign, reinterpret, simplify, or "
-    "regenerate it from memory. Preserve exactly: the floral/diamond emblem with all its "
-    "petals and center geometry, the warm metallic gold/champagne-gold color, the wordmark "
-    "text underneath with its exact serif typography, letter spacing, and Vietnamese accent "
-    "marks, the small crown mark above the text, and the tiny symbol beside the final "
-    "letter. Treat the emblem and wordmark as one existing printed graphic, not newly "
-    "typeset text — do not invent letters, remove accents, or change spelling. Keep the "
-    "logo small and proportional to the chest, matching the scale shown in the second "
-    "image.\n"
-    "POSE: Straight upright posture. Shoulders relaxed and balanced. Arms naturally "
-    "lowered. Neutral, formal ID photo expression. Body proportions unchanged, no "
-    "stretching or distortion.\n"
-    "COMPOSITION & CAMERA: Expand the framing to a waist-up portrait, including the "
-    "subject from the waist upward while keeping the subject centered and maintaining "
-    "natural body proportions. Front-facing angle. Camera positioned at eye level. "
-    "Subject centered perfectly in the frame.\n"
-    "BACKGROUND & LIGHTING: Replace the background with a solid pure white background "
-    "(#FFFFFF). Background must be completely uniform, flat color. No gradients, no "
-    "texture, no shadows, no vignetting, no lighting effects. Subject must remain "
-    "naturally separated from the background. Do not alter facial lighting while changing "
-    "the background.\n"
-    "IMAGE QUALITY: Ultra high resolution. Sharp focus across entire subject. Natural "
-    "skin texture, no artificial smoothing. Neutral color tones, balanced contrast. Fully "
-    "photorealistic. Must not look AI-generated.\n"
-    "EXCLUSIONS: Do not change the face. Do not change facial lighting. Do not recreate or "
-    "retouch the face in any form. No cartoon, painting, CGI style. No AI-like appearance. "
-    "Do not omit the logo's tiny details or accent marks. Do not enlarge the logo."
-)
-
 
 @api_view(['POST'])
 # BE đã xác thực JWT của người dùng thật ở tầng trước (JwtAuthGuard + RolesGuard trên
@@ -134,14 +85,12 @@ MERGE_OUTFIT_PROMPT_WORKSHOP = (
 def merge_outfit(request):
     """
     POST /api/ai/id-photo/merge-outfit/
-    Body (JSON): { "image_base64": "...", "mime_type": "image/jpeg", "outfit_type": "office" }
-    outfit_type: "office" (mặc định, giữ nguyên hành vi cũ) hoặc "workshop" (áo polo + logo).
+    Body (JSON): { "image_base64": "...", "mime_type": "image/jpeg" }
     Response 200: { "success": true, "processed_image_base64": "..." }
     Response lỗi: { "success": false, "error_message": "..." }
     """
     image_base64 = request.data.get('image_base64')
     mime_type = (request.data.get('mime_type') or '').strip().lower()
-    outfit_type = (request.data.get('outfit_type') or 'office').strip().lower()
 
     if not image_base64:
         return Response({'success': False, 'error_message': 'image_base64 is required'}, status=400)
@@ -151,11 +100,6 @@ def merge_outfit(request):
         return Response({
             'success': False,
             'error_message': f'mime_type không được hỗ trợ: {mime_type}. Chỉ chấp nhận JPG/PNG.',
-        }, status=400)
-    if outfit_type not in ('office', 'workshop'):
-        return Response({
-            'success': False,
-            'error_message': f'outfit_type không được hỗ trợ: {outfit_type}. Chỉ chấp nhận "office" hoặc "workshop".',
         }, status=400)
 
     try:
@@ -186,35 +130,15 @@ def merge_outfit(request):
     import google.generativeai as genai
     from google.api_core import exceptions as google_api_exceptions
 
-    if outfit_type == 'workshop':
-        try:
-            logo_bytes = LOGO_WORKSHOP_PATH.read_bytes()
-        except OSError as e:
-            logger.error(f"[IdPhoto MergeOutfit] Không đọc được logo workshop tại {LOGO_WORKSHOP_PATH}: {e}")
-            return Response({
-                'success': False,
-                'error_message': 'Hệ thống chưa cấu hình ảnh logo cho outfit workshop.',
-            }, status=500)
-        logo_image_part = {'mime_type': 'image/png', 'data': logo_bytes}
-        gemini_contents = [
-            {'mime_type': mime_type, 'data': image_bytes},
-            logo_image_part,
-            MERGE_OUTFIT_PROMPT_WORKSHOP,
-        ]
-    else:
-        gemini_contents = [{'mime_type': mime_type, 'data': image_bytes}, MERGE_OUTFIT_PROMPT]
-
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
+    image_part = {'mime_type': mime_type, 'data': image_bytes}
 
     t0 = time.time()
-    logger.info(
-        f"[IdPhoto MergeOutfit] Gọi Gemini model={model_name}, outfit_type={outfit_type}, "
-        f"input={image_size_mb:.2f}MB, timeout={MERGE_OUTFIT_TIMEOUT_SECONDS}s"
-    )
+    logger.info(f"[IdPhoto MergeOutfit] Gọi Gemini model={model_name}, input={image_size_mb:.2f}MB, timeout={MERGE_OUTFIT_TIMEOUT_SECONDS}s")
     try:
         response = model.generate_content(
-            gemini_contents,
+            [image_part, MERGE_OUTFIT_PROMPT],
             # Cho phép cả TEXT lẫn IMAGE trong response: model có thể kèm 1 đoạn text ngắn
             # (caption/giải thích) trước phần ảnh — chỉ xin IMAGE có nguy cơ model trả lỗi ở
             # vài phiên bản API. Code parse response bên dưới bỏ qua phần text, chỉ lấy ảnh.
