@@ -33,7 +33,7 @@ LOGO_WORKSHOP_PATH = Path(settings.BASE_DIR) / 'assets' / 'logo-vcb-update.png'
 # trong cùng 1 lượt generateContent (không cần Files API/polling vì input chỉ vài MB, xa dưới
 # giới hạn inline data của API). Xác nhận model này khả dụng với API key hiện tại qua
 # genai.list_models() (hỗ trợ generateContent) trước khi chọn làm default.
-DEFAULT_GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_MODEL')
+DEFAULT_GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL')
 
 # BE cam kết timeout 90s cho lượt gọi này (id-photo.service.ts#MERGE_OUTFIT_TIMEOUT_MS). Đặt
 # ngân sách nội bộ thấp hơn hẳn để AI service LUÔN kịp trả lỗi rõ ràng về trước khi bị BE tự
