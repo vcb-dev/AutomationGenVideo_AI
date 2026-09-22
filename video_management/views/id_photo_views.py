@@ -33,7 +33,7 @@ LOGO_WORKSHOP_PATH = Path(settings.BASE_DIR) / 'assets' / 'logo-vcb-update.png'
 # trong cùng 1 lượt generateContent (không cần Files API/polling vì input chỉ vài MB, xa dưới
 # giới hạn inline data của API). Xác nhận model này khả dụng với API key hiện tại qua
 # genai.list_models() (hỗ trợ generateContent) trước khi chọn làm default.
-DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image'
+DEFAULT_GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL')
 
 # BE cam kết timeout 90s cho lượt gọi này (id-photo.service.ts#MERGE_OUTFIT_TIMEOUT_MS). Đặt
 # ngân sách nội bộ thấp hơn hẳn để AI service LUÔN kịp trả lỗi rõ ràng về trước khi bị BE tự
@@ -180,8 +180,13 @@ def merge_outfit(request):
         return Response({'success': False, 'error_message': 'Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.'}, status=500)
 
     model_name = str(
-        getattr(settings, 'GEMINI_IMAGE_MODEL', None) or os.getenv('GEMINI_IMAGE_MODEL', DEFAULT_GEMINI_IMAGE_MODEL)
+        getattr(settings, 'GEMINI_IMAGE_MODEL', None) or os.getenv('GEMINI_IMAGE_MODEL') or DEFAULT_GEMINI_IMAGE_MODEL or ''
     ).strip()
+    if not model_name:
+        return Response({
+            'success': False,
+            'error_message': 'GEMINI_IMAGE_MODEL chưa được set trong .env trên AI Service.',
+        }, status=500)
 
     import google.generativeai as genai
     from google.api_core import exceptions as google_api_exceptions
