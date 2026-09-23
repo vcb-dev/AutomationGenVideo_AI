@@ -5,15 +5,124 @@ API Docs: https://platform.minimax.io/docs/api-reference/text-to-speech-t2a-v2
 """
 
 import logging
-
-from .minimax_errors import minimax_error_from_response
-import requests
+import os
+import re
 import time
 from typing import Optional, Dict, Any
 
 from django.conf import settings
+import requests
+
+from .minimax_errors import minimax_error_from_response
 
 logger = logging.getLogger(__name__)
+
+
+def split_sentences_for_tts(text: str) -> str:
+    """
+    Chuẩn hoá văn bản trước khi gửi tới MiniMax TTS:
+    Tách các câu và vế câu thành các dòng riêng biệt (\\n) theo dấu chấm, chấm hỏi,
+    chấm than, dấu phẩy, hai chấm, chấm phẩy, gạch ngang.
+    MiniMax API chỉ phân tách phụ đề (subtitle) theo từng dòng (\\n).
+    Tách theo cả dấu phẩy giúp phụ đề hiển thị ngắn gọn, nhịp nhàng từng vế câu
+    chuẩn theo từng giây ngắt nghỉ của giọng đọc (tối ưu cho video ngắn / TikTok / Reels).
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    result_lines = []
+    for line in lines:
+        # Chuẩn hoá khoảng trắng trước dấu câu: ' ,' -> ','
+        cleaned = re.sub(r'\s+([.!?;:,—–])', r'\1', line)
+        # Tách sau dấu câu (. ! ? : ; — –) và dấu phẩy (,) khi có khoảng trắng theo sau và không phải giữa các chữ số
+        parts = re.split(r'(?<=[.!?:;—–])\s+(?=[^\s])|(?<=,)\s+(?=[^\s\d])', cleaned)
+        for p in parts:
+            p_strip = p.strip()
+            if p_strip:
+                result_lines.append(p_strip)
+
+    return '\n'.join(result_lines)
+
+
+
+
+def format_srt_timestamp(ms: float) -> str:
+    """Chuyển milliseconds thành định dạng chuẩn timestamp của SRT: HH:MM:SS,mmm"""
+    total_ms = max(0, int(round(ms)))
+    hours = total_ms // 3600000
+    mins = (total_ms % 3600000) // 60000
+    secs = (total_ms % 60000) // 1000
+    millis = total_ms % 1000
+    return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+
+def normalize_subtitle_entry(entry: dict) -> Optional[dict]:
+    """Chuẩn hoá 1 mục subtitle từ nhiều kiểu tên field của MiniMax sang {text, start_ms, end_ms}"""
+    if not isinstance(entry, dict):
+        return None
+
+    text = (entry.get('text') or entry.get('content') or entry.get('word') or '').strip()
+    if not text:
+        return None
+
+    # Tìm thời gian bắt đầu (hỗ trợ nhiều biến thể theo format API và extension cũ)
+    start_val = None
+    for k in ('time_begin', 'start_time', 'begin_time', 'start', 'begin'):
+        if k in entry and entry[k] is not None:
+            start_val = entry[k]
+            break
+
+    # Tìm thời gian kết thúc
+    end_val = None
+    for k in ('time_end', 'end_time', 'finish_time', 'end', 'finish'):
+        if k in entry and entry[k] is not None:
+            end_val = entry[k]
+            break
+
+    if start_val is None or end_val is None:
+        return None
+
+    try:
+        start_ms = float(start_val)
+        end_ms = float(end_val)
+    except (ValueError, TypeError):
+        return None
+
+    if end_ms < start_ms:
+        end_ms = start_ms
+
+    return {
+        'text': text,
+        'start_ms': start_ms,
+        'end_ms': end_ms,
+    }
+
+
+def subtitles_to_srt(subtitles_list: list) -> str:
+    """Chuyển danh sách các mục subtitle thành chuỗi chuẩn SRT."""
+    if not subtitles_list or not isinstance(subtitles_list, list):
+        return ""
+
+    normalized = []
+    for item in subtitles_list:
+        norm = normalize_subtitle_entry(item)
+        if norm:
+            normalized.append(norm)
+
+    if not normalized:
+        return ""
+
+    # Sắp xếp theo thời gian bắt đầu
+    normalized.sort(key=lambda s: s['start_ms'])
+
+    blocks = []
+    for idx, item in enumerate(normalized, start=1):
+        start_ts = format_srt_timestamp(item['start_ms'])
+        end_ts = format_srt_timestamp(item['end_ms'])
+        blocks.append(f"{idx}\n{start_ts} --> {end_ts}\n{item['text']}\n")
+
+    return "\n".join(blocks).strip() + "\n"
 
 
 class MinimaxTTSService:
@@ -96,12 +205,16 @@ class MinimaxTTSService:
                 'audio_url': str,          # URL to download audio
                 'file_path': str,          # Local path if output_path provided
                 'duration': float,         # Audio duration in seconds
-                'extra_info': dict
+                'extra_info': dict,
+                'srt_content': Optional[str],
+                'srt_file_path': Optional[str],
             }
         """
         try:
             chosen_model = model or self.model
-            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Model: {chosen_model}, Text: {len(text)} chars")
+            text_to_synthesize = split_sentences_for_tts(text)
+            line_count = len(text_to_synthesize.splitlines())
+            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Model: {chosen_model}, Text: {len(text)} chars, Lines: {line_count}")
             
             # Build request payload
             voice_setting = {
@@ -118,10 +231,13 @@ class MinimaxTTSService:
 
             payload = {
                 "model": chosen_model,
-                "text": text,
+                "text": text_to_synthesize,
                 "stream": False,
                 "voice_setting": voice_setting,
                 "audio_setting": dict(self.AUDIO_SETTING),
+                # Bật tạo phụ đề để xuất file SRT đồng bộ cùng voice
+                "subtitle_enable": True,
+                "subtitle_type": "sentence",
             }
             if language_boost:
                 payload["language_boost"] = language_boost
@@ -217,6 +333,52 @@ class MinimaxTTSService:
                 audio_url = output_path
                 logger.info(f"✅ Audio saved to: {output_path}")
             
+            # Trích xuất subtitle (phụ đề SRT) từ phản hồi của MiniMax
+            srt_content = None
+            srt_file_path = None
+            raw_subtitles = None
+
+            # 1. Kiểm tra mảng subtitles trực tiếp trong response hoặc extra_info
+            if isinstance(data.get('subtitles'), list):
+                raw_subtitles = data.get('subtitles')
+            elif isinstance(inner.get('subtitles'), list):
+                raw_subtitles = inner.get('subtitles')
+            elif isinstance(extra_info.get('subtitles'), list):
+                raw_subtitles = extra_info.get('subtitles')
+
+            # 2. Nếu MiniMax trả về URL subtitle_file (link JSON chứa timestamps)
+            subtitle_file_url = (
+                data.get('subtitle_file')
+                or inner.get('subtitle_file')
+                or extra_info.get('subtitle_file')
+            )
+            if not raw_subtitles and subtitle_file_url and str(subtitle_file_url).startswith('http'):
+                try:
+                    logger.info(f"📥 Downloading subtitle_file from: {str(subtitle_file_url)[:80]}...")
+                    sub_resp = requests.get(subtitle_file_url, timeout=15)
+                    if sub_resp.status_code == 200:
+                        sub_json = sub_resp.json()
+                        if isinstance(sub_json, list):
+                            raw_subtitles = sub_json
+                        elif isinstance(sub_json, dict):
+                            raw_subtitles = sub_json.get('subtitles') or sub_json.get('data') or sub_json.get('sentences')
+                except Exception as sub_err:
+                    logger.warning(f"⚠️ Failed to download/parse subtitle_file: {sub_err}")
+
+            # 3. Tạo chuỗi SRT và lưu file nếu có dữ liệu
+            if raw_subtitles and isinstance(raw_subtitles, list):
+                srt_content = subtitles_to_srt(raw_subtitles)
+                if srt_content and output_path:
+                    # Ghi file .srt cùng tên với file .mp3
+                    base_no_ext, _ = os.path.splitext(output_path)
+                    srt_file_path = f"{base_no_ext}.srt"
+                    try:
+                        with open(srt_file_path, 'w', encoding='utf-8') as srt_f:
+                            srt_f.write(srt_content)
+                        logger.info(f"✅ Subtitle SRT saved to: {srt_file_path}")
+                    except Exception as srt_write_err:
+                        logger.warning(f"⚠️ Failed to write SRT file to disk: {srt_write_err}")
+
             # Get duration from extra_info
             duration = extra_info.get('audio_length', 0) or extra_info.get('duration', 0)
             
@@ -225,10 +387,12 @@ class MinimaxTTSService:
                 'audio_url': audio_url,
                 'file_path': output_path if output_path else None,
                 'duration': duration,
-                'extra_info': extra_info
+                'extra_info': extra_info,
+                'srt_content': srt_content,
+                'srt_file_path': srt_file_path,
             }
             
-            logger.info(f"✅ Minimax TTS Success - Duration: {duration}s")
+            logger.info(f"✅ Minimax TTS Success - Duration: {duration}s, Subtitle: {'Yes' if srt_content else 'No'}")
             return result
             
         except Exception as e:
