@@ -315,3 +315,27 @@ def parse_douyin_author(author: dict) -> Optional[dict]:
         'avatar_url': avatar_url,
         'followers_count': int(followers) if followers is not None else None,
     }
+
+
+def resolve_douyin_author_by_video_id(aweme_id: str) -> Optional[str]:
+    """Fetch chi tiết video để lấy sec_uid của tác giả video."""
+    api_key = getattr(settings, 'TIKHUB_API_KEY', '')
+    if not api_key or not aweme_id:
+        return None
+    try:
+        resp = requests.get(
+            f'{_tikhub_base()}/api/v1/douyin/web/fetch_one_video',
+            params={'aweme_id': aweme_id},
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=15,
+        )
+        if not resp.ok:
+            return None
+        data = resp.json().get('data') or {}
+        item = data.get('aweme_detail') or {}
+        author = item.get('author') or {}
+        return author.get('sec_uid') or None
+    except Exception as e:
+        logger.error(f'[DOUYIN] Không lấy được tác giả cho video {aweme_id}: {e}')
+        return None
+
