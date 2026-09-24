@@ -172,6 +172,62 @@ def fetch_channel_shorts(channel_id: str, count: int = 20) -> list:
     return all_shorts[:count]
 
 
+def fetch_channel_videos(channel_id: str, count: int = 20) -> list:
+    """Fetch regular videos của 1 channel qua TikHub (continuation_token pagination).
+
+    Dùng làm fallback khi channel không có Shorts (video dọc) mà chỉ có video dài.
+    """
+    all_videos: list = []
+    continuation_token: Optional[str] = None
+    max_iterations = 20
+
+    for _ in range(max_iterations):
+        if len(all_videos) >= count:
+            break
+
+        params: dict = {'channel_id': channel_id, 'need_format': 'true'}
+        if continuation_token:
+            params['continuation_token'] = continuation_token
+
+        try:
+            resp = requests.get(
+                f'{_tikhub_base()}/web_v2/get_channel_videos',
+                params=params,
+                headers=_headers(),
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            raise_if_auth_exception(e, 'youtube get_channel_videos')
+            logger.error(f'[YOUTUBE] get_channel_videos request failed: {e}')
+            break
+
+        if not resp.ok:
+            raise_if_auth_error(resp, 'youtube get_channel_videos')
+            logger.error(f'[YOUTUBE] get_channel_videos {resp.status_code}: {resp.text[:300]}')
+            break
+
+        body = resp.json()
+        if body.get('code') != 200:
+            logger.error(f'[YOUTUBE] get_channel_videos API error: {body.get("message")}')
+            break
+
+        data = body.get('data') or {}
+        page_videos = data.get('videos') or []
+        if not page_videos:
+            break
+
+        if all_videos and page_videos[0].get('video_id') == all_videos[0].get('video_id'):
+            break
+
+        all_videos.extend(page_videos)
+
+        if not data.get('continuation_token'):
+            break
+        continuation_token = data.get('continuation_token')
+
+    return all_videos[:count]
+
+
 # ─── Parse ────────────────────────────────────────────────────────────────────
 
 def parse_youtube_channel(data: dict, channel_id_fallback: str = '') -> Optional[dict]:
@@ -200,22 +256,37 @@ def parse_youtube_channel(data: dict, channel_id_fallback: str = '') -> Optional
 
 
 def parse_youtube_shorts(shorts: list) -> list:
-    """Parse list shorts thô thành list dict (không ghi DB)."""
+    """Parse list shorts/videos thô thành list dict (không ghi DB)."""
     parsed = []
     for s in shorts:
         video_id = s.get('video_id') or ''
         if not video_id:
             continue
         title = s.get('title') or ''
-        view_count_text = s.get('view_count_text') or ''
+        raw_view = (
+            s.get('view_count_text')
+            or s.get('short_view_count')
+            or s.get('view_count')
+            or ''
+        )
+        view_count_text = str(raw_view) if not isinstance(raw_view, str) else raw_view
+
+        thumbnail_url = (
+            _pick_largest(s.get('thumbnails') or [])
+            or s.get('thumbnail')
+            or ''
+        )
+
+        url = s.get('video_url') or s.get('url') or f'https://www.youtube.com/watch?v={video_id}'
 
         parsed.append({
             'video_id': video_id,
             'title': title[:2000],
             'hashtags': _extract_hashtags(title),
-            'url': s.get('video_url') or f'https://www.youtube.com/shorts/{video_id}',
-            'thumbnail_url': _pick_largest(s.get('thumbnails') or []),
+            'url': url,
+            'thumbnail_url': thumbnail_url,
             'view_count': _parse_count(view_count_text),
             'view_count_text': view_count_text[:50],
         })
     return parsed
+

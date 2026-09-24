@@ -62,7 +62,7 @@ from .views.instagram_owned_fetch_views import (
     fetch_owned_account as instagram_fetch_owned_account,
     fetch_media as instagram_fetch_media,
 )
-from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
+from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos, resolve_douyin_video_author
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
     analyze_facebook_url,
@@ -81,6 +81,7 @@ from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
 from .views.instagram_fetch_views import fetch_instagram_profile_reels
+from .views.threads_fetch_views import fetch_threads_profile_posts, fetch_threads_search_top
 from .views.youtube_fetch_views import fetch_youtube_channel
 from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
 from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
@@ -245,6 +246,10 @@ urlpatterns = [
     # (InstagramScraperController) — chỉ còn fetch-only ở đây.
     path('scraper/instagram/fetch/profile-reels/', fetch_instagram_profile_reels, name='scraper-instagram-fetch-profile-reels'),
 
+    # Threads — fetch-only (BE sở hữu DB, gọi endpoint này để lấy data thô)
+    path('scraper/threads/fetch/profile-posts/', fetch_threads_profile_posts, name='scraper-threads-fetch-profile-posts'),
+    path('scraper/threads/fetch/search-top/', fetch_threads_search_top, name='scraper-threads-fetch-search-top'),
+
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
@@ -254,6 +259,7 @@ urlpatterns = [
     # (DouyinScraperController) — chỉ còn fetch-only ở đây.
     path('scraper/douyin/fetch/search/', fetch_douyin_search, name='scraper-douyin-fetch-search'),
     path('scraper/douyin/fetch/profile-videos/', fetch_douyin_profile_videos, name='scraper-douyin-fetch-profile-videos'),
+    path('scraper/douyin/fetch/resolve-video-author/', resolve_douyin_video_author, name='scraper-douyin-resolve-video-author'),
 
     # Xiaohongshu — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển
     # sang BE (XiaohongshuScraperController) — chỉ còn fetch-only ở đây.
