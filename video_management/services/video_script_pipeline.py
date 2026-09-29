@@ -15,7 +15,7 @@ và hình ảnh của chính video đó, thay vì chỉ từ tiêu đề + mô t
    xuất — đề xuất có thể nằm chờ duyệt cả ngày. Tốn phí chỉ ở những lượt miễn phí thất bại.
 
 ── Engine viết kịch bản ──────────────────────────────────────────────────────
-Gemini (gemini_video_script.py, model VIDEO_SCRIPT_GEMINI_MODEL — mặc định gemini-3.1-flash-lite) —
+Gemini (gemini_video_script.py, model VIDEO_TO_TEXT_GEMINI_MODEL — mặc định gemini-3.1-flash-lite) —
 tự bật khi có GEMINI_API_KEY (khoá chung; model riêng, không đọc GEMINI_MODEL của ảnh thẻ).
 VIDEO_SCRIPT_ENGINE=off để tắt:
 khi đó endpoint vẫn tải video rồi trả status ENGINE_DISABLED để BE giữ cách viết kịch bản cũ.

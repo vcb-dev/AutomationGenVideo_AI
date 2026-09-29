@@ -385,10 +385,10 @@ class GeminiPromptTests(SimpleTestCase):
 
     def test_model_mac_dinh_la_flash_lite_va_khong_theo_GEMINI_MODEL(self):
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.8-flash'), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_GEMINI_MODEL': '', 'GEMINI_MODEL': 'gemini-3.8-flash'}):
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.8-flash'), \
+             mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': '', 'GEMINI_MODEL': 'gemini-3.8-flash'}):
             self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
-        with override_settings(VIDEO_SCRIPT_GEMINI_MODEL='gemini-3.5-flash'):
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.5-flash'):
             self.assertEqual(gemini_video_script._model_name(), 'gemini-3.5-flash')
 
     def test_ten_model_khong_ton_tai_thi_dung_flash_lite_moi_nhat(self):
@@ -521,8 +521,8 @@ class GeminiPromptTests(SimpleTestCase):
     def test_dung_chung_GEMINI_API_KEY_model_rieng(self):
         # Khoá chung cả AI service; tính năng này chỉ tách MODEL (không theo GEMINI_MODEL của ảnh thẻ)
         from django.test import override_settings
-        with override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_SCRIPT_GEMINI_MODEL=''), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_GEMINI_MODEL': ''}):
+        with override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL=''), \
+             mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': ''}):
             self.assertEqual(gemini_video_script._api_key(), 'shared-key')
             self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
         with override_settings(GEMINI_API_KEY=''), mock.patch.dict('os.environ', {'GEMINI_API_KEY': ''}):

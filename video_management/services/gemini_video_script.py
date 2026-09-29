@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 FILE_PROCESSING_TIMEOUT = 120   # giây chờ Gemini xử lý file (PROCESSING → ACTIVE)
 # Model mặc định: gemini-3.1-flash-lite — đo thật 2026-09-28 (video 76s, 1 lượt, xem + nghe video,
 # viết lại kịch bản): ≈71đ/video, rẻ ~3 lần gemini-3.8-flash và ~2 lần quy trình tách
-# gemini-3.5-transcribe + dịch, chất lượng kịch bản đạt. Đổi bằng VIDEO_SCRIPT_GEMINI_MODEL.
-# KHÔNG đọc GEMINI_MODEL: biến đó dùng chung với transcribe cũ (đang là gemini-3.8-flash, đắt hơn).
+# gemini-3.5-transcribe + dịch, chất lượng kịch bản đạt. Đổi bằng VIDEO_TO_TEXT_GEMINI_MODEL
+# (dùng chung với transcribe — cùng việc nghe âm thanh video).
+# KHÔNG đọc GEMINI_MODEL: trên server biến đó là model TẠO ẢNH của ảnh thẻ.
 DEFAULT_MODEL = 'gemini-3.1-flash-lite'
 # Model cấu hình không tồn tại / bị Google ngừng (404 "not found" / "no longer available" — đã gặp
 # thật với gemini-2.0-flash, và "gemini-3.1-flash" không tồn tại) → thử lại MỘT lần với tên luôn trỏ
@@ -87,8 +88,8 @@ def _quota_message(err: Exception) -> str:
 
 
 def _api_key() -> str:
-    """Khoá Gemini dùng chung cả AI service (ảnh thẻ, transcribe, kịch bản) — mỗi tính năng chỉ
-    tách MODEL riêng (VIDEO_SCRIPT_GEMINI_MODEL), không tách khoá."""
+    """Khoá Gemini dùng chung cả AI service (ảnh thẻ, transcribe, kịch bản) — chỉ tách MODEL:
+    ảnh thẻ GEMINI_MODEL, còn transcribe + kịch bản dùng chung VIDEO_TO_TEXT_GEMINI_MODEL."""
     key = (getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')).strip()
     if not key:
         raise GeminiNotConfigured('Chưa cấu hình GEMINI_API_KEY trên AI Service.')
@@ -96,8 +97,8 @@ def _api_key() -> str:
 
 
 def _model_name() -> str:
-    return str(getattr(settings, 'VIDEO_SCRIPT_GEMINI_MODEL', '')
-               or os.getenv('VIDEO_SCRIPT_GEMINI_MODEL', '') or DEFAULT_MODEL).strip()
+    return str(getattr(settings, 'VIDEO_TO_TEXT_GEMINI_MODEL', '')
+               or os.getenv('VIDEO_TO_TEXT_GEMINI_MODEL', '') or DEFAULT_MODEL).strip()
 
 
 def _model_gone(err: Exception) -> bool:
@@ -186,7 +187,7 @@ def _generate_once(genai, contents, timeout: int, audio_seconds: float = 0):
         if not _model_gone(e) or name == FALLBACK_MODEL:
             raise
         logger.warning(f'[VideoScript] model {name} không dùng được (không tồn tại / đã bị ngừng) — dùng tạm '
-                       f'{FALLBACK_MODEL}. Sửa VIDEO_SCRIPT_GEMINI_MODEL cho đúng. Lỗi gốc: {str(e)[:160]}')
+                       f'{FALLBACK_MODEL}. Sửa VIDEO_TO_TEXT_GEMINI_MODEL cho đúng. Lỗi gốc: {str(e)[:160]}')
         name = FALLBACK_MODEL
         response = genai.GenerativeModel(name, generation_config=config).generate_content(
             contents, request_options={'timeout': timeout})
