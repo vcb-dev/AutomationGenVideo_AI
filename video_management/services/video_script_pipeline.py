@@ -16,8 +16,8 @@ và hình ảnh của chính video đó, thay vì chỉ từ tiêu đề + mô t
 
 ── Engine viết kịch bản ──────────────────────────────────────────────────────
 Gemini (gemini_video_script.py, model VIDEO_SCRIPT_GEMINI_MODEL — mặc định gemini-3.1-flash-lite) —
-tự bật khi có VIDEO_TO_TEXT_GEMINI_API_KEY — khoá Gemini của module chuyển video thành text, tách
-khỏi GEMINI_API_KEY của module tạo ảnh (ảnh thẻ). VIDEO_SCRIPT_ENGINE=off để tắt:
+tự bật khi có GEMINI_API_KEY (khoá chung; model riêng, không đọc GEMINI_MODEL của ảnh thẻ).
+VIDEO_SCRIPT_ENGINE=off để tắt:
 khi đó endpoint vẫn tải video rồi trả status ENGINE_DISABLED để BE giữ cách viết kịch bản cũ.
 """
 
@@ -351,15 +351,13 @@ def script_engine() -> str:
     """'gemini' hoặc 'off'.
 
     VIDEO_SCRIPT_ENGINE đặt tường minh thì theo nó (off = tắt hẳn, vd khi cần ngừng tốn phí
-    Gemini). Không đặt thì có VIDEO_TO_TEXT_GEMINI_API_KEY là bật — cấu hình khoá đồng nghĩa với
-    "đấu Gemini vào", không bắt khai thêm biến thứ hai rồi quên. Chỉ có GEMINI_API_KEY (khoá tạo
-    ảnh) thì KHÔNG bật.
+    Gemini). Không đặt thì có GEMINI_API_KEY là bật — cấu hình khoá đồng nghĩa với "đấu Gemini
+    vào", không bắt khai thêm biến thứ hai rồi quên.
     """
     value = str(getattr(settings, 'VIDEO_SCRIPT_ENGINE', '') or os.getenv('VIDEO_SCRIPT_ENGINE', '')).strip().lower()
     if value:
         return 'gemini' if value == 'gemini' else 'off'
-    has_key = (getattr(settings, 'VIDEO_TO_TEXT_GEMINI_API_KEY', '')
-               or os.getenv('VIDEO_TO_TEXT_GEMINI_API_KEY', '')).strip()
+    has_key = (getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')).strip()
     return 'gemini' if has_key else 'off'
 
 
@@ -368,4 +366,4 @@ def engine_disabled_reason() -> str:
     VIDEO_SCRIPT_ENGINE — đó là cấu hình, không phải lỗi."""
     if str(getattr(settings, 'VIDEO_SCRIPT_ENGINE', '') or os.getenv('VIDEO_SCRIPT_ENGINE', '')).strip():
         return ''
-    return 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice.'
+    return 'Chưa cấu hình GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice.'

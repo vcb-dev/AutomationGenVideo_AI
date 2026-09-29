@@ -78,7 +78,7 @@ def generate_script_from_video(request):
     Response 200:
       status=DONE             — có kịch bản: script_text, transcript, has_voice, language, source
       status=ENGINE_DISABLED  — engine chưa bật: chỉ báo kết quả tải, BE giữ cách viết kịch bản cũ.
-                                `reason` có nội dung khi tắt vì thiếu VIDEO_TO_TEXT_GEMINI_API_KEY,
+                                `reason` có nội dung khi tắt vì thiếu GEMINI_API_KEY,
                                 rỗng khi cố ý tắt (VIDEO_SCRIPT_ENGINE=off)
     `download` luôn có mặt: {ok, source, duration, has_audio, size_mb, trimmed, error}.
     `usage` luôn có mặt: chi phí TikHub/Gemini của lượt này (usage_meter) để BE thống kê.

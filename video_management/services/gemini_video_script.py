@@ -82,16 +82,16 @@ def _quota_message(err: Exception) -> str:
     free = 'free_tier' in msg.lower() or 'FreeTier' in msg
     if 'PerDay' in msg:
         return ('Gemini hết hạn mức trong ngày' + (' (gói miễn phí)' if free else '')
-                + ' — bật billing cho project của VIDEO_TO_TEXT_GEMINI_API_KEY hoặc thử lại vào ngày mai.')
+                + ' — bật billing cho GEMINI_API_KEY hoặc thử lại vào ngày mai.')
     return 'Gemini đang vượt hạn mức số lượt/phút' + (' (gói miễn phí: 5 lượt/phút)' if free else '') + ' — thử lại sau ít phút.'
 
 
 def _api_key() -> str:
-    """Khoá Gemini của module chuyển video thành text — tách khỏi GEMINI_API_KEY của module tạo ảnh
-    (ảnh thẻ), không lấy tạm khoá đó khi thiếu."""
-    key = (getattr(settings, 'VIDEO_TO_TEXT_GEMINI_API_KEY', '') or os.getenv('VIDEO_TO_TEXT_GEMINI_API_KEY', '')).strip()
+    """Khoá Gemini dùng chung cả AI service (ảnh thẻ, transcribe, kịch bản) — mỗi tính năng chỉ
+    tách MODEL riêng (VIDEO_SCRIPT_GEMINI_MODEL), không tách khoá."""
+    key = (getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')).strip()
     if not key:
-        raise GeminiNotConfigured('Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY trên AI Service.')
+        raise GeminiNotConfigured('Chưa cấu hình GEMINI_API_KEY trên AI Service.')
     return key
 
 
@@ -146,7 +146,7 @@ def _generate(genai, contents, timeout: int, audio_seconds: float = 0):
         if not wait or wait > MAX_RATE_LIMIT_WAIT:
             raise GeminiQuotaExceeded(_quota_message(e)) from e
         logger.warning(f'[VideoScript] Gemini vượt hạn mức (429) — chờ {wait:.0f}s rồi thử lại. '
-                       'Gói miễn phí chỉ 5 lượt/phút/model: nên bật billing cho project của VIDEO_TO_TEXT_GEMINI_API_KEY.')
+                       'Gói miễn phí chỉ 5 lượt/phút/model: nên bật billing cho GEMINI_API_KEY.')
         time.sleep(wait + 1)
         try:
             return _generate_once(genai, contents, timeout, audio_seconds)

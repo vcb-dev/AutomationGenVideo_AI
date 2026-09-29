@@ -317,12 +317,12 @@ class ScriptFromVideoViewTests(SimpleTestCase):
         video = _video()
         with mock.patch.object(pipeline, 'download_for_analysis', return_value=video), \
              mock.patch.object(pipeline, 'script_engine', return_value='off'), \
-             mock.patch.object(pipeline, 'engine_disabled_reason', return_value='Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY'), \
+             mock.patch.object(pipeline, 'engine_disabled_reason', return_value='Chưa cấu hình GEMINI_API_KEY'), \
              mock.patch.object(pipeline, 'cleanup_video') as cleanup:
             res = self._post({'video_url': 'https://www.douyin.com/video/1', 'platform': 'douyin'})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data['status'], 'ENGINE_DISABLED')
-        self.assertEqual(res.data['reason'], 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY')  # BE ghi vào lỗi nếu cách cũ hỏng
+        self.assertEqual(res.data['reason'], 'Chưa cấu hình GEMINI_API_KEY')  # BE ghi vào lỗi nếu cách cũ hỏng
         self.assertEqual(res.data['download'], {'ok': True, 'source': 'free', 'duration': 36.0, 'has_audio': True,
                                                 'size_mb': 5.7, 'trimmed': False, 'error': None})
         cleanup.assert_called_once_with(video)
@@ -509,36 +509,36 @@ class GeminiPromptTests(SimpleTestCase):
 
     def test_engine_tu_bat_khi_co_khoa_gemini(self):
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', VIDEO_TO_TEXT_GEMINI_API_KEY='k'), mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': ''}):
+        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY='k'), mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': ''}):
             self.assertEqual(pipeline.script_engine(), 'gemini')
 
     def test_khong_co_khoa_thi_tat(self):
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', VIDEO_TO_TEXT_GEMINI_API_KEY=''), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'VIDEO_TO_TEXT_GEMINI_API_KEY': ''}):
+        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY=''), \
+             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'GEMINI_API_KEY': ''}):
             self.assertEqual(pipeline.script_engine(), 'off')
 
-    def test_chi_co_khoa_tao_anh_thi_khong_bat_va_khong_muon_khoa(self):
-        # GEMINI_API_KEY là khoá của module tạo ảnh (ảnh thẻ) — module video → text không được dùng tạm
+    def test_dung_chung_GEMINI_API_KEY_model_rieng(self):
+        # Khoá chung cả AI service; tính năng này chỉ tách MODEL (không theo GEMINI_MODEL của ảnh thẻ)
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', VIDEO_TO_TEXT_GEMINI_API_KEY='', GEMINI_API_KEY='image-key'), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'VIDEO_TO_TEXT_GEMINI_API_KEY': '', 'GEMINI_API_KEY': 'image-key'}):
-            self.assertEqual(pipeline.script_engine(), 'off')
-            with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, 'VIDEO_TO_TEXT_GEMINI_API_KEY'):
+        with override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_SCRIPT_GEMINI_MODEL=''), \
+             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_GEMINI_MODEL': ''}):
+            self.assertEqual(gemini_video_script._api_key(), 'shared-key')
+            self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
+        with override_settings(GEMINI_API_KEY=''), mock.patch.dict('os.environ', {'GEMINI_API_KEY': ''}):
+            with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, 'GEMINI_API_KEY'):
                 gemini_video_script._api_key()
-        with override_settings(VIDEO_TO_TEXT_GEMINI_API_KEY='video-to-text-key', GEMINI_API_KEY='image-key'):
-            self.assertEqual(gemini_video_script._api_key(), 'video-to-text-key')
 
     def test_ly_do_tat_chi_bao_khi_thieu_khoa(self):
         # thiếu khoá = cấu hình sai → BE cần biết để hiện cho người dùng; cố ý tắt thì không phải lỗi
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', VIDEO_TO_TEXT_GEMINI_API_KEY=''), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'VIDEO_TO_TEXT_GEMINI_API_KEY': ''}):
-            self.assertIn('VIDEO_TO_TEXT_GEMINI_API_KEY', pipeline.engine_disabled_reason())
-        with override_settings(VIDEO_SCRIPT_ENGINE='off', VIDEO_TO_TEXT_GEMINI_API_KEY='k'):
+        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY=''), \
+             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'GEMINI_API_KEY': ''}):
+            self.assertIn('GEMINI_API_KEY', pipeline.engine_disabled_reason())
+        with override_settings(VIDEO_SCRIPT_ENGINE='off', GEMINI_API_KEY='k'):
             self.assertEqual(pipeline.engine_disabled_reason(), '')
 
     def test_dat_off_thi_tat_du_co_khoa(self):
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='off', VIDEO_TO_TEXT_GEMINI_API_KEY='k'):
+        with override_settings(VIDEO_SCRIPT_ENGINE='off', GEMINI_API_KEY='k'):
             self.assertEqual(pipeline.script_engine(), 'off')
