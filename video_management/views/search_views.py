@@ -10,6 +10,7 @@ This module provides REST API endpoints for searching videos across platforms.
 
 
 
+import contextvars
 import logging
 
 from rest_framework import status
@@ -1038,8 +1039,10 @@ class UserVideosView(APIView):
                 
                 # Start both tasks concurrently
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    posts_future = executor.submit(_fetch_posts_concurrent)
-                    page_future = executor.submit(_fetch_page_info_concurrent)
+                    # Mỗi luồng chạy trong bản sao ngữ cảnh của request → lượt gọi TikHub trong
+                    # luồng vẫn được ghi chi phí (usage_meter dùng contextvars, luồng mới không tự kế thừa)
+                    posts_future = executor.submit(contextvars.copy_context().run, _fetch_posts_concurrent)
+                    page_future = executor.submit(contextvars.copy_context().run, _fetch_page_info_concurrent)
                     
                     # Collect posts result (primary - required)
                     try:

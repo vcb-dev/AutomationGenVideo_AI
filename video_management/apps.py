@@ -14,6 +14,11 @@ class VideoManagementConfig(AppConfig):
         import threading
         import os
 
+        # Đo chi phí MỌI lượt gọi TikHub (tikhub_meter) — gắn cho mọi tiến trình, kể cả gunicorn
+        # (không có RUN_MAIN), nên phải đứng TRƯỚC lệnh return bên dưới.
+        from video_management.services import tikhub_meter
+        tikhub_meter.install()
+
         # Only run in the main process (not in autoreload child)
         # Django runs ready() twice with autoreload: once in parent, once in child
         # We only want to run in the child (the one that serves requests)

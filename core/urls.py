@@ -171,10 +171,11 @@ urlpatterns += [
 ]
 
 # Chi tiết 1 video theo (platform, video_id) — làm giàu dữ liệu cho luồng đề xuất video.
-from video_management.views import video_detail_views
+from video_management.views import video_detail_views, tikhub_account_views
 
 urlpatterns += [
     path('api/scraper/video-detail/', video_detail_views.get_video_detail, name='scraper-video-detail'),
+    path('api/tikhub/account/', tikhub_account_views.tikhub_account, name='tikhub-account'),
 ]
 
 # Link phát trực tiếp — BE dùng để làm trung gian phát video ngay trên web hệ thống.

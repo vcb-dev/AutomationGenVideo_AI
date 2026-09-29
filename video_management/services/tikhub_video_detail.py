@@ -30,7 +30,9 @@ PLATFORM_ENDPOINTS = {
     'douyin':      {'path': '/api/v1/douyin/web/fetch_one_video',               'param': 'aweme_id',    'arg': 'id'},
     'tiktok':      {'path': '/api/v1/tiktok/app/v3/fetch_one_video',            'param': 'aweme_id',    'arg': 'id'},
     # get_video_info (v1) trả 400 kể cả với tham số mẫu trong tài liệu; v2 chạy ổn.
-    'youtube':     {'path': '/api/v1/youtube/web/get_video_info_v2',            'param': 'video_id',    'arg': 'id'},
+    # web/ → web_v2/: đường cũ /api/v1/youtube/web/get_video_info_v2 trả 404 (đo 2026-09-27) —
+    # đề xuất video YouTube đã âm thầm không lấy được số liệu.
+    'youtube':     {'path': '/api/v1/youtube/web_v2/get_video_info_v2',         'param': 'video_id',    'arg': 'id'},
     'bilibili':    {'path': '/api/v1/bilibili/web/fetch_one_video',             'param': 'bv_id',       'arg': 'id'},
     'xiaohongshu': {'path': '/api/v1/xiaohongshu/app_v2/get_video_note_detail', 'param': 'note_id',     'arg': 'id'},
     'kuaishou':    {'path': '/api/v1/kuaishou/web/fetch_one_video',             'param': 'share_text',  'arg': 'url'},
@@ -98,19 +100,31 @@ def _count_of(value):
 # ─────────────────────────── bóc riêng cho từng nền tảng ───────────────────────────
 
 def _shape_youtube(data: dict) -> dict:
-    """YouTube trả nguyên player response; dữ liệu nằm ở videoDetails.
-    Lưu ý: endpoint này KHÔNG có số tim/bình luận (player response của YouTube không mang)."""
-    vd = data.get('videoDetails') or {}
+    """web_v2/get_video_info_v2 trả dữ liệu PHẲNG (title, author, view_count, like_count,
+    comment_count...). Vẫn đọc được dạng player response cũ (videoDetails) phòng khi TikHub đổi lại."""
+    vd = data.get('videoDetails')
+    if isinstance(vd, dict):
+        return {
+            'title': vd.get('title') or '',
+            'description': vd.get('shortDescription') or '',
+            'author_name': vd.get('author') or '',
+            'author_username': vd.get('channelId') or '',
+            'thumbnail_url': _first_url(vd.get('thumbnail')),
+            'views_count': _to_int(vd.get('viewCount')),
+            'likes_count': 0,
+            'comments_count': 0,
+            'shares_count': 0,
+        }
     return {
-        'title': vd.get('title') or '',
-        'description': vd.get('shortDescription') or '',
-        'author_name': vd.get('author') or '',
-        'author_username': vd.get('channelId') or '',
-        'thumbnail_url': _first_url(vd.get('thumbnail')),
-        'views_count': _to_int(vd.get('viewCount')),
-        'likes_count': 0,
-        'comments_count': 0,
-        'shares_count': 0,
+        'title': data.get('title') or '',
+        'description': data.get('description') or '',
+        'author_name': data.get('author') or '',
+        'author_username': data.get('channel_handle') or data.get('channel_id') or '',
+        'thumbnail_url': data.get('thumbnail_url') or _first_url(data.get('thumbnails')),
+        'views_count': _to_int(data.get('view_count')),
+        'likes_count': _to_int(data.get('like_count')),
+        'comments_count': _to_int(data.get('comment_count')),
+        'shares_count': 0,   # YouTube không công khai số chia sẻ
     }
 
 
@@ -151,10 +165,23 @@ def _shape_kuaishou(data: dict) -> dict:
     }
 
 
+def _shape_bilibili(data: dict) -> dict:
+    """Bilibili tách tiêu đề (`title`) và mô tả (`desc`). Dạng chung lấy `desc` trước — đúng với
+    Douyin/TikTok (desc là caption) nhưng ở Bilibili thì ra mô tả, mà người đăng để trống thì
+    Bilibili ghi "-" → đề xuất nào cũng mang tiêu đề "-" (gặp khi test thật 2026-09-28)."""
+    shaped = _shape_generic(data)
+    desc = str(data.get('desc') or '').strip()
+    desc = '' if desc == '-' else desc
+    shaped['title'] = str(data.get('title') or '').strip() or desc
+    shaped['description'] = desc
+    return shaped
+
+
 PLATFORM_SHAPERS = {
     'youtube': _shape_youtube,
     'instagram': _shape_instagram,
     'kuaishou': _shape_kuaishou,
+    'bilibili': _shape_bilibili,
 }
 
 

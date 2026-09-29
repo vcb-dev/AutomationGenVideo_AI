@@ -69,8 +69,7 @@ yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/aefce1eea4.tar.gz
 # Douyin bắt buộc Chromium headless để né chữ ký JS (xem requirements.txt +
 # video_management/scripts/douyin_extract.py). Trước bản này requirements_cloud.txt
 # thiếu cả 2 dòng dưới — tính năng Douyin luôn lỗi ngầm trên production dù chạy đúng ở
-# máy dev có venv cài tay. Muốn hoạt động còn cần cài Chromium
-# (`playwright install --with-deps chromium`) vào môi trường chạy — Dockerfile.railway
-# hiện chưa có bước này, xem trao đổi liên quan trước khi tự thêm vào.
+# máy dev có venv cài tay. Chromium (`playwright install --with-deps chromium`) được cài
+# ở Dockerfile.railway.
 playwright>=1.61.0
 playwright-stealth>=2.0.3
