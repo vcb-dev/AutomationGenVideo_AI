@@ -203,17 +203,15 @@ class GeminiCostTests(SimpleTestCase):
             gemini_video_script._record_usage('gemini-3.1-flash-lite', response, audio_seconds=75.9)
         self.assertEqual(round(events[0]['cost_usd'] * 26000), 71)
 
-    def test_model_du_phong_ghi_dung_ten_model_da_dung(self):
+    def test_ghi_chi_phi_theo_ten_model_cau_hinh(self):
         class FakeModel:
             def __init__(self, name, generation_config=None):
                 self.name = name
             def generate_content(self, contents, request_options=None):
-                if self.name == 'gemini-2.0-flash':
-                    raise Exception('404 This model models/gemini-2.0-flash is no longer available.')
                 return SimpleNamespace(usage_metadata=SimpleNamespace(prompt_token_count=10, total_token_count=30))
-        with usage_meter.collect() as events, mock.patch.object(gemini_video_script, '_model_name', return_value='gemini-2.0-flash'):
+        with usage_meter.collect() as events, mock.patch.object(gemini_video_script, '_model_name', return_value='gemini-3.1-flash-lite'):
             gemini_video_script._generate_once(SimpleNamespace(GenerativeModel=FakeModel), 'x', 10)
-        self.assertEqual([e['endpoint'] for e in events], [gemini_video_script.FALLBACK_MODEL])
+        self.assertEqual([e['endpoint'] for e in events], ['gemini-3.1-flash-lite'])
 
 
 class EndpointsReturnUsageTests(SimpleTestCase):
@@ -222,7 +220,7 @@ class EndpointsReturnUsageTests(SimpleTestCase):
         self.user = SimpleNamespace(pk='u1', is_authenticated=True)
 
     @mock.patch('video_management.views.scraped_video_script_views.VideoScriptThrottle.allow_request', return_value=True)
-    def test_script_from_video_tra_usage_ke_ca_khi_engine_tat(self, _t):
+    def test_script_from_video_tra_usage_ke_ca_khi_tai_hong(self, _t):
         from video_management.services import video_script_pipeline as pipeline
         from video_management.views import scraped_video_script_views as views
 
@@ -231,10 +229,12 @@ class EndpointsReturnUsageTests(SimpleTestCase):
             raise pipeline.VideoDownloadError(['hỏng'])
         request = self.factory.post('/api/scraped-video/script-from-video/', {'video_url': 'https://www.reddit.com/r/a/comments/1abcdef/x/'}, format='json')
         force_authenticate(request, user=self.user)
+        text_only = {'has_voice': False, 'language': '', 'transcript': '', 'script_text': 'x', 'source': 'gemini_text'}
         with mock.patch.object(pipeline, 'download_for_analysis', side_effect=fake_download), \
-             mock.patch.object(pipeline, 'script_engine', return_value='off'):
+             mock.patch.object(pipeline, 'script_engine', return_value='gemini'), \
+             mock.patch.object(gemini_video_script, 'generate_script', return_value=text_only):
             res = views.generate_script_from_video(request)
-        self.assertEqual(res.data['status'], 'ENGINE_DISABLED')
+        self.assertEqual(res.data['status'], 'DONE')
         self.assertEqual(res.data['usage'][0]['endpoint'], '/api/v1/reddit/app/fetch_post_details')
 
     def test_video_detail_tra_usage(self):

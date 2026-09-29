@@ -50,7 +50,7 @@ class TikHubOutOfCredit(Exception):
 
 
 def _base() -> str:
-    return getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
+    return settings.TIKHUB_API_BASE_URL
 
 
 def _call(path: str, params: dict) -> Optional[dict]:

@@ -32,7 +32,7 @@ def _load_prices() -> dict:
     if isinstance(prices, dict) and prices:
         return prices
     api_key = getattr(settings, 'TIKHUB_API_KEY', '')
-    base = getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
+    base = settings.TIKHUB_API_BASE_URL
     if not api_key or cache.get(FAILED_KEY):
         return {}
     try:

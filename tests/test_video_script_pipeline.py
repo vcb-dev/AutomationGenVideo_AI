@@ -14,7 +14,7 @@ Chạy: python manage.py test tests.test_video_script_pipeline
 from types import SimpleNamespace
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from video_management.services import gemini_video_script
@@ -231,6 +231,7 @@ class BilibiliDetailTests(SimpleTestCase):
         self.assertEqual(self._fetch(body)['title'], 'Hướng dẫn chi tiết')
 
 
+@override_settings(VIDEO_SCRIPT_MAX_SECONDS='300')  # biến bắt buộc, code không có mặc định
 class FfmpegDownloadTests(SimpleTestCase):
     def test_het_han_thi_cuu_phan_dau(self):
         import subprocess
@@ -313,26 +314,17 @@ class ScriptFromVideoViewTests(SimpleTestCase):
     def test_thieu_link_bao_400(self, _throttle):
         self.assertEqual(self._post({'video_url': 'abc'}).status_code, 400)
 
-    def test_engine_tat_chi_bao_ket_qua_tai_va_don_file(self, _throttle):
-        video = _video()
-        with mock.patch.object(pipeline, 'download_for_analysis', return_value=video), \
+    def test_engine_tat_khong_tai_video_va_bao_ly_do(self, _throttle):
+        # Engine tắt → tải về cũng không dùng, không được tốn TikHub; lý do để BE ghi nếu cách cũ hỏng
+        with mock.patch.object(pipeline, 'download_for_analysis') as download, \
              mock.patch.object(pipeline, 'script_engine', return_value='off'), \
-             mock.patch.object(pipeline, 'engine_disabled_reason', return_value='Chưa cấu hình GEMINI_API_KEY'), \
-             mock.patch.object(pipeline, 'cleanup_video') as cleanup:
+             mock.patch.object(pipeline, 'engine_disabled_reason', return_value='Chưa cấu hình VIDEO_TO_TEXT_GEMINI_MODEL'):
             res = self._post({'video_url': 'https://www.douyin.com/video/1', 'platform': 'douyin'})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data['status'], 'ENGINE_DISABLED')
-        self.assertEqual(res.data['reason'], 'Chưa cấu hình GEMINI_API_KEY')  # BE ghi vào lỗi nếu cách cũ hỏng
-        self.assertEqual(res.data['download'], {'ok': True, 'source': 'free', 'duration': 36.0, 'has_audio': True,
-                                                'size_mb': 5.7, 'trimmed': False, 'error': None})
-        cleanup.assert_called_once_with(video)
-
-    def test_engine_tat_tai_hong_van_tra_200_kem_ly_do(self, _throttle):
-        with mock.patch.object(pipeline, 'download_for_analysis', side_effect=pipeline.VideoDownloadError(['tải miễn phí: chặn', 'TikHub: hết tiền'])), \
-             mock.patch.object(pipeline, 'script_engine', return_value='off'):
-            res = self._post({'video_url': 'https://www.douyin.com/video/1'})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.data['download'], {'ok': False, 'error': 'tải miễn phí: chặn; TikHub: hết tiền'})
+        self.assertEqual(res.data['reason'], 'Chưa cấu hình VIDEO_TO_TEXT_GEMINI_MODEL')
+        self.assertFalse(res.data['download']['ok'])
+        download.assert_not_called()
 
     def test_engine_gemini_tra_kich_ban(self, _throttle):
         result = {'has_voice': True, 'language': 'zh', 'transcript': '大家好', 'script_text': '【HOOK】\nXin chào', 'source': 'gemini_video'}
@@ -368,6 +360,7 @@ class ScriptFromVideoViewTests(SimpleTestCase):
         cleanup.assert_called_once_with(video)
 
 
+@override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash-lite')  # biến bắt buộc, code không có mặc định
 class GeminiPromptTests(SimpleTestCase):
     def test_prompt_dung_dinh_dang_json_mau(self):
         text = gemini_video_script.VIDEO_PROMPT.format(title='Nhẫn', description='Mô tả')
@@ -383,44 +376,46 @@ class GeminiPromptTests(SimpleTestCase):
         text = gemini_video_script.format_script({'hook': 'Mở', 'body': 'Thân', 'cta': 'Mua ngay'})
         self.assertEqual(text, '【HOOK】\nMở\n\n【NỘI DUNG】\nThân\n\n【KÊU GỌI HÀNH ĐỘNG】\nMua ngay')
 
-    def test_model_mac_dinh_la_flash_lite_va_khong_theo_GEMINI_MODEL(self):
+    def test_model_lay_tu_VIDEO_TO_TEXT_GEMINI_MODEL_khong_theo_GEMINI_MODEL(self):
         from django.test import override_settings
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.8-flash'), \
-             mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': '', 'GEMINI_MODEL': 'gemini-3.8-flash'}):
-            self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.5-flash'):
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.5-flash', GEMINI_MODEL='gemini-3.1-flash-image'):
             self.assertEqual(gemini_video_script._model_name(), 'gemini-3.5-flash')
+        with mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': ' gemini-3.1-flash-lite '}), \
+             override_settings(VIDEO_TO_TEXT_GEMINI_MODEL=''):
+            self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
 
-    def test_ten_model_khong_ton_tai_thi_dung_flash_lite_moi_nhat(self):
-        # "gemini-3.1-flash" không tồn tại — thông báo lỗi nguyên văn từ SDK (đo thật 2026-09-28);
-        # phải rơi về flash-lite, không được âm thầm sang model đắt hơn
+    def test_thieu_bien_model_bao_ro_ten_bien_khong_tu_chon_model(self):
+        # không có giá trị mặc định trong code: thiếu biến → lỗi nêu tên biến, kể cả khi GEMINI_MODEL có giá trị
+        from django.test import override_settings
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.1-flash-image'), \
+             mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': ''}):
+            with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, 'VIDEO_TO_TEXT_GEMINI_MODEL'):
+                gemini_video_script._model_name()
+
+    def _gone_model(self, message):
         calls = []
         class FakeModel:
             def __init__(self, name, generation_config=None):
                 self.name = name
             def generate_content(self, contents, request_options=None):
                 calls.append(self.name)
-                if self.name == 'gemini-3.1-flash':
-                    raise Exception('404 models/gemini-3.1-flash is not found for API version v1beta, or is not supported for generateContent.')
-                return 'ok'
+                raise Exception(message)
+        return SimpleNamespace(GenerativeModel=FakeModel), calls
+
+    def test_ten_model_khong_ton_tai_bao_sua_bien_khong_doi_model(self):
+        # thông báo lỗi nguyên văn từ SDK khi gõ "gemini-3.1-flash" (đo thật 2026-09-28)
+        genai, calls = self._gone_model('404 models/gemini-3.1-flash is not found for API version v1beta, or is not supported for generateContent.')
         with mock.patch.object(gemini_video_script, '_model_name', return_value='gemini-3.1-flash'):
-            gemini_video_script._generate(SimpleNamespace(GenerativeModel=FakeModel), 'x', 10)
-        self.assertEqual(calls, ['gemini-3.1-flash', 'gemini-flash-lite-latest'])
+            with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, "Model Gemini 'gemini-3.1-flash' không dùng được"):
+                gemini_video_script._generate(genai, 'x', 10)
+        self.assertEqual(calls, ['gemini-3.1-flash'])
 
-    def test_model_bi_ngung_thi_thu_lai_voi_flash_latest(self):
-        calls = []
-        class FakeModel:
-            def __init__(self, name, generation_config=None):
-                self.name = name
-            def generate_content(self, contents, request_options=None):
-                calls.append(self.name)
-                if self.name == 'gemini-2.0-flash':
-                    raise Exception('404 This model models/gemini-2.0-flash is no longer available.')
-                return 'ok'
-        genai = SimpleNamespace(GenerativeModel=FakeModel)
+    def test_model_bi_ngung_bao_sua_bien_khong_doi_model(self):
+        genai, calls = self._gone_model('404 This model models/gemini-2.0-flash is no longer available.')
         with mock.patch.object(gemini_video_script, '_model_name', return_value='gemini-2.0-flash'):
-            self.assertEqual(gemini_video_script._generate(genai, 'x', 10), 'ok')
-        self.assertEqual(calls, ['gemini-2.0-flash', gemini_video_script.FALLBACK_MODEL])
+            with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, 'VIDEO_TO_TEXT_GEMINI_MODEL'):
+                gemini_video_script._generate(genai, 'x', 10)
+        self.assertEqual(calls, ['gemini-2.0-flash'])
 
     def test_vuot_han_muc_429_cho_roi_thu_lai_mot_lan(self):
         attempts = []
@@ -507,35 +502,54 @@ class GeminiPromptTests(SimpleTestCase):
             gemini_video_script._generate(SimpleNamespace(GenerativeModel=FakeModel), 'x', 10)
         sleep.assert_not_called()
 
-    def test_engine_tu_bat_khi_co_khoa_gemini(self):
-        from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY='k'), mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': ''}):
-            self.assertEqual(pipeline.script_engine(), 'gemini')
+    FULL_CONFIG = dict(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY='k', VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash-lite',
+                       VIDEO_SCRIPT_MAX_SECONDS='300')
+    EMPTY_ENV = {'VIDEO_SCRIPT_ENGINE': '', 'GEMINI_API_KEY': '', 'VIDEO_TO_TEXT_GEMINI_MODEL': '', 'VIDEO_SCRIPT_MAX_SECONDS': ''}
 
-    def test_khong_co_khoa_thi_tat(self):
+    def test_engine_bat_khi_du_bien_bat_buoc(self):
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY=''), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'GEMINI_API_KEY': ''}):
-            self.assertEqual(pipeline.script_engine(), 'off')
+        with override_settings(**self.FULL_CONFIG), mock.patch.dict('os.environ', self.EMPTY_ENV):
+            self.assertEqual(pipeline.script_engine(), 'gemini')
+            self.assertEqual(pipeline.missing_config(), [])
+            self.assertEqual(pipeline.max_seconds(), 300)
+
+    def test_thieu_bat_ky_bien_bat_buoc_nao_thi_tat(self):
+        from django.test import override_settings
+        for name in ('GEMINI_API_KEY', 'VIDEO_TO_TEXT_GEMINI_MODEL', 'VIDEO_SCRIPT_MAX_SECONDS'):
+            with self.subTest(thieu=name), override_settings(**{**self.FULL_CONFIG, name: ''}), \
+                 mock.patch.dict('os.environ', self.EMPTY_ENV):
+                self.assertEqual(pipeline.script_engine(), 'off')
+                self.assertEqual(pipeline.missing_config(), [name])
+
+    def test_so_giay_toi_da_sai_dinh_dang_coi_nhu_thieu(self):
+        from django.test import override_settings
+        for bad in ('abc', '0', '-5'):
+            with self.subTest(gia_tri=bad), override_settings(**{**self.FULL_CONFIG, 'VIDEO_SCRIPT_MAX_SECONDS': bad}), \
+                 mock.patch.dict('os.environ', self.EMPTY_ENV):
+                self.assertEqual(pipeline.missing_config(), ['VIDEO_SCRIPT_MAX_SECONDS'])
+                with self.assertRaisesMessage(ValueError, 'VIDEO_SCRIPT_MAX_SECONDS'):
+                    pipeline.max_seconds()
 
     def test_dung_chung_GEMINI_API_KEY_model_rieng(self):
         # Khoá chung cả AI service; tính năng này chỉ tách MODEL (không theo GEMINI_MODEL của ảnh thẻ)
         from django.test import override_settings
-        with override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL=''), \
-             mock.patch.dict('os.environ', {'VIDEO_TO_TEXT_GEMINI_MODEL': ''}):
+        with override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash-lite'):
             self.assertEqual(gemini_video_script._api_key(), 'shared-key')
             self.assertEqual(gemini_video_script._model_name(), 'gemini-3.1-flash-lite')
         with override_settings(GEMINI_API_KEY=''), mock.patch.dict('os.environ', {'GEMINI_API_KEY': ''}):
             with self.assertRaisesMessage(gemini_video_script.GeminiNotConfigured, 'GEMINI_API_KEY'):
                 gemini_video_script._api_key()
 
-    def test_ly_do_tat_chi_bao_khi_thieu_khoa(self):
-        # thiếu khoá = cấu hình sai → BE cần biết để hiện cho người dùng; cố ý tắt thì không phải lỗi
+    def test_ly_do_tat_liet_ke_moi_bien_thieu(self):
+        # thiếu biến = cấu hình sai → BE cần biết để hiện cho người dùng; cố ý tắt thì không phải lỗi
         from django.test import override_settings
-        with override_settings(VIDEO_SCRIPT_ENGINE='', GEMINI_API_KEY=''), \
-             mock.patch.dict('os.environ', {'VIDEO_SCRIPT_ENGINE': '', 'GEMINI_API_KEY': ''}):
-            self.assertIn('GEMINI_API_KEY', pipeline.engine_disabled_reason())
-        with override_settings(VIDEO_SCRIPT_ENGINE='off', GEMINI_API_KEY='k'):
+        with override_settings(**{**self.FULL_CONFIG, 'GEMINI_API_KEY': '', 'VIDEO_TO_TEXT_GEMINI_MODEL': ''}), \
+             mock.patch.dict('os.environ', self.EMPTY_ENV):
+            self.assertEqual(pipeline.engine_disabled_reason(),
+                             'Chưa cấu hình GEMINI_API_KEY, VIDEO_TO_TEXT_GEMINI_MODEL trên AI Service nên chưa viết được kịch bản từ voice.')
+        with override_settings(**{**self.FULL_CONFIG, 'VIDEO_SCRIPT_ENGINE': 'off'}):
+            self.assertEqual(pipeline.engine_disabled_reason(), '')
+        with override_settings(**self.FULL_CONFIG), mock.patch.dict('os.environ', self.EMPTY_ENV):
             self.assertEqual(pipeline.engine_disabled_reason(), '')
 
     def test_dat_off_thi_tat_du_co_khoa(self):

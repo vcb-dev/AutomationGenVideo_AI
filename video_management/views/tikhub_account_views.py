@@ -23,7 +23,7 @@ CACHE_TTL = 300
 
 
 def _get(path: str):
-    base = getattr(settings, 'TIKHUB_API_BASE_URL', 'https://api.tikhub.io')
+    base = settings.TIKHUB_API_BASE_URL
     resp = requests.get(f'{base}{path}', headers={'Authorization': f'Bearer {settings.TIKHUB_API_KEY}'}, timeout=20)
     resp.raise_for_status()
     return resp.json()

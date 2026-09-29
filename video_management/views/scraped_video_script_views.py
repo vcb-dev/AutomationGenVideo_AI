@@ -77,8 +77,9 @@ def generate_script_from_video(request):
     Tải video (miễn phí trước, TikHub dự phòng) rồi Gemini viết kịch bản từ lời thoại + hình.
     Response 200:
       status=DONE             — có kịch bản: script_text, transcript, has_voice, language, source
-      status=ENGINE_DISABLED  — engine chưa bật: chỉ báo kết quả tải, BE giữ cách viết kịch bản cũ.
-                                `reason` có nội dung khi tắt vì thiếu GEMINI_API_KEY,
+      status=ENGINE_DISABLED  — engine chưa bật: KHÔNG tải video (không tốn TikHub), BE giữ cách viết
+                                kịch bản cũ. `reason` nêu các biến bắt buộc còn thiếu
+                                (GEMINI_API_KEY, VIDEO_TO_TEXT_GEMINI_MODEL, VIDEO_SCRIPT_MAX_SECONDS),
                                 rỗng khi cố ý tắt (VIDEO_SCRIPT_ENGINE=off)
     `download` luôn có mặt: {ok, source, duration, has_audio, size_mb, trimmed, error}.
     `usage` luôn có mặt: chi phí TikHub/Gemini của lượt này (usage_meter) để BE thống kê.
@@ -107,6 +108,12 @@ def generate_script_from_video(request):
 
 def _script_from_video(video_url, platform, video_id, title, description) -> dict:
     """Trả dict phản hồi kèm '_video' (file tạm để view dọn) và '_code' (mã HTTP nếu khác 200)."""
+    if pipeline.script_engine() != "gemini":
+        # Kiểm cấu hình TRƯỚC khi tải: engine tắt thì tải về cũng không dùng, chỉ tốn TikHub.
+        reason = pipeline.engine_disabled_reason()
+        logger.info(f"[VideoScript] engine tắt ({reason or 'VIDEO_SCRIPT_ENGINE=off'}) — không tải {video_url[:80]}")
+        return {"status": "ENGINE_DISABLED", "reason": reason,
+                "download": {"ok": False, "error": "Không tải vì chưa bật viết kịch bản từ video."}}
     video = None
     try:
         video = pipeline.download_for_analysis(video_url, platform=platform, video_id=video_id)
@@ -122,10 +129,6 @@ def _script_from_video(video_url, platform, video_id, title, description) -> dic
 
 def _script_for(video, download, video_url, platform, title, description) -> dict:
     logger.info(f"[VideoScript] {platform or pipeline.detect_platform(video_url)} {video_url[:80]} → tải: {download}")
-
-    if pipeline.script_engine() != "gemini":
-        return {"status": "ENGINE_DISABLED", "reason": pipeline.engine_disabled_reason(),
-                "download": download, "_video": video}
 
     from video_management.services import gemini_video_script
     try:

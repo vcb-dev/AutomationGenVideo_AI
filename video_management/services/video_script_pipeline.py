@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # upload nhanh. Video dài hơn MAX_SECONDS bị cắt lấy phần đầu — đủ để viết kịch bản, và giữ
 # chi phí Gemini (tính theo độ dài) không vọt lên vì một video dài bất thường.
 ANALYSIS_QUALITY = '480'
-DEFAULT_MAX_SECONDS = 300
+MAX_SECONDS_ENV = 'VIDEO_SCRIPT_MAX_SECONDS'
 # Nền tảng có đường dự phòng TikHub (xem tikhub_download_source.py). Không có: Facebook (TikHub không
 # hỗ trợ), YouTube (link TikHub gắn cứng IP máy chủ của họ → luôn 403 khi tải từ máy mình).
 TIKHUB_FALLBACK_PLATFORMS = {'douyin', 'tiktok', 'kuaishou', 'xiaohongshu', 'instagram', 'bilibili', 'reddit'}
@@ -93,11 +93,24 @@ class DownloadedVideo:
         }
 
 
-def max_seconds() -> int:
+def _env(name: str) -> str:
+    return str(getattr(settings, name, '') or os.getenv(name, '')).strip()
+
+
+def _positive_int(raw: str) -> Optional[int]:
     try:
-        return max(30, int(getattr(settings, 'VIDEO_SCRIPT_MAX_SECONDS', 0) or os.getenv('VIDEO_SCRIPT_MAX_SECONDS', DEFAULT_MAX_SECONDS)))
+        value = int(raw)
     except (TypeError, ValueError):
-        return DEFAULT_MAX_SECONDS
+        return None
+    return value if value > 0 else None
+
+
+def max_seconds() -> int:
+    """Số giây đầu video đem đi phân tích — VIDEO_SCRIPT_MAX_SECONDS, bắt buộc (không mặc định trong code)."""
+    value = _positive_int(_env(MAX_SECONDS_ENV))
+    if value is None:
+        raise ValueError(f'Chưa cấu hình {MAX_SECONDS_ENV} (số giây, số nguyên dương) trên AI Service.')
+    return value
 
 
 def detect_platform(url: str) -> str:
@@ -347,23 +360,32 @@ def cleanup_video(video: Optional[DownloadedVideo]) -> None:
         cleanup_path(video.path)
 
 
+def missing_config() -> list:
+    """Các biến bắt buộc của luồng video → kịch bản đang thiếu / sai (không có giá trị mặc định trong code)."""
+    from video_management.services.gemini_video_script import MODEL_ENV
+    missing = [name for name in ('GEMINI_API_KEY', MODEL_ENV) if not _env(name)]
+    if _positive_int(_env(MAX_SECONDS_ENV)) is None:
+        missing.append(MAX_SECONDS_ENV)
+    return missing
+
+
 def script_engine() -> str:
     """'gemini' hoặc 'off'.
 
-    VIDEO_SCRIPT_ENGINE đặt tường minh thì theo nó (off = tắt hẳn, vd khi cần ngừng tốn phí
-    Gemini). Không đặt thì có GEMINI_API_KEY là bật — cấu hình khoá đồng nghĩa với "đấu Gemini
-    vào", không bắt khai thêm biến thứ hai rồi quên.
+    VIDEO_SCRIPT_ENGINE=off (hoặc giá trị khác 'gemini') → tắt hẳn, vd khi cần ngừng tốn phí Gemini.
+    Còn lại bật khi đủ biến bắt buộc (missing_config rỗng).
     """
-    value = str(getattr(settings, 'VIDEO_SCRIPT_ENGINE', '') or os.getenv('VIDEO_SCRIPT_ENGINE', '')).strip().lower()
-    if value:
-        return 'gemini' if value == 'gemini' else 'off'
-    has_key = (getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')).strip()
-    return 'gemini' if has_key else 'off'
+    value = _env('VIDEO_SCRIPT_ENGINE').lower()
+    if value and value != 'gemini':
+        return 'off'
+    return 'off' if missing_config() else 'gemini'
 
 
 def engine_disabled_reason() -> str:
     """Lý do engine tắt, để BE ghi vào lỗi nếu cách viết cũ cũng hỏng. Rỗng khi cố ý tắt bằng
     VIDEO_SCRIPT_ENGINE — đó là cấu hình, không phải lỗi."""
-    if str(getattr(settings, 'VIDEO_SCRIPT_ENGINE', '') or os.getenv('VIDEO_SCRIPT_ENGINE', '')).strip():
+    value = _env('VIDEO_SCRIPT_ENGINE').lower()
+    if value and value != 'gemini':
         return ''
-    return 'Chưa cấu hình GEMINI_API_KEY trên AI Service nên chưa viết được kịch bản từ voice.'
+    missing = missing_config()
+    return f'Chưa cấu hình {", ".join(missing)} trên AI Service nên chưa viết được kịch bản từ voice.' if missing else ''
