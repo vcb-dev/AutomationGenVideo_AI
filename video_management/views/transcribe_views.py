@@ -68,7 +68,8 @@ GEMINI_FILE_PROCESSING_TIMEOUT = 90  # seconds
 # nên sàn 10s cũ là vô nghĩa; 30s mới đủ để một lần gọi có cơ hội thành công thật.
 GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
 
-# Model Gemini NGHE giọng nói: biến riêng TRANSCRIBE_GEMINI_MODEL (khoá vẫn dùng chung GEMINI_API_KEY).
+# Model Gemini NGHE giọng nói: VIDEO_TO_TEXT_GEMINI_MODEL — dùng chung với luồng video → kịch bản
+# (Bộ sưu tập); khoá vẫn dùng chung GEMINI_API_KEY.
 # Không đọc GEMINI_MODEL — trên server biến đó là model TẠO ẢNH
 #   (gemini-3.1-flash-image, đầu vào không có âm thanh), đọc chung thì transcribe "nghe" bằng một
 #   model không nghe được tiếng. gemini-3.1-flash-lite nhận âm thanh + video, rẻ nhất họ 3.1.
@@ -78,8 +79,8 @@ TRANSCRIBE_FALLBACK_MODEL = 'gemini-flash-lite-latest'
 
 
 def _transcribe_model_name() -> str:
-    """TRANSCRIBE_GEMINI_MODEL (settings hoặc biến môi trường), để trống thì dùng mặc định."""
-    for value in (getattr(settings, 'TRANSCRIBE_GEMINI_MODEL', ''), os.getenv('TRANSCRIBE_GEMINI_MODEL', '')):
+    """VIDEO_TO_TEXT_GEMINI_MODEL (settings hoặc biến môi trường), để trống thì dùng mặc định."""
+    for value in (getattr(settings, 'VIDEO_TO_TEXT_GEMINI_MODEL', ''), os.getenv('VIDEO_TO_TEXT_GEMINI_MODEL', '')):
         if value and str(value).strip():
             return str(value).strip()
     return TRANSCRIBE_DEFAULT_MODEL
@@ -821,7 +822,7 @@ def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
 
 def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> str:
     """
-    Upload file directly to Gemini Files API and transcribe using TRANSCRIBE_GEMINI_MODEL
+    Upload file directly to Gemini Files API and transcribe using VIDEO_TO_TEXT_GEMINI_MODEL
     (mặc định gemini-3.1-flash-lite — xem _transcribe_model_name).
     Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
 
@@ -929,7 +930,7 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> 
                     raise
                 logger.warning(
                     f"[Gemini Transcribe] model {name} không dùng được (không tồn tại / đã bị ngừng) — "
-                    f"dùng tạm {TRANSCRIBE_FALLBACK_MODEL}. Sửa TRANSCRIBE_GEMINI_MODEL cho đúng. "
+                    f"dùng tạm {TRANSCRIBE_FALLBACK_MODEL}. Sửa VIDEO_TO_TEXT_GEMINI_MODEL cho đúng. "
                     f"Lỗi gốc: {str(nf)[:160]}"
                 )
             except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
