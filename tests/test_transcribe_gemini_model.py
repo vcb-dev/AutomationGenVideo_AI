@@ -1,5 +1,5 @@
-"""Transcribe nghe giọng nói bằng VIDEO_TO_TEXT_GEMINI_MODEL (chung với video → kịch bản); khoá dùng chung GEMINI_API_KEY
-(ảnh thẻ giữ GEMINI_MODEL = model tạo ảnh).
+"""Transcribe nghe giọng nói bằng VIDEO_TO_TEXT_GEMINI_MODEL (chung với video → kịch bản) — biến BẮT BUỘC,
+code không có model mặc định; khoá dùng chung GEMINI_API_KEY (ảnh thẻ giữ GEMINI_MODEL = model tạo ảnh).
 
 Lỗi gốc: transcribe đọc chung GEMINI_MODEL với ảnh thẻ, mà trên server biến đó là
 gemini-3.1-flash-image — model TẠO ẢNH, đầu vào "Text, Image, Video, and PDF", không có âm thanh
@@ -7,7 +7,7 @@ gemini-3.1-flash-image — model TẠO ẢNH, đầu vào "Text, Image, Video, a
 "nghe" bằng một model không nghe được tiếng. Cũng không thể đổi GEMINI_MODEL sang model chữ: đo
 thật, gemini-3.1-flash-lite trả NO_IMAGE nên ảnh thẻ sẽ hỏng. Vì vậy tách biến.
 
-SDK được thay bằng bản giả chỉ để khoá luồng điều khiển của phía mình (chọn model, dự phòng khi
+SDK được thay bằng bản giả chỉ để khoá luồng điều khiển của phía mình (đọc biến model, báo lỗi khi
 404, khoá API dùng chung). Hành vi thật của SDK (404 → NotFound, model nghe được tiếng) đã kiểm
 bằng Gemini thật trên image dựng từ Dockerfile.railway.
 
@@ -22,9 +22,6 @@ from django.test import SimpleTestCase, override_settings
 from google.api_core import exceptions as google_api_exceptions
 
 from video_management.views import transcribe_views
-
-LOGGER = 'video_management.views.transcribe_views'
-
 
 class FakeGenai:
     """Thay google.generativeai: ghi lại khoá API, các model đã gọi và file đã xoá trên Gemini."""
@@ -60,27 +57,24 @@ class FakeGenai:
 
 
 class TranscribeModelNameTests(SimpleTestCase):
-    def test_defaults_to_flash_lite_even_when_gemini_model_is_image_model(self):
-        """Mặc định gemini-3.1-flash-lite, bỏ qua GEMINI_MODEL = model tạo ảnh như trên server."""
-        with mock.patch.dict(os.environ, {'GEMINI_MODEL': 'gemini-3.1-flash-image', 'VIDEO_TO_TEXT_GEMINI_MODEL': ''}), \
-             override_settings(GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL=''):
-            self.assertEqual(transcribe_views._transcribe_model_name(), 'gemini-3.1-flash-lite')
-
-    def test_transcribe_gemini_model_overrides_default(self):
-        """Đặt VIDEO_TO_TEXT_GEMINI_MODEL (biến môi trường hoặc settings) thì dùng đúng giá trị đó."""
-        with mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_MODEL': ' gemini-3.5-flash '}):
+    def test_reads_video_to_text_model_not_gemini_model(self):
+        """Dùng đúng VIDEO_TO_TEXT_GEMINI_MODEL (biến môi trường hoặc settings), không theo GEMINI_MODEL = model tạo ảnh."""
+        with mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_MODEL': ' gemini-3.5-flash ', 'GEMINI_MODEL': 'gemini-3.1-flash-image'}), \
+             override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.1-flash-image'):
             self.assertEqual(transcribe_views._transcribe_model_name(), 'gemini-3.5-flash')
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-2.5-flash'):
-            self.assertEqual(transcribe_views._transcribe_model_name(), 'gemini-2.5-flash')
-
-    def test_blank_value_falls_back_to_default(self):
-        """Biến chỉ có khoảng trắng coi như chưa đặt."""
-        with mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_MODEL': '   '}), \
-             override_settings(VIDEO_TO_TEXT_GEMINI_MODEL=''):
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash-lite'):
             self.assertEqual(transcribe_views._transcribe_model_name(), 'gemini-3.1-flash-lite')
 
+    def test_missing_or_blank_raises_with_variable_name(self):
+        """Không có giá trị mặc định trong code: thiếu / chỉ khoảng trắng → lỗi nêu tên biến (transcribe trả 400)."""
+        for blank in ('', '   '):
+            with self.subTest(value=repr(blank)), mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_MODEL': blank}), \
+                 override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='', GEMINI_MODEL='gemini-3.1-flash-image'):
+                with self.assertRaisesMessage(ValueError, 'VIDEO_TO_TEXT_GEMINI_MODEL'):
+                    transcribe_views._transcribe_model_name()
 
-@override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL='')
+
+@override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash-lite')
 class TranscribeWithGeminiTests(SimpleTestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix='.mp4')
@@ -95,8 +89,8 @@ class TranscribeWithGeminiTests(SimpleTestCase):
         with fake.patch():
             return transcribe_views.transcribe_with_gemini(self.path)
 
-    def test_listens_with_flash_lite_and_shares_gemini_api_key(self):
-        """Nghe bằng flash-lite, không đụng model tạo ảnh của GEMINI_MODEL, dùng chung GEMINI_API_KEY."""
+    def test_listens_with_configured_model_and_shares_gemini_api_key(self):
+        """Nghe bằng model cấu hình, không đụng model tạo ảnh của GEMINI_MODEL, dùng chung GEMINI_API_KEY."""
         fake = FakeGenai()
         self.assertEqual(self._run(fake), 'lời thoại từ gemini-3.1-flash-lite')
         self.assertEqual(fake.api_key, 'shared-key')
@@ -111,39 +105,27 @@ class TranscribeWithGeminiTests(SimpleTestCase):
                 self._run(fake)
         self.assertEqual(fake.models, [])
 
-    def test_missing_model_falls_back_to_flash_lite_latest(self):
-        """Tên model không tồn tại (404) → dùng gemini-flash-lite-latest và cảnh báo sửa cấu hình."""
+    def test_missing_model_variable_fails_before_calling_gemini(self):
+        """Thiếu VIDEO_TO_TEXT_GEMINI_MODEL → báo rõ tên biến, không tải file lên / gọi Gemini."""
+        fake = FakeGenai()
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL=''):
+            with self.assertRaisesMessage(ValueError, 'VIDEO_TO_TEXT_GEMINI_MODEL'):
+                self._run(fake)
+        self.assertEqual(fake.models, [])
+
+    def test_unknown_model_reports_variable_to_fix_without_switching_model(self):
+        """Tên model không tồn tại (404) → lỗi nêu tên biến cần sửa, không tự đổi model, vẫn xoá file trên Gemini."""
         # Nguyên văn thông báo Gemini trả cho tên "gemini-3.1-flash" (đo thật 2026-09-28)
         fake = FakeGenai({'gemini-3.1-flash': google_api_exceptions.NotFound(
             'models/gemini-3.1-flash is not found for API version v1beta, or is not supported for generateContent.')})
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash'), \
-             self.assertLogs(LOGGER, level='WARNING') as logs:
-            text = self._run(fake)
-        self.assertEqual(text, 'lời thoại từ gemini-flash-lite-latest')
-        self.assertEqual(fake.models, ['gemini-3.1-flash', 'gemini-flash-lite-latest'])
-        self.assertIn('Sửa VIDEO_TO_TEXT_GEMINI_MODEL', logs.output[0])
+        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash'):
+            with self.assertRaisesMessage(ValueError, "Model Gemini 'gemini-3.1-flash' không dùng được"):
+                self._run(fake)
+        self.assertEqual(fake.models, ['gemini-3.1-flash'])
         self.assertEqual(fake.deleted, ['files/abc'])
 
-    def test_fallback_also_missing_raises_after_two_attempts(self):
-        """Model dự phòng cũng 404 → báo lỗi sau đúng 2 lượt, vẫn xoá file trên Gemini."""
-        gone = google_api_exceptions.NotFound('gone')
-        fake = FakeGenai({'gemini-3.1-flash': gone, 'gemini-flash-lite-latest': gone})
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-3.1-flash'), self.assertLogs(LOGGER, level='WARNING'):
-            with self.assertRaises(google_api_exceptions.NotFound):
-                self._run(fake)
-        self.assertEqual(fake.models, ['gemini-3.1-flash', 'gemini-flash-lite-latest'])
-        self.assertEqual(fake.deleted, ['files/abc'])
-
-    def test_configured_fallback_model_is_tried_once(self):
-        """Cấu hình đúng bằng model dự phòng mà 404 → không gọi lại lần hai."""
-        fake = FakeGenai({'gemini-flash-lite-latest': google_api_exceptions.NotFound('gone')})
-        with override_settings(VIDEO_TO_TEXT_GEMINI_MODEL='gemini-flash-lite-latest'):
-            with self.assertRaises(google_api_exceptions.NotFound):
-                self._run(fake)
-        self.assertEqual(fake.models, ['gemini-flash-lite-latest'])
-
-    def test_non_404_errors_do_not_switch_model(self):
-        """Hết hạn mức (429) không phải lỗi cấu hình — đổi model chỉ tốn thêm một lượt gọi."""
+    def test_non_404_errors_are_not_reported_as_config_errors(self):
+        """Hết hạn mức (429) không phải lỗi cấu hình — giữ nguyên lỗi gốc, chỉ một lượt gọi."""
         fake = FakeGenai({'gemini-3.1-flash-lite': google_api_exceptions.ResourceExhausted('quota')})
         with self.assertRaises(google_api_exceptions.ResourceExhausted):
             self._run(fake)
