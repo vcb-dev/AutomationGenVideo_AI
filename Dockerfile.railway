@@ -28,6 +28,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements_cloud.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt && rm -rf /root/.cache
 
+# "Tạo ảnh sản phẩm" — `import rembg` kéo theo pymatting, thư viện này biên dịch numba ngay lúc
+# import: đo thật ~48s ở mỗi container mới, tức lần bấm "Tách nền" đầu tiên sau mỗi lần deploy
+# phải chờ gần 1 phút. Import sẵn một lần lúc build để numba ghi cache vào image. Hai điều kiện
+# để cache đó còn dùng được lúc chạy:
+# - NUMBA_CPU_NAME=generic (cho cả build lẫn chạy): cache của numba gắn với đời CPU máy build,
+#   máy chạy Railway khác CPU sẽ bỏ cache nếu không đặt.
+# - Làm tròn mtime file .py của pymatting về giây chẵn: numba so mtime nguồn với mtime ghi trong
+#   cache, mà lúc đóng gói layer Docker cắt mất phần lẻ dưới 1 giây (đo thật: 1790665223.46 lúc
+#   build thành 1790665223.0 lúc chạy) → cache luôn bị coi là cũ và biên dịch lại từ đầu.
+ENV NUMBA_CPU_NAME=generic
+RUN PYMATTING_DIR="$(python -c "import importlib.util, os; print(os.path.dirname(importlib.util.find_spec('pymatting').origin))")" \
+    && find "$PYMATTING_DIR" -name '*.py' -exec touch -d "@$(date +%s)" {} + \
+    && python -c "import rembg"
+
+# Model tách nền của rembg — tải sẵn vào image lúc build khi service có biến REMBG_MODEL
+# (Railway chỉ đưa biến vào build qua ARG khai báo ở đây). Thiếu biến thì bỏ qua: lần tách nền
+# đầu tiên sau mỗi lần deploy rembg tự tải từ GitHub, chậm thêm vài chục giây.
+ENV U2NET_HOME=/opt/rembg-models
+ARG REMBG_MODEL
+RUN if [ -n "$REMBG_MODEL" ]; then \
+      python -c "import sys; from rembg import new_session; new_session(sys.argv[1])" "$REMBG_MODEL"; \
+    fi
+
 # Copy toàn bộ project
 COPY . .
 
