@@ -68,22 +68,13 @@ GEMINI_FILE_PROCESSING_TIMEOUT = 90  # seconds
 # nên sàn 10s cũ là vô nghĩa; 30s mới đủ để một lần gọi có cơ hội thành công thật.
 GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
 
-# Gemini của module CHUYỂN VIDEO THÀNH TEXT tách hẳn khỏi module TẠO ẢNH (ảnh thẻ):
-# - Khoá: VIDEO_TO_TEXT_GEMINI_API_KEY, không dùng GEMINI_API_KEY (khoá của module tạo ảnh), và
-#   không lấy tạm khoá đó khi thiếu. Hạn mức + hoá đơn Gemini tính theo PROJECT Google chứ không
-#   theo khoá, nên muốn tách chi phí thật thì khoá này phải tạo ở một project khác.
-# - Model: TRANSCRIBE_GEMINI_MODEL, không dùng GEMINI_MODEL — trên server biến đó là model TẠO ẢNH
+# Model Gemini NGHE giọng nói: biến riêng TRANSCRIBE_GEMINI_MODEL (khoá vẫn dùng chung GEMINI_API_KEY).
+# Không đọc GEMINI_MODEL — trên server biến đó là model TẠO ẢNH
 #   (gemini-3.1-flash-image, đầu vào không có âm thanh), đọc chung thì transcribe "nghe" bằng một
 #   model không nghe được tiếng. gemini-3.1-flash-lite nhận âm thanh + video, rẻ nhất họ 3.1.
 TRANSCRIBE_DEFAULT_MODEL = 'gemini-3.1-flash-lite'
 # Model cấu hình không còn (gõ sai tên, hoặc Google ngừng như gemini-2.0-flash) → thử bản này.
 TRANSCRIBE_FALLBACK_MODEL = 'gemini-flash-lite-latest'
-
-
-def _video_to_text_api_key() -> str:
-    """Khoá Gemini của module chuyển video thành text (settings hoặc biến môi trường)."""
-    return str(getattr(settings, 'VIDEO_TO_TEXT_GEMINI_API_KEY', '')
-               or os.getenv('VIDEO_TO_TEXT_GEMINI_API_KEY', '')).strip()
 
 
 def _transcribe_model_name() -> str:
@@ -855,11 +846,11 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> 
         raise ValueError(f"Dung lượng tập tin vượt quá giới hạn cho phép ({file_size_mb:.1f}MB > 500MB).")
 
     # 2. Load settings
-    api_key = _video_to_text_api_key()
+    api_key = getattr(settings, 'GEMINI_API_KEY', '').strip()
     if not api_key:
-        raise ValueError(
-            "Hệ thống chưa cấu hình VIDEO_TO_TEXT_GEMINI_API_KEY (khoá Gemini chuyển video thành text) trên AI Service."
-        )
+        api_key = os.getenv('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        raise ValueError("Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.")
 
     model_name = _transcribe_model_name()
 

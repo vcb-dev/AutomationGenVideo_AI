@@ -1,5 +1,5 @@
-"""Transcribe thuộc module CHUYỂN VIDEO THÀNH TEXT: khoá riêng VIDEO_TO_TEXT_GEMINI_API_KEY và model
-riêng TRANSCRIBE_GEMINI_MODEL, tách hẳn khỏi module TẠO ẢNH (ảnh thẻ: GEMINI_API_KEY + GEMINI_MODEL).
+"""Transcribe nghe giọng nói bằng model riêng TRANSCRIBE_GEMINI_MODEL; khoá dùng chung GEMINI_API_KEY
+(ảnh thẻ giữ GEMINI_MODEL = model tạo ảnh).
 
 Lỗi gốc: transcribe đọc chung GEMINI_MODEL với ảnh thẻ, mà trên server biến đó là
 gemini-3.1-flash-image — model TẠO ẢNH, đầu vào "Text, Image, Video, and PDF", không có âm thanh
@@ -8,7 +8,7 @@ gemini-3.1-flash-image — model TẠO ẢNH, đầu vào "Text, Image, Video, a
 thật, gemini-3.1-flash-lite trả NO_IMAGE nên ảnh thẻ sẽ hỏng. Vì vậy tách biến.
 
 SDK được thay bằng bản giả chỉ để khoá luồng điều khiển của phía mình (chọn model, dự phòng khi
-404, khoá API riêng). Hành vi thật của SDK (404 → NotFound, model nghe được tiếng) đã kiểm
+404, khoá API dùng chung). Hành vi thật của SDK (404 → NotFound, model nghe được tiếng) đã kiểm
 bằng Gemini thật trên image dựng từ Dockerfile.railway.
 
 Chạy: python manage.py test tests.test_transcribe_gemini_model
@@ -80,8 +80,7 @@ class TranscribeModelNameTests(SimpleTestCase):
             self.assertEqual(transcribe_views._transcribe_model_name(), 'gemini-3.1-flash-lite')
 
 
-@override_settings(VIDEO_TO_TEXT_GEMINI_API_KEY='video-to-text-key', GEMINI_API_KEY='image-key',
-                   GEMINI_MODEL='gemini-3.1-flash-image', TRANSCRIBE_GEMINI_MODEL='')
+@override_settings(GEMINI_API_KEY='shared-key', GEMINI_MODEL='gemini-3.1-flash-image', TRANSCRIBE_GEMINI_MODEL='')
 class TranscribeWithGeminiTests(SimpleTestCase):
     def setUp(self):
         fd, self.path = tempfile.mkstemp(suffix='.mp4')
@@ -96,29 +95,21 @@ class TranscribeWithGeminiTests(SimpleTestCase):
         with fake.patch():
             return transcribe_views.transcribe_with_gemini(self.path)
 
-    def test_listens_with_flash_lite_using_video_to_text_key(self):
-        """Nghe bằng flash-lite với khoá VIDEO_TO_TEXT_GEMINI_API_KEY — không đụng khoá/model tạo ảnh."""
+    def test_listens_with_flash_lite_and_shares_gemini_api_key(self):
+        """Nghe bằng flash-lite, không đụng model tạo ảnh của GEMINI_MODEL, dùng chung GEMINI_API_KEY."""
         fake = FakeGenai()
         self.assertEqual(self._run(fake), 'lời thoại từ gemini-3.1-flash-lite')
-        self.assertEqual(fake.api_key, 'video-to-text-key')
+        self.assertEqual(fake.api_key, 'shared-key')
         self.assertEqual(fake.models, ['gemini-3.1-flash-lite'])
         self.assertEqual(fake.deleted, ['files/abc'])
 
-    def test_missing_video_to_text_key_never_borrows_image_key(self):
-        """Thiếu khoá video→text → báo lỗi rõ tên biến, KHÔNG lấy tạm GEMINI_API_KEY, không gọi Gemini."""
+    def test_missing_gemini_api_key_fails_before_calling_gemini(self):
+        """Thiếu GEMINI_API_KEY → báo rõ tên biến, không gọi Gemini."""
         fake = FakeGenai()
-        with override_settings(VIDEO_TO_TEXT_GEMINI_API_KEY=''), \
-             mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_API_KEY': '', 'GEMINI_API_KEY': 'image-key'}):
-            with self.assertRaisesMessage(ValueError, 'VIDEO_TO_TEXT_GEMINI_API_KEY'):
+        with override_settings(GEMINI_API_KEY=''), mock.patch.dict(os.environ, {'GEMINI_API_KEY': ''}):
+            with self.assertRaisesMessage(ValueError, 'GEMINI_API_KEY'):
                 self._run(fake)
-        self.assertIsNone(fake.api_key)
         self.assertEqual(fake.models, [])
-
-    def test_video_to_text_key_read_from_environment(self):
-        """Không có trong settings thì đọc biến môi trường (Railway), bỏ khoảng trắng thừa."""
-        with override_settings(VIDEO_TO_TEXT_GEMINI_API_KEY=''), \
-             mock.patch.dict(os.environ, {'VIDEO_TO_TEXT_GEMINI_API_KEY': ' env-key '}):
-            self.assertEqual(transcribe_views._video_to_text_api_key(), 'env-key')
 
     def test_missing_model_falls_back_to_flash_lite_latest(self):
         """Tên model không tồn tại (404) → dùng gemini-flash-lite-latest và cảnh báo sửa cấu hình."""
