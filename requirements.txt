@@ -56,6 +56,9 @@ torchvision>=0.15.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 pillow>=10.0.0
+# Tạo ảnh sản phẩm (Tiện ích) — tách nền ảnh SP chạy ngay trên máy chủ, không gọi API trả phí.
+# Extra [cpu] kéo onnxruntime; model tải theo biến REMBG_MODEL (xem Dockerfile.railway).
+rembg[cpu]>=2.0.60
 
 # HeyGen API (AI Avatar & Lipsync)
 aiohttp>=3.9.0
