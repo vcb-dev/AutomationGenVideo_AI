@@ -18,6 +18,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from video_management.services import product_image_cost as cost
 from video_management.services import product_image_service as svc
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,12 @@ logger = logging.getLogger(__name__)
 HELD_PRODUCT_TIMEOUT_SECONDS = 75
 
 
-def _error(message, status):
-    return Response({'success': False, 'error_message': message}, status=status)
+def _error(message, status, usage=None):
+    body = {'success': False, 'error_message': message}
+    if usage is not None:
+        # Lượt đã chạm tới Gemini thì kể cả lỗi vẫn báo token/chi phí để BE ghi vào thống kê.
+        body['usage'] = usage
+    return Response(body, status=status)
 
 
 @api_view(['POST'])
@@ -77,6 +82,7 @@ def cutout(request):
         'cutout_image_base64': base64.b64encode(png_bytes).decode('ascii'),
         'width': width,
         'height': height,
+        'model': model_name,
     })
 
 
@@ -89,7 +95,9 @@ def held_product(request):
       "product_image_base64": "...", "product_mime_type": "image/png",  // SP mới
       "note": "hộp cao khoảng 30cm"                                     // không bắt buộc
     }
-    Response 200: { "success": true, "image_base64": "<PNG>" }
+    Response 200: { "success": true, "image_base64": "...", "mime_type": "image/png", "usage": {...} }
+    `usage` (có cả trong phản hồi lỗi khi đã gọi tới Gemini) — xem product_image_cost.py:
+      { "model", "input_tokens", "output_tokens", "cost_usd": số | null, "cost_note": lý do | null }
     """
     try:
         person_bytes, person_mime = svc.decode_input_image(
@@ -105,14 +113,18 @@ def held_product(request):
         prompt = svc.build_held_product_prompt(request.data.get('note'))
         model_name = svc.read_gemini_image_model()
     except svc.ProductImageInputError as e:
-        return _error(str(e), 400)
+        return _error(str(e), 400, cost.usage_not_billed(None, 'Đầu vào sai, chưa gọi Gemini — không tính phí.'))
     except svc.ProductImageConfigError as e:
         logger.error(f"[ProductImage HeldProduct] Cấu hình: {e}")
-        return _error(str(e), 500)
+        return _error(str(e), 500, cost.usage_not_billed(None, 'Thiếu cấu hình, chưa gọi Gemini — không tính phí.'))
 
     api_key = str(getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
     if not api_key:
-        return _error('GEMINI_API_KEY chưa được set trên AI Service.', 500)
+        return _error(
+            'GEMINI_API_KEY chưa được set trên AI Service.',
+            500,
+            cost.usage_not_billed(model_name, 'Thiếu cấu hình, chưa gọi Gemini — không tính phí.'),
+        )
 
     import google.generativeai as genai
     from google.api_core import exceptions as google_api_exceptions
@@ -139,11 +151,19 @@ def held_product(request):
         )
     except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as e:
         logger.error(f"[ProductImage HeldProduct] Timeout sau {time.time() - t0:.1f}s: {e}")
-        return _error(f'AI tạo ảnh quá lâu (>{HELD_PRODUCT_TIMEOUT_SECONDS}s), vui lòng thử lại.', 504)
+        return _error(
+            f'AI tạo ảnh quá lâu (>{HELD_PRODUCT_TIMEOUT_SECONDS}s), vui lòng thử lại.',
+            504,
+            cost.usage_unknown(
+                model_name, 'Hết thời gian chờ — không biết Gemini đã xử lý (và tính phí) lượt này chưa.'
+            ),
+        )
     except google_api_exceptions.ResourceExhausted as e:
         logger.error(f"[ProductImage HeldProduct] Vượt quota Gemini: {e}")
         return _error(
-            'Gemini đã hết hạn mức (quota). Thử lại sau hoặc nhờ quản trị viên kiểm tra billing.', 503
+            'Gemini đã hết hạn mức (quota). Thử lại sau hoặc nhờ quản trị viên kiểm tra billing.',
+            503,
+            cost.usage_not_billed(model_name, 'Gemini từ chối vì hết hạn mức — không tính phí.'),
         )
     except google_api_exceptions.NotFound as e:
         # Tên model sai/đã bị Google ngừng — báo sửa biến, không tự đổi sang model khác.
@@ -152,19 +172,26 @@ def held_product(request):
             f'{svc.GEMINI_MODEL_ENV}={model_name} không dùng được (Gemini trả 404) — sửa biến này '
             f'trên AI Service.',
             500,
+            cost.usage_not_billed(model_name, 'Gemini không tìm thấy model — không tính phí.'),
         )
     except google_api_exceptions.GoogleAPICallError as e:
         logger.error(f"[ProductImage HeldProduct] Lỗi Gemini API: {e}")
-        return _error(f'Lỗi gọi Gemini API: {e}', 502)
+        return _error(
+            f'Lỗi gọi Gemini API: {e}',
+            502,
+            cost.usage_not_billed(model_name, 'Gemini báo lỗi, không trả kết quả — không tính phí.'),
+        )
     except Exception as e:
         logger.exception(f"[ProductImage HeldProduct] Lỗi không xác định: {e}")
         return _error(f'Lỗi hệ thống: {e}', 500)
 
     image_bytes, image_mime, texts, finish_reason = svc.extract_generated_image(response)
     elapsed = time.time() - t0
+    # Gemini đã chạy xong lượt này — có ảnh hay không đều đã tốn token.
+    usage = cost.usage_from_response(model_name, response, texts)
     if image_bytes and not image_mime:
         logger.error("[ProductImage HeldProduct] Gemini trả dữ liệu ảnh nhưng không nhận ra định dạng")
-        return _error('Gemini trả về dữ liệu ảnh không đọc được, vui lòng thử lại.', 502)
+        return _error('Gemini trả về dữ liệu ảnh không đọc được, vui lòng thử lại.', 502, usage)
     if not image_bytes:
         logger.error(
             f"[ProductImage HeldProduct] Gemini không trả ảnh sau {elapsed:.1f}s. "
@@ -177,13 +204,16 @@ def held_product(request):
             f'Gemini không trả về ảnh (finish_reason={finish_reason}).{detail} Thử lại, đổi ảnh '
             f'khác, hoặc kiểm tra {svc.GEMINI_MODEL_ENV}={model_name} có phải model tạo ảnh.',
             502,
+            usage,
         )
 
     logger.info(
-        f"[ProductImage HeldProduct] ✅ {image_mime} {len(image_bytes) / 1024:.0f}KB sau {elapsed:.1f}s"
+        f"[ProductImage HeldProduct] ✅ {image_mime} {len(image_bytes) / 1024:.0f}KB sau {elapsed:.1f}s, "
+        f"token vào/ra={usage['input_tokens']}/{usage['output_tokens']} cost_usd={usage['cost_usd']}"
     )
     return Response({
         'success': True,
         'image_base64': base64.b64encode(image_bytes).decode('ascii'),
         'mime_type': image_mime,
+        'usage': usage,
     })
