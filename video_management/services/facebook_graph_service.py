@@ -804,10 +804,28 @@ class FacebookGraphService:
             
             response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
-            
+
             data = response.json()
             pages = data.get('data', [])
-            
+            # /me/accounts trả tối đa 100 page một lượt — tài khoản hệ thống đã quản lý >100 page
+            # (113 page trong Kênh nội bộ, 02/10/2026) nên phải lật trang, không thì page thứ 101
+            # trở đi bị rơi ở mọi lần đồng bộ.
+            seen_cursors = set()
+            while (data.get('paging') or {}).get('next'):
+                after = ((data.get('paging') or {}).get('cursors') or {}).get('after')
+                if not after or after in seen_cursors:
+                    break
+                seen_cursors.add(after)
+                try:
+                    response = requests.get(url, params={**params, 'after': after}, timeout=15)
+                    response.raise_for_status()
+                    data = response.json()
+                except (requests.exceptions.RequestException, ValueError) as e:
+                    # Giữ phần đã lấy được: trả rỗng thì cả lượt import coi như không có page nào.
+                    logger.error(f"❌ Lỗi lật trang /me/accounts sau {len(pages)} page: {e}")
+                    break
+                pages.extend(data.get('data', []))
+
             logger.info(f"✅ Fetched {len(pages)} managed pages for user")
             for page in pages:
                 logger.info(f"   - {page.get('name')} (ID: {page.get('id')})")
