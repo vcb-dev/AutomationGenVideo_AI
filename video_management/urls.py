@@ -82,6 +82,7 @@ from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
 from .views.instagram_fetch_views import fetch_instagram_profile_reels
 from .views.threads_fetch_views import fetch_threads_profile_posts, fetch_threads_search_top
+from .views.reddit_fetch_views import fetch_reddit_search, fetch_reddit_subreddit
 from .views.youtube_fetch_views import fetch_youtube_channel
 from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
 from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
@@ -249,6 +250,10 @@ urlpatterns = [
     # Threads — fetch-only (BE sở hữu DB, gọi endpoint này để lấy data thô)
     path('scraper/threads/fetch/profile-posts/', fetch_threads_profile_posts, name='scraper-threads-fetch-profile-posts'),
     path('scraper/threads/fetch/search-top/', fetch_threads_search_top, name='scraper-threads-fetch-search-top'),
+
+    # Reddit — fetch-only (BE sở hữu DB): tìm theo từ khoá và theo cộng đồng (subreddit)
+    path('scraper/reddit/fetch/search/', fetch_reddit_search, name='scraper-reddit-fetch-search'),
+    path('scraper/reddit/fetch/subreddit/', fetch_reddit_subreddit, name='scraper-reddit-fetch-subreddit'),
 
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
