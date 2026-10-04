@@ -336,6 +336,11 @@ RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper
 # APIFY API CONFIGURATION
 # ==========================================
 APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
+# Actor cào bài Threads theo tag chủ đề (vd logical_scrapers/threads-hashtag-scraper). Bắt buộc
+# cho tính năng tìm theo tag — thiếu thì endpoint báo 400 kèm tên biến, không có actor mặc định.
+APIFY_ACTOR_THREADS_TAG = env('APIFY_ACTOR_THREADS_TAG', default='')
+# Gốc API Apify (https://api.apify.com) cho tính năng tìm theo tag — bắt buộc, không mặc định.
+APIFY_API_BASE_URL = env('APIFY_API_BASE_URL', default='')
 
 # ==========================================
 # TIKHUB API CONFIGURATION

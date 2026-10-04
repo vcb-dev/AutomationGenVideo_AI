@@ -4,6 +4,7 @@ BE (Prisma) sở hữu toàn bộ việc lưu trữ ScraperThreadsProfile / Scra
 AI chỉ gọi TikHub Threads API + parse dữ liệu, trả JSON thô chuẩn hoá cho BE tự lưu.
 """
 
+import requests
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -14,6 +15,12 @@ from ..services.tikhub_threads import (
     fetch_threads_posts,
     search_top_threads,
     parse_threads_posts,
+)
+from ..services.apify_threads_tag import (
+    ThreadsTagConfigError,
+    fetch_tag_posts,
+    normalize_tag,
+    parse_tag_posts,
 )
 
 
@@ -64,4 +71,37 @@ def fetch_threads_search_top(request):
     return Response({
         'query': query,
         'posts': posts[:count],
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def fetch_threads_search_tag(request):
+    """Bài Threads theo TAG CHỦ ĐỀ (bảng tin của tag, qua Apify) — fetch + parse only.
+
+    Body: { "tag": "trang sức", "count": 50 }
+    Khác search-top: lấy cả bài gắn tag mà nội dung không chứa chữ đó, không lọc theo từ khoá.
+    """
+    data = request.data or {}
+    tag = normalize_tag(data.get('tag') or '')
+    if not tag:
+        return Response({'error': 'tag is required'}, status=400)
+
+    try:
+        count = int(data.get('count') or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return Response({'error': 'count phải là số nguyên dương'}, status=400)
+
+    try:
+        raw = fetch_tag_posts(tag, count)
+    except ThreadsTagConfigError as e:
+        return Response({'error': str(e)}, status=400)
+    except requests.RequestException as e:
+        return Response({'error': f'Apify không trả được bài của tag "{tag}": {e}'}, status=502)
+
+    return Response({
+        'tag': tag,
+        'posts': parse_tag_posts(raw, tag),
     })
