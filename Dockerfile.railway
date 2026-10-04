@@ -28,6 +28,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements_cloud.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt && rm -rf /root/.cache
 
+# Chromium cho Playwright: Douyin ký mọi request API chi tiết video bằng JS chạy trong trình
+# duyệt, nên tải Douyin bắt buộc mở trình duyệt ẩn (video_management/scripts/douyin_extract.py).
+# pip chỉ cài THƯ VIỆN playwright, không cài trình duyệt — thiếu bước này thì Douyin luôn hỏng
+# ngay (đo trên image Railway: 1.1s, "trình duyệt ẩn gặp sự cố"), cả công cụ Tải video lẫn
+# luồng bóc voice sau khi duyệt video vào Bộ Sưu Tập. --with-deps cài kèm thư viện hệ thống.
+RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
+
 # Copy toàn bộ project
 COPY . .
 

@@ -109,7 +109,7 @@ from .views.virtual_mix_views import (
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
 from .views.task_script_views import generate_task_video_script, translate_task_video_script
-from .views.scraped_video_script_views import generate_scraped_video_script
+from .views.scraped_video_script_views import generate_scraped_video_script, generate_script_from_video
 
 app_name = 'video_management'
 
@@ -301,6 +301,7 @@ urlpatterns = [
 
     # Scraped-video script analysis (dịch + phân tích video cào từ scraper subsystem)
     path('scraped-video/script/generate/', generate_scraped_video_script, name='scraped-video-script-generate'),
+    path('scraped-video/script-from-video/', generate_script_from_video, name='scraped-video-script-from-video'),
 
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),

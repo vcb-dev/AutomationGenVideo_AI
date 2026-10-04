@@ -29,6 +29,8 @@ from typing import Optional
 import requests
 from django.core.cache import cache
 
+from . import usage_meter
+
 logger = logging.getLogger(__name__)
 
 #: Ngắn hơn hạn sống của link phát (~3 giờ) để link lấy từ bộ đệm chắc chắn còn dùng được.
@@ -78,6 +80,8 @@ def goi_co_dem(
     da_co = None if lam_moi else cache.get(khoa)
     if da_co is not None:
         logger.info(f'[TIKHUB-CACHE] dung lai hoi dap cu, khong ton luot goi: {path}')
+        if usage_meter.is_collecting():
+            usage_meter.record('tikhub', path, cost_usd=0, cached=True, status=200)
         return _HoiDapTuDem(da_co)
 
     try:
@@ -90,6 +94,9 @@ def goi_co_dem(
     except requests.RequestException as e:
         logger.error(f'[TIKHUB-CACHE] {path} loi mang: {e}')
         return None
+
+    # Lượt gọi thật do tikhub_meter ghi ở tầng requests (cùng quy ước tính tiền) — ghi thêm ở
+    # đây là tính trùng. Tệp này chỉ ghi lượt dùng lại bộ đệm (0đ) ở trên.
 
     if resp.status_code == 200:
         try:

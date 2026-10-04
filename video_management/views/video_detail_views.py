@@ -9,6 +9,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from ..services import usage_meter
+
 from ..services.tikhub_video_detail import (
     fetch_video_detail,
     SUPPORTED_PLATFORMS,
@@ -41,13 +43,15 @@ def get_video_detail(request):
     if not video_id and not video_url:
         return Response({'success': False, 'error': 'Thiếu video_id hoặc video_url.'})
 
-    try:
-        data = fetch_video_detail(platform, video_id, video_url)
-    except Exception as e:  # noqa: BLE001 — chặn mọi lỗi, không để vỡ luồng đề xuất
-        logger.exception(f"[VIDEO-DETAIL] Loi khong luong truoc ({platform}): {e}")
-        return Response({'success': False, 'error': 'Lỗi khi lấy chi tiết video.'})
+    # `usage`: chi phí TikHub của lượt này (lượt dùng lại từ bộ đệm = 0đ) — BE lưu để thống kê.
+    with usage_meter.collect() as usage:
+        try:
+            data = fetch_video_detail(platform, video_id, video_url)
+        except Exception as e:  # noqa: BLE001 — chặn mọi lỗi, không để vỡ luồng đề xuất
+            logger.exception(f"[VIDEO-DETAIL] Loi khong luong truoc ({platform}): {e}")
+            return Response({'success': False, 'error': 'Lỗi khi lấy chi tiết video.', 'usage': list(usage)})
 
     if not data:
-        return Response({'success': False, 'error': 'Không lấy được chi tiết video.'})
+        return Response({'success': False, 'error': 'Không lấy được chi tiết video.', 'usage': list(usage)})
 
-    return Response({'success': True, 'data': data})
+    return Response({'success': True, 'data': data, 'usage': list(usage)})
