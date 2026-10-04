@@ -68,6 +68,20 @@ GEMINI_FILE_PROCESSING_TIMEOUT = 90  # seconds
 # nên sàn 10s cũ là vô nghĩa; 30s mới đủ để một lần gọi có cơ hội thành công thật.
 GEMINI_GENERATE_MIN_TIMEOUT = 30  # seconds
 
+# Model Gemini NGHE giọng nói: VIDEO_TO_TEXT_GEMINI_MODEL — bắt buộc, không có giá trị mặc định trong code;
+# dùng chung với luồng video → kịch bản (Bộ sưu tập), khoá vẫn dùng chung GEMINI_API_KEY.
+# Không đọc GEMINI_MODEL — trên server biến đó là model TẠO ẢNH (gemini-3.1-flash-image, đầu vào không
+# có âm thanh), đọc chung thì transcribe "nghe" bằng một model không nghe được tiếng.
+TRANSCRIBE_MODEL_ENV = 'VIDEO_TO_TEXT_GEMINI_MODEL'
+
+
+def _transcribe_model_name() -> str:
+    """VIDEO_TO_TEXT_GEMINI_MODEL (settings hoặc biến môi trường); thiếu thì báo lỗi nêu tên biến."""
+    for value in (getattr(settings, TRANSCRIBE_MODEL_ENV, ''), os.getenv(TRANSCRIBE_MODEL_ENV, '')):
+        if value and str(value).strip():
+            return str(value).strip()
+    raise ValueError(f"Hệ thống chưa cấu hình {TRANSCRIBE_MODEL_ENV} trên AI Service.")
+
 
 def _read_transcribe_budget(request) -> int:
     """
@@ -805,7 +819,8 @@ def _get_media_duration(file_path: str, ffmpeg_path: str) -> Optional[float]:
 
 def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> str:
     """
-    Upload file directly to Gemini Files API and transcribe using gemini-2.0-flash (or similar).
+    Upload file directly to Gemini Files API and transcribe using VIDEO_TO_TEXT_GEMINI_MODEL
+    (mặc định gemini-3.1-flash-lite — xem _transcribe_model_name).
     Includes file size validation (max 500MB) and cleans up Google file reference afterwards.
 
     `deadline` là MỐC THỜI GIAN TUYỆT ĐỐI (time.time() + ngân sách còn lại) mà toàn bộ
@@ -835,10 +850,7 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> 
     if not api_key:
         raise ValueError("Hệ thống chưa cấu hình GEMINI_API_KEY trên AI Service.")
 
-    model_name = getattr(settings, 'GEMINI_MODEL', None)
-    if not model_name:
-        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
-    model_name = str(model_name).strip()
+    model_name = _transcribe_model_name()
 
     # 3. Configure and upload
     genai.configure(api_key=api_key)
@@ -906,6 +918,13 @@ def transcribe_with_gemini(file_path: str, deadline: Optional[float] = None) -> 
                 [gemini_file, prompt],
                 request_options={'timeout': generate_timeout},
             )
+        except google_api_exceptions.NotFound as nf:
+            # Model gõ sai / bị Google ngừng (đã gặp: gemini-2.0-flash) → báo rõ phải sửa biến nào,
+            # không tự đổi sang model khác.
+            raise ValueError(
+                f"Model Gemini '{model_name}' không dùng được (không tồn tại / đã bị Google ngừng) "
+                f"— sửa {TRANSCRIBE_MODEL_ENV} trên AI Service."
+            ) from nf
         except (google_api_exceptions.DeadlineExceeded, google_api_exceptions.RetryError) as ge:
             # Quy về cùng loại lỗi với timeout polling để transcribe_upload trả 504 kèm
             # message rõ ràng cho FE, thay vì để BE tự timeout ở 60s. Raise trong khối
