@@ -74,6 +74,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    # Gửi chi phí TikHub/Gemini của mỗi request về BE qua header X-Api-Usage
+    'video_management.api_usage_middleware.ApiUsageMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -243,6 +245,7 @@ REST_FRAMEWORK = {
         'user': env('DRF_THROTTLE_USER', default='600/min'),
         'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
         'transcribe_upload': env('DRF_THROTTLE_TRANSCRIBE_UPLOAD', default='10/min'),
+        'video_script': env('DRF_THROTTLE_VIDEO_SCRIPT', default='20/min'),
     },
     # Global pagination defaults for list endpoints that use DRF pagination.
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',

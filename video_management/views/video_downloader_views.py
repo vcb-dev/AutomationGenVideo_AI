@@ -390,6 +390,8 @@ def _extract_url(raw: str) -> str:
 
 
 _DOUYIN_MODAL_ID_RE = re.compile(r'^https?://(?:www\.)?douyin\.com/[^?#]*\?.*\bmodal_id=(\d+)', re.I)
+# Link chia sẻ bản điện thoại: https://www.iesdouyin.com/share/video/<id>/?region=...
+_IESDOUYIN_SHARE_RE = re.compile(r'^https?://(?:www\.|m\.)?iesdouyin\.com/share/(?:video|note)/(\d+)', re.I)
 
 
 def _normalize_douyin_modal_url(url: str) -> str:
@@ -397,8 +399,12 @@ def _normalize_douyin_modal_url(url: str) -> str:
     query param modal_id thay vì đường dẫn /video/<id> — yt-dlp không nhận diện được
     dạng này (báo "Unsupported URL"). Quy đổi về /video/<id> để nhận diện đúng làm 1
     video (dù bản chất Douyin vẫn cần cookie sinh bằng JS, quy đổi này không giải quyết
-    được giới hạn đó — chỉ giúp báo đúng lỗi thay vì lỗi không liên quan)."""
-    m = _DOUYIN_MODAL_ID_RE.match(url)
+    được giới hạn đó — chỉ giúp báo đúng lỗi thay vì lỗi không liên quan).
+
+    Link chia sẻ `iesdouyin.com/share/video/<id>` cũng quy về /video/<id>: tên miền
+    iesdouyin.com không nằm trong DOUYIN_PLATFORM_HOSTS nên trước đây bị đưa sang yt-dlp
+    và luôn thất bại ("Fresh cookies are needed") thay vì đi đường trình duyệt ẩn."""
+    m = _DOUYIN_MODAL_ID_RE.match(url) or _IESDOUYIN_SHARE_RE.match(url)
     return f'https://www.douyin.com/video/{m.group(1)}' if m else url
 
 
@@ -469,6 +475,38 @@ class _SelfDeletingFile:
 def _safe_filename(title: str, ext: str) -> str:
     name = re.sub(r'[\\/:*?"<>|\r\n]+', '', title or 'video').strip() or 'video'
     return f"{name[:80]}.{ext}"
+
+
+# CDN v.redd.it từ chối request chia khúc theo Range: với --http-chunk-size mọi mảnh HLS báo
+# "fragment not found" và yt-dlp ra file rỗng; bỏ cờ này là tải bình thường (đo trên image
+# Railway với video Reddit thật; --concurrent-fragments thì không ảnh hưởng).
+_NO_CHUNKED_RANGE_HOSTS = ('reddit.com', 'redd.it')
+
+
+def ytdlp_chunk_args(url: str) -> list:
+    """Cờ tải chia khúc song song (--http-chunk-size) — bỏ với nền tảng từ chối Range chia khúc."""
+    host = (urlparse(url).hostname or '').lower()
+    if any(host == h or host.endswith('.' + h) for h in _NO_CHUNKED_RANGE_HOSTS):
+        return []
+    return ['--http-chunk-size', '1M']
+
+
+def ytdlp_video_format_args(quality: str) -> list:
+    """Cờ chọn định dạng video cho yt-dlp: ƯU TIÊN độ phân giải gần `quality` chứ không BẮT BUỘC.
+
+    Bản cũ lọc cứng `bestvideo[height<=480]+bestaudio/best[height<=480]/best`: Bilibili chỉ có
+    hình và tiếng tách rời, không có định dạng nào lọt bộ lọc đó, nên yt-dlp báo "Requested
+    format is not available" và mọi lượt tải Bilibili khác "best" đều hỏng (đo thật trên
+    image Railway). `-S res:480` thì chọn định dạng gần 480 nhất, không có thì lấy mức gần kề.
+    `res` tính theo CẠNH NGẮN, nên video dọc 9:16 ở mức 480 là 480x854 — bộ lọc `height` cũ
+    lại chọn bản dọc chỉ rộng 270px.
+
+    Cùng độ phân giải thì ưu tiên H.264/AAC — VP9/AV1 ghép vào .mp4 vẫn hợp lệ về container
+    nhưng Windows Media Player/mobile mặc định KHÔNG phát được ("tải được mà không xem được").
+    """
+    res = 'res' if quality == 'best' else f'res:{quality}'
+    return ['--format', 'bv*+ba/b', '--merge-output-format', 'mp4',
+            '--format-sort', f'{res},fps,vcodec:h264,acodec:m4a']
 
 
 def ytdlp_ffmpeg_args(ffmpeg: str) -> list:
@@ -832,7 +870,7 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
            # format/chất lượng đã chọn. Để 1M (không phải 10M) vì clip TikTok/Reels/Shorts
            # ngắn thường chỉ vài MB — ngưỡng 10M sẽ khiến các video đó KHÔNG được chia nhỏ
            # chút nào (không có tác dụng đúng lúc cần nhất).
-           '--http-chunk-size', '1M',
+           *ytdlp_chunk_args(url),
            '--max-filesize', MAX_FILESIZE,
            '--output', out_base + '.%(ext)s',
            '--print', 'after_move:title']
@@ -840,15 +878,7 @@ def _do_download(job_id: str, url: str, fmt: str, quality: str):
     if fmt == 'mp3':
         cmd += ['--format', 'bestaudio/best', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0']
     else:
-        if quality == 'best':
-            vfmt = 'bestvideo+bestaudio/best'
-        else:
-            vfmt = f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best'
-        # Cùng độ phân giải thì ưu tiên H.264/AAC — VP9/AV1 ghép vào .mp4 vẫn hợp lệ về
-        # container nhưng Windows Media Player/mobile mặc định KHÔNG phát được ("tải
-        # được mà không xem được"). Độ phân giải vẫn xếp trước nên không giảm chất lượng.
-        cmd += ['--format', vfmt, '--merge-output-format', 'mp4',
-                '--format-sort', 'res,fps,vcodec:h264,acodec:m4a']
+        cmd += ytdlp_video_format_args(quality)
 
     # Nếu người dùng vừa bấm "Kiểm tra" (video_info) trước đó không lâu, dùng lại luôn
     # kết quả trích xuất đó thay vì bắt yt-dlp trích xuất lại từ đầu — đỡ hẳn bước gọi
