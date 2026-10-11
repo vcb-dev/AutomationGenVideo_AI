@@ -109,6 +109,7 @@ from .views.virtual_mix_views import (
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
 from .views.task_script_views import generate_task_video_script, translate_task_video_script
+from .views.task_video_match_views import judge_task_video_match
 from .views.scraped_video_script_views import generate_scraped_video_script, generate_script_from_video
 
 app_name = 'video_management'
@@ -298,6 +299,8 @@ urlpatterns = [
     # Task-Auto: adapt content thắng cho sản phẩm mới (BE task-auto/tasks module)
     path('task-auto/video-script/generate/', generate_task_video_script, name='task-auto-video-script-generate'),
     path('task-auto/video-script/translate/', translate_task_video_script, name='task-auto-video-script-translate'),
+    # Task-Auto: AI phân định video kênh nội bộ ↔ task cho các ca heuristic bỏ trống
+    path('task-auto/video-match/judge/', judge_task_video_match, name='task-auto-video-match-judge'),
 
     # Scraped-video script analysis (dịch + phân tích video cào từ scraper subsystem)
     path('scraped-video/script/generate/', generate_scraped_video_script, name='scraped-video-script-generate'),
