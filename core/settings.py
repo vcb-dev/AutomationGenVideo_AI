@@ -420,6 +420,15 @@ MINIMAX_API_BASE_URL = env('MINIMAX_API_BASE_URL', default='https://api.minimax.
 # speech-2.8-hd: model chất lượng HD phòng thu cao cấp ($100/1M ký tự ~2.600đ/1.000 ký tự).
 MINIMAX_TTS_MODEL = env('MINIMAX_TTS_MODEL', default='speech-2.8-hd')
 
+# local = F5-TTS trên GPU (RunPod). minimax = API trả phí (Railway mặc định).
+VOICE_PROVIDER = env('VOICE_PROVIDER', default='minimax')
+LOCAL_VOICE_DIR = env('LOCAL_VOICE_DIR', default='')
+LOCAL_MODEL_DIR = env('LOCAL_MODEL_DIR', default='')
+LOCAL_WHISPER_MODEL = env('LOCAL_WHISPER_MODEL', default='small')
+LOCAL_F5_HF_REPO = env('LOCAL_F5_HF_REPO', default='hynt/F5-TTS-Vietnamese-ViVoice')
+LOCAL_F5_CKPT = env('LOCAL_F5_CKPT', default='')
+LOCAL_F5_VOCAB = env('LOCAL_F5_VOCAB', default='')
+
 # ==========================================
 # ELEVENLABS API CONFIGURATION
 # ==========================================
