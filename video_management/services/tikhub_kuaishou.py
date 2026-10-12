@@ -29,6 +29,8 @@ from typing import Optional
 import requests
 from django.conf import settings
 
+from .tikhub_errors import raise_if_auth_error, raise_if_auth_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +84,7 @@ def fetch_one_user_v2(eid: str) -> Optional[dict]:
             timeout=30,
         )
         if not resp.ok:
+            raise_if_auth_error(resp, 'kuaishou fetch_one_user_v2')
             logger.error(f'[KUAISHOU] fetch_one_user_v2 {resp.status_code}: {resp.text[:300]}')
             return None
         body = resp.json()
@@ -90,6 +93,7 @@ def fetch_one_user_v2(eid: str) -> Optional[dict]:
             return None
         return (body.get('data') or {}).get('userProfile') or None
     except requests.RequestException as e:
+        raise_if_auth_exception(e, 'kuaishou fetch_one_user_v2')
         logger.error(f'[KUAISHOU] fetch_one_user_v2 request failed: {e}')
         return None
 
@@ -125,11 +129,13 @@ def search_kuaishou_by_keyword(keyword: str, count: int = 30, cursor: Optional[s
                 timeout=30,
             )
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'kuaishou search_video_v2')
             logger.error(f'[KUAISHOU] search_video_v2 request failed: {e}')
             has_more = False
             break
 
         if not resp.ok:
+            raise_if_auth_error(resp, 'kuaishou search_video_v2')
             logger.error(f'[KUAISHOU] search_video_v2 {resp.status_code}: {resp.text[:300]}')
             has_more = False
             break
@@ -185,10 +191,12 @@ def fetch_user_hot_post(user_id: str, count: int = 20) -> list:
                 timeout=30,
             )
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'kuaishou fetch_user_hot_post')
             logger.error(f'[KUAISHOU] fetch_user_hot_post request failed: {e}')
             break
 
         if not resp.ok:
+            raise_if_auth_error(resp, 'kuaishou fetch_user_hot_post')
             logger.error(f'[KUAISHOU] fetch_user_hot_post {resp.status_code}: {resp.text[:300]}')
             break
 

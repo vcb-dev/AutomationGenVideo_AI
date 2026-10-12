@@ -16,8 +16,8 @@ class SearchRequestSerializer(serializers.Serializer):
     """Serializer for search request validation."""
     
     platform = serializers.ChoiceField(
-        choices=[p.value for p in Platform],
-        help_text="Platform to search (tiktok, instagram, facebook, douyin)"
+        choices=list(set([p.value for p in Platform] + ['tiktok', 'douyin', 'instagram', 'facebook', 'xiaohongshu', 'bilibili', 'kuaishou', 'youtube'])),
+        help_text="Platform to search (tiktok, instagram, facebook, douyin, xiaohongshu, bilibili, kuaishou, youtube)"
     )
     keyword = serializers.CharField(
         max_length=500,

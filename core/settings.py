@@ -74,6 +74,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    # Gửi chi phí TikHub/Gemini của mỗi request về BE qua header X-Api-Usage
+    'video_management.api_usage_middleware.ApiUsageMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -118,6 +120,11 @@ if not _db_url:
 DATABASES = {
     'default': env.db('DATABASE_URL')
 }
+# ?pgbouncer=true trong DATABASE_URL là tham số của Prisma (BE dùng chung URL Supabase);
+# django-environ >= 0.13 truyền mọi query param vào OPTIONS còn psycopg2 không nhận
+# option "pgbouncer" (lỗi "invalid dsn") — bỏ nó ra trước khi kết nối.
+if isinstance(DATABASES['default'].get('OPTIONS'), dict):
+    DATABASES['default']['OPTIONS'].pop('pgbouncer', None)
 # Optimize for multiple concurrent users by keeping DB connections open
 DATABASES['default']['CONN_MAX_AGE'] = env.int('CONN_MAX_AGE', default=300)
 DATABASES['default']['CONN_HEALTH_CHECKS'] = True
@@ -218,6 +225,9 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
+    # Không có dòng này thì TikHubAuthError rơi vào nhánh 500 mặc định của DRF và BE
+    # chỉ đọc được "status code 500" — đúng cái mù mờ mà ngoại lệ đó sinh ra để chấm dứt.
+    'EXCEPTION_HANDLER': 'core.exception_handler.xu_ly_ngoai_le',
     # 'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
@@ -234,6 +244,8 @@ REST_FRAMEWORK = {
         'anon': env('DRF_THROTTLE_ANON', default='120/min'),
         'user': env('DRF_THROTTLE_USER', default='600/min'),
         'video_download': env('DRF_THROTTLE_VIDEO_DOWNLOAD', default='10/min'),
+        'transcribe_upload': env('DRF_THROTTLE_TRANSCRIBE_UPLOAD', default='10/min'),
+        'video_script': env('DRF_THROTTLE_VIDEO_SCRIPT', default='20/min'),
     },
     # Global pagination defaults for list endpoints that use DRF pagination.
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -314,8 +326,16 @@ CORS_ALLOW_HEADERS = [
 # ==========================================
 # RAPIDAPI CONFIGURATION
 # ==========================================
+# Một key duy nhất. Hết hạn mức thì thay trực tiếp trên Railway rồi restart service — không
+# nhét nhiều key nối bằng dấu phẩy, xem _get_api_key() trong services/rapidapi_facebook.py.
 RAPIDAPI_FACEBOOK_KEY = env('RAPIDAPI_FACEBOOK_KEY', default='')
+RAPIDAPI_FACEBOOK_KEY_BACKUP = env('RAPIDAPI_FACEBOOK_KEY_BACKUP', default='')
 RAPIDAPI_FACEBOOK_HOST = env('RAPIDAPI_FACEBOOK_HOST', default='facebook-scraper-api4.p.rapidapi.com')
+
+# ==========================================
+# APIFY API CONFIGURATION
+# ==========================================
+APIFY_API_TOKEN = env('APIFY_API_TOKEN', default='')
 
 # ==========================================
 # TIKHUB API CONFIGURATION
@@ -324,13 +344,20 @@ TIKHUB_API_KEY = env('TIKHUB_API_KEY', default='')
 TIKHUB_API_BASE_URL = env('TIKHUB_API_BASE_URL', default='https://api.tikhub.io')
 
 # ==========================================
-# FACEBOOK GRAPH API CONFIGURATION
+# FACEBOOK & INSTAGRAM GRAPH API CONFIGURATION
 # ==========================================
 META_ACCESS_TOKEN = env('META_ACCESS_TOKEN', default='')
 FACEBOOK_APP_ID = env('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = env('FACEBOOK_APP_SECRET', default='')
 FACEBOOK_ACCESS_TOKEN = META_ACCESS_TOKEN
 INSTAGRAM_ACCESS_TOKEN = META_ACCESS_TOKEN
+FACEBOOK_GRAPH_API_VERSION = env('FACEBOOK_GRAPH_API_VERSION', default='v25.0')
+FACEBOOK_GRAPH_BASE_URL = env('FACEBOOK_GRAPH_BASE_URL', default='')
+FACEBOOK_GRAPH_OAUTH_URL = env('FACEBOOK_GRAPH_OAUTH_URL', default='')
+FACEBOOK_GRAPH_TIMEOUT = env.int('FACEBOOK_GRAPH_TIMEOUT', default=30)
+FACEBOOK_TOKEN_DEFAULT_EXPIRES_IN = env.int('FACEBOOK_TOKEN_DEFAULT_EXPIRES_IN', default=5184000)
+INSTAGRAM_OWNED_FETCH_MAX_LIMIT = env.int('INSTAGRAM_OWNED_FETCH_MAX_LIMIT', default=50)
+INSTAGRAM_OWNED_FETCH_DEFAULT_LIMIT = env.int('INSTAGRAM_OWNED_FETCH_DEFAULT_LIMIT', default=25)
 FERNET_KEY = env('FERNET_KEY', default='')
 SUPERUSER_TOKEN = env('SUPERUSER_TOKEN', default='')
 
@@ -371,11 +398,36 @@ LARK_FIELD_ID = env('LARK_FIELD_ID', default='')  # field lưu JSON checklist
 OPENAI_API_KEY = env('OPENAI_API_KEY', default='')
 ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
 DEEPSEEK_API_KEY = env('DEEPSEEK_API_KEY', default='')
+DEEPSEEK_API_BASE_URL = env('DEEPSEEK_API_BASE_URL', default='https://api.deepseek.com')
+# Model dùng chung cho mọi lời gọi DeepSeek không chỉ định riêng (PAAST, sinh script...).
+# DeepSeek đã bỏ tên "deepseek-chat" — chỉ còn deepseek-v4-pro / deepseek-v4-flash.
+DEEPSEEK_MODEL = env('DEEPSEEK_MODEL', default='deepseek-v4-flash')
 
 # ==========================================
 # GOOGLE GEMINI API CONFIGURATION
 # ==========================================
 GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
+
+# ==========================================
+# MINIMAX API CONFIGURATION (TTS + clone giọng)
+# ==========================================
+# Key thường do BE gửi kèm từng request qua header X-Minimax-Key; các biến dưới đây
+# chỉ là fallback cho management command chạy tay (vd clone_koc_voice).
+MINIMAX_API_KEY = env('MINIMAX_API_KEY', default='')
+# Key kiểu mới "sk-api-..." tự gắn group nên để trống; chỉ key JWT cũ (eyJ...) mới cần.
+MINIMAX_GROUP_ID = env('MINIMAX_GROUP_ID', default='')
+MINIMAX_API_BASE_URL = env('MINIMAX_API_BASE_URL', default='https://api.minimax.io/v1')
+# speech-2.8-hd: model chất lượng HD phòng thu cao cấp ($100/1M ký tự ~2.600đ/1.000 ký tự).
+MINIMAX_TTS_MODEL = env('MINIMAX_TTS_MODEL', default='speech-2.8-hd')
+
+# local = F5-TTS trên GPU (RunPod). minimax = API trả phí (Railway mặc định).
+VOICE_PROVIDER = env('VOICE_PROVIDER', default='minimax')
+LOCAL_VOICE_DIR = env('LOCAL_VOICE_DIR', default='')
+LOCAL_MODEL_DIR = env('LOCAL_MODEL_DIR', default='')
+LOCAL_WHISPER_MODEL = env('LOCAL_WHISPER_MODEL', default='small')
+LOCAL_F5_HF_REPO = env('LOCAL_F5_HF_REPO', default='hynt/F5-TTS-Vietnamese-ViVoice')
+LOCAL_F5_CKPT = env('LOCAL_F5_CKPT', default='')
+LOCAL_F5_VOCAB = env('LOCAL_F5_VOCAB', default='')
 
 # ==========================================
 # ELEVENLABS API CONFIGURATION

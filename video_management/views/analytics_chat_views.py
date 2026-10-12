@@ -15,7 +15,9 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions'
+# Đọc settings LÚC GỌI (không phải lúc import) — đổi .env là đổi được, xem tests.test_ai_provider_urls
+def _deepseek_chat_url() -> str:
+    return f"{getattr(settings, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com')}/chat/completions"
 TZ_VN = timezone(timedelta(hours=7))
 SKILLS_REPO = Path(os.getenv('SKILLS_REPO_PATH', '')) or \
     Path(__file__).resolve().parents[2] / 'skills'
@@ -110,7 +112,7 @@ def _call(messages: list, json_mode=False, max_tokens=2000) -> str:
     if json_mode:
         payload['response_format'] = {'type': 'json_object'}
     r = requests.post(
-        DEEPSEEK_URL, json=payload,
+        _deepseek_chat_url(), json=payload,
         headers={'Authorization': f'Bearer {_key()}', 'Content-Type': 'application/json'},
         timeout=30,
     )

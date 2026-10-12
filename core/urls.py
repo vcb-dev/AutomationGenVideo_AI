@@ -136,6 +136,20 @@ urlpatterns += [
     path('api/content/generate-prompt/', content_generation_views.generate_prompt, name='content-generate-prompt'),
     path('api/content/video/<int:video_id>/', content_generation_views.get_generated_contents, name='content-by-video'),
     path('api/content/<int:content_id>/', content_generation_views.get_content_detail, name='content-detail'),
+    path('api/ai/transform-content/', content_generation_views.transform_content, name='transform-content'),
+]
+
+# PAAST Content Analyzer — phân tích & chấm điểm content theo khung PAAST
+from video_management.views import paast_analysis_views
+
+urlpatterns += [
+    path('api/ai/paast/analyze/', paast_analysis_views.analyze_content, name='paast-analyze'),
+    path('api/ai/paast/extract-text/', paast_analysis_views.extract_text, name='paast-extract-text'),
+    path('api/ai/paast/analyze-v2/', paast_analysis_views.analyze_content_v2, name='paast-analyze-v2'),
+    path('api/ai/paast/upgrade/', paast_analysis_views.upgrade_content, name='paast-upgrade'),
+    # Nâng cấp kịch bản content-transform (giữ giọng nhân vật) — viết lại + chấm PAAST bản mới
+    # trong CÙNG 1 request, xem transform_content_upgrade().
+    path('api/ai/transform-content/upgrade/', paast_analysis_views.transform_content_upgrade, name='transform-content-upgrade'),
 ]
 
 # Video Transcription (Speech-to-Text via OpenAI Whisper)
@@ -143,6 +157,7 @@ from video_management.views import transcribe_views
 
 urlpatterns += [
     path('api/content/transcribe/', transcribe_views.transcribe_video, name='content-transcribe'),
+    path('api/content/transcribe-upload/', transcribe_views.transcribe_upload, name='content-transcribe-upload'),
 ]
 
 # Video Downloader (Tiện ích → Tải video, dùng yt-dlp)
@@ -153,6 +168,29 @@ urlpatterns += [
     path('api/tools/video-downloader/jobs/', video_downloader_views.start_download, name='video-dl-start'),
     path('api/tools/video-downloader/jobs/<str:job_id>/', video_downloader_views.download_status, name='video-dl-status'),
     path('api/tools/video-downloader/jobs/<str:job_id>/file/', video_downloader_views.download_file, name='video-dl-file'),
+]
+
+# Chi tiết 1 video theo (platform, video_id) — làm giàu dữ liệu cho luồng đề xuất video.
+from video_management.views import video_detail_views, tikhub_account_views
+
+urlpatterns += [
+    path('api/scraper/video-detail/', video_detail_views.get_video_detail, name='scraper-video-detail'),
+    path('api/tikhub/account/', tikhub_account_views.tikhub_account, name='tikhub-account'),
+]
+
+# Link phát trực tiếp — BE dùng để làm trung gian phát video ngay trên web hệ thống.
+from video_management.views import play_url_views
+
+urlpatterns += [
+    path('api/scraper/play-url/', play_url_views.get_play_url, name='scraper-play-url'),
+]
+
+# ID Photo — ghép trang phục ảnh thẻ nhân viên bằng Gemini image editing (BE orchestrate, xem
+# id_photo_views.py — vô trạng thái, không có model/DB riêng ở AI service).
+from video_management.views import id_photo_views
+
+urlpatterns += [
+    path('api/ai/id-photo/merge-outfit/', id_photo_views.merge_outfit, name='id-photo-merge-outfit'),
 ]
 
 # Serve media files in development

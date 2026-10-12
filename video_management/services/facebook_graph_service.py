@@ -10,11 +10,86 @@ This provides accurate, official data directly from Facebook.
 """
 
 import logging
+import re
 import requests
 from typing import Dict, Any, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.conf import settings
 
+from .facebook_token_store import get_token
+
 logger = logging.getLogger(__name__)
+
+_MIN_BACKFILL_PAGE_SIZE = 5
+
+
+def _is_reduce_data_error(response) -> bool:
+    """Graph API từ chối vì một trang trả quá nhiều dữ liệu (code 1 là mã chung, nên so chữ)."""
+    text = getattr(response, 'text', '') or ''
+    return 'reduce the amount of data' in text.lower()
+
+
+def _with_limit(url: str, params: dict, limit: int) -> tuple:
+    """Đổi `limit` của request kế tiếp. Trang đầu mang limit trong `params`; các trang sau đi
+    theo paging.next nên limit nằm sẵn trong query string của URL."""
+    if params:
+        return url, {**params, 'limit': limit}
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != 'limit']
+    query.append(('limit', str(limit)))
+    return urlunsplit(parts._replace(query=urlencode(query))), params
+
+
+# Dừng ở & hoặc khoảng trắng hoặc nháy — token nằm cuối chuỗi cũng phải che được.
+_TOKEN_RE = re.compile(r'(access_token=)[^&\s"\'\\]+')
+
+
+def _scrub_tokens(text) -> str:
+    """Che access_token trước khi ghi log.
+
+    Vì sao cần: `str(e)` của requests nhúng NGUYÊN URL kèm query string, nên mỗi lần request
+    Graph API hỏng là token bị ghi thẳng vào log dưới dạng chữ thường. Đo được ngày 09/08/2026:
+    log production đã chứa token đầy đủ suốt 13 ngày sự cố lượt xem. Token đó đọc được toàn bộ
+    dữ liệu 106 fanpage — ai đọc được log là dùng được luôn.
+    """
+    return _TOKEN_RE.sub(r'\1<ĐÃ ẨN>', str(text))
+
+
+class _ScrubTokenFilter(logging.Filter):
+    """Lọc ở tầng logger thay vì sửa từng lời gọi.
+
+    Service này có 47 lời gọi log, phần lớn kèm str(e). Sửa tay từng cái thì lần sau ai thêm
+    một dòng log mới là hở lại, mà không ai nhớ nổi quy tắc. Đặt ở đây thì quên cũng vẫn an toàn.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _scrub_tokens(record.msg)
+        if record.args:
+            record.args = tuple(
+                _scrub_tokens(a) if isinstance(a, str) else a for a in record.args
+            )
+        return True
+
+
+logger.addFilter(_ScrubTokenFilter())
+
+
+# Metric dùng để tính lượt xem. CẢNH BÁO trước khi thêm vào đây: Facebook từ chối NGUYÊN request
+# `insights.metric(a,b)` nếu chỉ một metric không hợp lệ — nên một metric bị khai tử kéo sập luôn
+# các metric còn sống chung request.
+#
+# Đó đúng là sự cố 27/07–09/08/2026: `post_video_reels_organic_plays` bị khai tử, kéo theo
+# `post_video_views` (vẫn chạy tốt) cũng không lấy được, và 1.169 video bị ghi view = 0 dù lượt
+# xem thật vẫn nằm sẵn ở Facebook. Đo bằng page token thật ngày 09/08/2026:
+#
+#     post_video_views                 ✅ 486 / 902 / 649 / 98 / 585 trên 5 bài
+#     post_video_reels_organic_plays   ❌ (#100) The value must be a valid insights metric
+#     blue_reels_total_plays           ❌ (#100)   — không có bản thay thế cùng tên cho Reels
+#     post_reels_plays                 ❌ (#100)
+#
+# Thêm metric mới thì thử riêng từng cái bằng /{post_id}/insights?metric=<tên> trước đã.
+VIEW_METRICS = ('post_video_views',)
 
 
 class FacebookGraphService:
@@ -24,14 +99,17 @@ class FacebookGraphService:
     This service provides accurate followers count and posts count
     that scrapers typically don't provide.
     """
-    
-    BASE_URL = "https://graph.facebook.com/v25.0"
-    
+    @property
+    def BASE_URL(self) -> str:
+        return getattr(settings, 'FACEBOOK_GRAPH_BASE_URL', '').rstrip('/')
+
     def __init__(self):
         """Initialize Facebook Graph API service."""
         self.app_id = getattr(settings, 'FACEBOOK_APP_ID', '')
         self.app_secret = getattr(settings, 'FACEBOOK_APP_SECRET', '')
-        self.access_token = getattr(settings, 'FACEBOOK_ACCESS_TOKEN', '')
+        # Qua token store, KHÔNG đọc thẳng settings: settings nạp một lần lúc boot nên
+        # token vừa gia hạn sẽ không có hiệu lực tới lần restart Django.
+        self.access_token = get_token()
         
         if not self.app_id or not self.app_secret:
             raise ValueError("FACEBOOK_APP_ID and FACEBOOK_APP_SECRET must be configured")
@@ -251,12 +329,18 @@ class FacebookGraphService:
         page_size: int = 50,
         access_token: Optional[str] = None,
         cooldown: float = 1.5,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
     ) -> list:
         """Cào sâu lịch sử bài viết bằng cách lần theo paging.next.
 
         Dùng cho Giai đoạn 1 (Initial Backfill). Tích hợp Dual Cooldown:
         - Nghỉ `cooldown` giây giữa mỗi trang phân trang
         - Tự dừng khi hết data hoặc đạt max_total
+
+        `since`/`until` (unix giây): chỉ lấy bài trong khoảng đó — dùng cho delta sync và nút
+        "Cập nhật" theo khoảng ngày. Có `since` thì lỗi ở BẤT KỲ trang nào cũng ném ra (không trả
+        về phần đã lấy): trả thiếu mà vẫn "thành công" thì BE dời mốc sync, phần sót mất luôn.
         """
         import time
 
@@ -279,38 +363,61 @@ class FacebookGraphService:
             'limit': min(page_size, 100),
             'access_token': active_token,
         }
+        if since is not None:
+            params['since'] = int(since)
+        if until is not None:
+            params['until'] = int(until)
+        strict = since is not None
 
         all_posts = []
         page_num = 0
+        limit = params['limit']
 
         while url and len(all_posts) < max_total:
-            page_num += 1
             try:
                 response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
             except requests.exceptions.HTTPError as e:
-                logger.error(f"❌ Backfill trang {page_num} lỗi: {e.response.text[:200]}")
+                # Trang 50-100 bài kèm media{source} có thể vượt ngưỡng dữ liệu của Graph API
+                # ("Please reduce the amount of data") → hạ limit rồi hỏi lại đúng trang đó.
+                if _is_reduce_data_error(e.response) and limit > _MIN_BACKFILL_PAGE_SIZE:
+                    limit = max(_MIN_BACKFILL_PAGE_SIZE, limit // 2)
+                    logger.warning(f"⚠️ Backfill trang {page_num + 1}: Facebook đòi giảm dữ liệu, hạ limit còn {limit}")
+                    url, params = _with_limit(url, params, limit)
+                    continue
+                logger.error(f"❌ Backfill trang {page_num + 1} lỗi: {e.response.text[:200]}")
+                if page_num == 0 or strict:
+                    raise
                 break
             except Exception as e:
-                logger.error(f"❌ Backfill trang {page_num} exception: {e}")
+                logger.error(f"❌ Backfill trang {page_num + 1} exception: {e}")
+                if page_num == 0 or strict:
+                    raise
                 break
 
+            page_num += 1
             posts = data.get('data', [])
             if not posts:
                 logger.info(f"📭 Backfill: hết bài ở trang {page_num}")
                 break
 
+            reached_since = False
             for post in posts:
                 normalized = self._normalize_post(post)
-                if normalized:
-                    all_posts.append(normalized)
+                if not normalized:
+                    continue
+                # Graph đã lọc theo since, chặn thêm phòng khi paging trả lố sang bài cũ hơn.
+                if since is not None and normalized.get('timestamp') and normalized['timestamp'] < since:
+                    reached_since = True
+                    continue
+                all_posts.append(normalized)
 
             logger.info(f"📄 Backfill trang {page_num}: +{len(posts)} bài (tổng: {len(all_posts)})")
 
             # Lấy URL trang tiếp theo
             next_url = data.get('paging', {}).get('next')
-            if not next_url or len(all_posts) >= max_total:
+            if not next_url or reached_since or len(all_posts) >= max_total:
                 break
 
             url = next_url
@@ -521,59 +628,172 @@ class FacebookGraphService:
         
     def update_video_views_batch(self, video_ids: list) -> Dict[str, Dict[str, int]]:
         """
-        Bước 2: Sử dụng URL gộp (hoặc Batch API) để lấy chính xác số view và tương tác thực tế
-        của danh sách ID vừa cào được, sửa lỗi 'views=0' của hàm get_page_posts.
+        Bước 2: Lấy reactions/comments/shares (luôn có với MỌI Page Post, kể cả bài đăng
+        không phải video — ảnh/status/link chia sẻ) + views (CHỈ áp dụng cho bài có
+        video, fetch RIÊNG). Tách 2 request vì nếu 1 bài trong batch không có video,
+        Facebook trả lỗi cứng cho field 'insights' và làm sập luôn cả batch — lỗi ở
+        bước views không được phép làm mất reactions/comments/shares đã lấy được.
         """
         if not video_ids:
             return {}
-            
+
         try:
-            # Bổ sung thêm chỉ số play của Reels để tránh bị hụt view của Reels
-            metrics = "post_video_views,post_video_reels_organic_plays"
-            # Sử dụng công thức URL gộp tối ưu mà chúng ta đã thống nhất
-            fields_str = "reactions.summary(true).limit(0),comments.summary(true).limit(0),shares,insights.metric(post_video_views){name,period,values}"
-            
+            fields_str = "reactions.summary(true).limit(0),comments.summary(true).limit(0),shares"
             params = {
                 'ids': ','.join(video_ids),
                 'fields': fields_str,
-                'access_token': self.access_token
+                'access_token': self.access_token,
             }
-            
             response = requests.get(self.BASE_URL, params=params, timeout=20)
             response.raise_for_status()
             res_data = response.json()
-            
-            metrics_map = {}
-            for p_id, p_data in res_data.items():
-                # 1. Lấy lượt xem video
-                views = 0
-                insights_list = p_data.get('insights', {}).get('data', [])
-                for metric in insights_list:
-                    m_name = metric.get('name')
-                    # 🛑 FIX: Check mảng values tránh lỗi IndexError
-                    if m_name in ['post_video_views', 'post_video_reels_organic_plays']:
-                        values_list = metric.get('values', [])
-                        if values_list:  # Nếu mảng có phần tử mới lấy
-                            views += values_list[0].get('value', 0)
-                
-                # 2. Lấy tương tác
-                likes = p_data.get('reactions', {}).get('summary', {}).get('total_count', 0)
-                comments = p_data.get('comments', {}).get('summary', {}).get('total_count', 0)
-                shares = p_data.get('shares', {}).get('count', 0)
-                
-                metrics_map[p_id] = {
-                    'view_count': views,
-                    'like_count': likes,
-                    'comment_count': comments,
-                    'share_count': shares,
-                    'raw_json': p_data # Lưu lại để ném vào trường raw_data của Model
-                }
-            return metrics_map
-            
-        except Exception as e:
-            logger.error(f"❌ Thất bại khi chạy Batch cập nhật Metrics: {str(e)}")
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.error(f"❌ Thất bại khi lấy reactions/comments/shares: {str(e)} | body: {body}")
             return {}
-        
+        except Exception as e:
+            logger.error(f"❌ Thất bại khi lấy reactions/comments/shares: {str(e)}")
+            return {}
+
+        # Views: best-effort, không chặn kết quả reactions/comments/shares nếu fail
+        # (bài không có video, hoặc metric không áp dụng cho object này).
+        #
+        # views_fetch_ok phân biệt hai thứ mà bản cũ gộp làm một, và chính chỗ gộp đó gây ra sự
+        # cố 27/07–09/08/2026: request insights hỏng thì mọi bài đều nhận view_count = 0, không
+        # cách nào phân biệt với 0 nghĩa là THẬT SỰ không ai xem. Kết quả: 13 ngày liền dashboard
+        # vẽ đường lượt xem tụt về 0 trông y như dữ liệu thật, trong khi like/comment/share vẫn
+        # về đều — không ai báo động vì bảng vẫn đầy số.
+        #
+        # Hỏng thì trả None. Phía BE (facebook-owned-pages.service.ts) đã có sẵn nhánh
+        # `m.view_count ?? view_count_cũ` để giữ nguyên số cũ — nhánh đó viết ra chính là cho
+        # tình huống này, chỉ chưa bao giờ chạy vì Python luôn gửi 0.
+        views_map: Dict[str, int] = {}
+        views_fetch_ok = False
+        try:
+            insights_params = {
+                'ids': ','.join(video_ids),
+                # Lấy tên metric từ VIEW_METRICS chứ không gõ cứng: gõ cứng ở đây và ở vòng lặp
+                # đọc kết quả bên dưới là hai nơi, đổi một nơi quên nơi kia thì view âm thầm về 0.
+                'fields': f"insights.metric({','.join(VIEW_METRICS)}){{name,period,values}}",
+                'access_token': self.access_token,
+            }
+            insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
+            insights_resp.raise_for_status()
+            insights_data = insights_resp.json()
+            for p_id, p_data in insights_data.items():
+                views = 0
+                for metric in p_data.get('insights', {}).get('data', []):
+                    if metric.get('name') in VIEW_METRICS:
+                        values_list = metric.get('values', [])
+                        if values_list:
+                            views += values_list[0].get('value', 0)
+                views_map[p_id] = views
+            views_fetch_ok = True
+        except requests.exceptions.HTTPError as e:
+            # ERROR chứ không phải WARNING, và giữ nguyên `body`: body là thứ DUY NHẤT nói được
+            # Facebook từ chối vì lý do gì (metric bị khai tử / thiếu quyền / token chết). Mức
+            # warning đã khiến sự cố lần trước chìm 13 ngày không ai thấy.
+            body = e.response.text if e.response is not None else ''
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG "
+                f"(không ghi 0 đè lên số cũ): {str(e)} | body: {body}"
+            )
+        except Exception as e:
+            logger.error(
+                f"❌ Không lấy được views cho {len(video_ids)} bài — view_count để TRỐNG: {str(e)}"
+            )
+
+        metrics_map = {}
+        for p_id, p_data in res_data.items():
+            likes = p_data.get('reactions', {}).get('summary', {}).get('total_count', 0)
+            comments = p_data.get('comments', {}).get('summary', {}).get('total_count', 0)
+            shares = p_data.get('shares', {}).get('count', 0)
+
+            metrics_map[p_id] = {
+                # Request thành công mà bài không có khối insights = bài đó thật sự không có
+                # video để đếm view → 0 là câu trả lời đúng. Request hỏng → None = "không biết".
+                'view_count': views_map.get(p_id, 0) if views_fetch_ok else None,
+                'like_count': likes,
+                'comment_count': comments,
+                'share_count': shares,
+                'raw_json': p_data,  # Lưu lại để ném vào trường raw_data của Model
+            }
+        return metrics_map
+
+    def update_video_node_metrics_batch(self, video_ids: list, access_token: Optional[str] = None) -> Dict[str, Dict[str, int]]:
+        """Lấy views/likes/comments cho ID Video/Reels NODE THUẦN (vd link facebook.com/reel/{id}
+        dán tay, không sync qua /feed) — KHÁC update_video_views_batch() ở trên vốn dành cho
+        Page Post ID (dạng {page_id}_{post_id}).
+
+        Video node dùng edge "video_insights" (không phải "insights") để lấy views, và
+        KHÔNG có field "shares"/"reactions" như Post — chỉ có "likes". Gọi nhầm field Post
+        vào 1 ID Video node sẽ bị Facebook trả 400 "(#100) Tried accessing nonexisting field".
+        Views fetch riêng (best-effort) — lỗi/rỗng ở bước này không mất likes/comments.
+        """
+        if not video_ids:
+            return {}
+
+        token = access_token or self.access_token
+        try:
+            fields_str = "likes.summary(true).limit(0),comments.summary(true).limit(0)"
+            params = {
+                'ids': ','.join(video_ids),
+                'fields': fields_str,
+                'access_token': token,
+            }
+            response = requests.get(self.BASE_URL, params=params, timeout=20)
+            response.raise_for_status()
+            res_data = response.json()
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.error(f"❌ Thất bại khi lấy likes/comments Video node: {str(e)} | body: {body}")
+            return {}
+        except Exception as e:
+            logger.error(f"❌ Thất bại khi lấy likes/comments Video node: {str(e)}")
+            return {}
+
+        views_map: Dict[str, int] = {}
+        try:
+            insights_params = {
+                'ids': ','.join(video_ids),
+                # blue_reels_play_count: metric "Lượt phát" thật của Reels — total_video_views
+                # (chỉ số video thường) thường RỖNG với Reels nên phải xin cả 2, cộng dồn cái có data.
+                'fields': "video_insights.metric(total_video_views,blue_reels_play_count){name,period,values}",
+                'access_token': token,
+            }
+            insights_resp = requests.get(self.BASE_URL, params=insights_params, timeout=20)
+            insights_resp.raise_for_status()
+            insights_data = insights_resp.json()
+            for v_id, v_data in insights_data.items():
+                views = 0
+                for metric in v_data.get('video_insights', {}).get('data', []):
+                    if metric.get('name') in ('total_video_views', 'blue_reels_play_count'):
+                        values_list = metric.get('values', [])
+                        if values_list:
+                            views += values_list[0].get('value', 0)
+                views_map[v_id] = views
+                if views == 0:
+                    logger.info(f"ℹ️ [VIDEO-INSIGHTS] {v_id} không có total_video_views/blue_reels_play_count — raw: {v_data.get('video_insights')}")
+        except requests.exceptions.HTTPError as e:
+            body = e.response.text if e.response is not None else ''
+            logger.warning(f"⚠️ Không lấy được video_insights: {str(e)} | body: {body}")
+        except Exception as e:
+            logger.warning(f"⚠️ Không lấy được video_insights: {str(e)}")
+
+        metrics_map = {}
+        for v_id, v_data in res_data.items():
+            likes = v_data.get('likes', {}).get('summary', {}).get('total_count', 0)
+            comments = v_data.get('comments', {}).get('summary', {}).get('total_count', 0)
+
+            metrics_map[v_id] = {
+                'view_count': views_map.get(v_id, 0),
+                'like_count': likes,
+                'comment_count': comments,
+                'share_count': 0,  # Video node không có edge "shares" (chỉ Page Post mới có)
+                'raw_json': v_data,
+            }
+        return metrics_map
+
     def get_my_managed_pages(self, access_token: Optional[str] = None) -> list:
         """
         Fetch the list of pages that the user owns/manages.

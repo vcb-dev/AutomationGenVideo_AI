@@ -60,3 +60,21 @@ def fetch_douyin_profile_videos(request):
     # (ưu tiên DB hiện có, fallback author vừa fetch), tránh AI đoán sai label.
     videos = parse_douyin_videos(items, search_keyword='')
     return Response({'author': author, 'videos': videos})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def resolve_douyin_video_author(request):
+    """Resolve author sec_uid from aweme_id / video_id.
+
+    Body: { "aweme_id": "..." }
+    """
+    data = request.data or {}
+    aweme_id = str(data.get('aweme_id') or '').strip()
+    if not aweme_id:
+        return Response({'error': 'aweme_id is required'}, status=400)
+
+    from ..services.tikhub_douyin import resolve_douyin_author_by_video_id
+    sec_uid = resolve_douyin_author_by_video_id(aweme_id)
+    return Response({'sec_uid': sec_uid})
+

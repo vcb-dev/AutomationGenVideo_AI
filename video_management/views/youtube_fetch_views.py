@@ -9,14 +9,15 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ..services.tikhub_youtube import (
-    fetch_channel_info, fetch_channel_shorts, parse_youtube_channel, parse_youtube_shorts,
+    fetch_channel_info, fetch_channel_shorts, fetch_channel_videos,
+    parse_youtube_channel, parse_youtube_shorts,
 )
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def fetch_youtube_channel(request):
-    """Fetch channel info + shorts, fetch + parse only.
+    """Fetch channel info + shorts/videos, fetch + parse only.
 
     Body: { "channel_id": "UCxxxxxxxx", "count": 20 }
     """
@@ -29,6 +30,9 @@ def fetch_youtube_channel(request):
 
     channel_raw = fetch_channel_info(channel_id)
     shorts_raw = fetch_channel_shorts(channel_id, count=count)
+    if not shorts_raw:
+        # Fallback lấy regular videos nếu kênh không có video định dạng Shorts
+        shorts_raw = fetch_channel_videos(channel_id, count=count)
 
     parsed_channel = None
     if channel_raw or shorts_raw:

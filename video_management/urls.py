@@ -46,14 +46,23 @@ from .views import (
 )
 from .views.collection_views import VideoCollectionViewSet
 from .views.voice_views import (
-    list_voices_api, clone_voice_api, voice_tts_api,
+    list_voices_api, voice_tts_api,
     clone_voice_start_api, clone_voice_job_status_api,
+     serve_minimax_tts_file, delete_voice_api,
 )
 from .views.facebook_fetch_views import (
     fetch_managed_pages, fetch_page_sync, fetch_page_backfill, fetch_metrics_refresh,
+    fetch_resolve_owner, fetch_video_metrics_refresh, fetch_video_source, fetch_video_captions,
+    fetch_video_transcript,
+    fetch_token_refresh,
+    fetch_token_save,
 )
 from .views.facebook_external_fetch_views import fetch_facebook_page_reels
-from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos
+from .views.instagram_owned_fetch_views import (
+    fetch_owned_account as instagram_fetch_owned_account,
+    fetch_media as instagram_fetch_media,
+)
+from .views.douyin_fetch_views import fetch_douyin_search, fetch_douyin_profile_videos, resolve_douyin_video_author
 from .views.channel_hashtag_stats_views import get_channel_hashtag_stats
 from .views.facebook_analysis_views import (
     analyze_facebook_url,
@@ -72,6 +81,7 @@ from .views.tiktok_search_views import search_tiktok_videos
 from .views.tiktok_suggest_views import tiktok_search_suggest
 from .views.tiktok_fetch_views import fetch_tiktok_search, fetch_tiktok_profile_posts
 from .views.instagram_fetch_views import fetch_instagram_profile_reels
+from .views.threads_fetch_views import fetch_threads_profile_posts, fetch_threads_search_top
 from .views.youtube_fetch_views import fetch_youtube_channel
 from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
 from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
@@ -99,6 +109,8 @@ from .views.virtual_mix_views import (
 from .views.checklist_views import ChecklistSubmitView, ChecklistCheckView, ChecklistSettingsView, ChecklistReportingStatusView
 from .views.translation_views import translate_to_chinese
 from .views.task_script_views import generate_task_video_script, translate_task_video_script
+from .views.task_video_match_views import judge_task_video_match
+from .views.scraped_video_script_views import generate_scraped_video_script, generate_script_from_video
 
 app_name = 'video_management'
 
@@ -131,10 +143,17 @@ urlpatterns = [
 
     # Minimax Voice Cloning & TTS
     path('voice/list/', list_voices_api, name='voice-list'),
-    path('voice/clone/', clone_voice_api, name='voice-clone'),
+    # Clone chỉ còn đường nền start + status. Bản đồng bộ 'voice/clone/' gỡ ngày
+    # 2026-08-07: không client nào gọi, mà vẫn giữ bản sao riêng của luật chặn
+    # trùng tên + ghi DB.
     path('voice/clone/start/', clone_voice_start_api, name='voice-clone-start'),
     path('voice/clone/status/<str:job_id>/', clone_voice_job_status_api, name='voice-clone-status'),
     path('voice/tts/', voice_tts_api, name='voice-tts'),
+    # Đường dẫn có tiền tố 'delete/' thay vì 'voice/<voice_id>/' — voice_id do MiniMax
+    # sinh (dạng Ten_a1b2c3d4) sẽ nuốt luôn cả 'list', 'clone'... nếu để pattern trần
+    path('voice/delete/<str:voice_id>/', delete_voice_api, name='voice-delete'),
+    # Serve file TTS đã sinh — thay cho /media/minimax_tts/... vốn chỉ hoạt động khi DEBUG=True
+    path('voice/tts/file/<str:filename>', serve_minimax_tts_file, name='voice-tts-file'),
 
 
     path('videos/channel-hashtag-stats/', get_channel_hashtag_stats, name='channel-hashtag-stats'),
@@ -191,10 +210,21 @@ urlpatterns = [
     # native (FacebookOwnedPagesController) — AI không còn route đọc nào cho owned pages.
 
     # Facebook owned-pages — fetch-only (BE sở hữu DB, gọi các endpoint này để lấy data thô)
+    # Instagram nội bộ — đọc qua page token của Facebook, xem instagram_graph_service.py
+    path('instagram/fetch/owned-account/', instagram_fetch_owned_account, name='instagram-fetch-owned-account'),
+    path('instagram/fetch/media/', instagram_fetch_media, name='instagram-fetch-media'),
+
     path('facebook/fetch/managed-pages/', fetch_managed_pages, name='facebook-fetch-managed-pages'),
     path('facebook/fetch/sync/', fetch_page_sync, name='facebook-fetch-sync'),
     path('facebook/fetch/backfill/', fetch_page_backfill, name='facebook-fetch-backfill'),
     path('facebook/fetch/metrics-refresh/', fetch_metrics_refresh, name='facebook-fetch-metrics-refresh'),
+    path('facebook/fetch/resolve-owner/', fetch_resolve_owner, name='facebook-fetch-resolve-owner'),
+    path('facebook/fetch/video-metrics-refresh/', fetch_video_metrics_refresh, name='facebook-fetch-video-metrics-refresh'),
+    path('facebook/fetch/video-source/', fetch_video_source, name='facebook-fetch-video-source'),
+    path('facebook/fetch/video-captions/', fetch_video_captions, name='facebook-fetch-video-captions'),
+    path('facebook/fetch/video-transcript/', fetch_video_transcript, name='facebook-fetch-video-transcript'),
+    path('facebook/fetch/token-refresh/', fetch_token_refresh, name='facebook-fetch-token-refresh'),
+    path('facebook/fetch/token-save/', fetch_token_save, name='facebook-fetch-token-save'),
 
     # Scraper — All videos/owned videos (gom tất cả nền tảng) đã chuyển hẳn sang BE
     # (ScraperAggregateController) — đọc thẳng Prisma, không còn qua AI nữa.
@@ -217,6 +247,10 @@ urlpatterns = [
     # (InstagramScraperController) — chỉ còn fetch-only ở đây.
     path('scraper/instagram/fetch/profile-reels/', fetch_instagram_profile_reels, name='scraper-instagram-fetch-profile-reels'),
 
+    # Threads — fetch-only (BE sở hữu DB, gọi endpoint này để lấy data thô)
+    path('scraper/threads/fetch/profile-posts/', fetch_threads_profile_posts, name='scraper-threads-fetch-profile-posts'),
+    path('scraper/threads/fetch/search-top/', fetch_threads_search_top, name='scraper-threads-fetch-search-top'),
+
     # Generic Channel Analysis (all platforms)
     path('channel/insights/', channel_insights_generic, name='channel-insights-generic'),
     path('channel/metrics/', channel_metrics_generic, name='channel-metrics-generic'),
@@ -226,6 +260,7 @@ urlpatterns = [
     # (DouyinScraperController) — chỉ còn fetch-only ở đây.
     path('scraper/douyin/fetch/search/', fetch_douyin_search, name='scraper-douyin-fetch-search'),
     path('scraper/douyin/fetch/profile-videos/', fetch_douyin_profile_videos, name='scraper-douyin-fetch-profile-videos'),
+    path('scraper/douyin/fetch/resolve-video-author/', resolve_douyin_video_author, name='scraper-douyin-resolve-video-author'),
 
     # Xiaohongshu — search/profiles/scrape/toggle VÀ list/detail/videos đều đã chuyển
     # sang BE (XiaohongshuScraperController) — chỉ còn fetch-only ở đây.
@@ -264,6 +299,12 @@ urlpatterns = [
     # Task-Auto: adapt content thắng cho sản phẩm mới (BE task-auto/tasks module)
     path('task-auto/video-script/generate/', generate_task_video_script, name='task-auto-video-script-generate'),
     path('task-auto/video-script/translate/', translate_task_video_script, name='task-auto-video-script-translate'),
+    # Task-Auto: AI phân định video kênh nội bộ ↔ task cho các ca heuristic bỏ trống
+    path('task-auto/video-match/judge/', judge_task_video_match, name='task-auto-video-match-judge'),
+
+    # Scraped-video script analysis (dịch + phân tích video cào từ scraper subsystem)
+    path('scraped-video/script/generate/', generate_scraped_video_script, name='scraped-video-script-generate'),
+    path('scraped-video/script-from-video/', generate_script_from_video, name='scraped-video-script-from-video'),
 
     # Checklist công việc -> Lark Bitable
     path('checklist/check/', ChecklistCheckView.as_view(), name='checklist-check'),

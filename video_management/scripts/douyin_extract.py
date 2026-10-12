@@ -75,11 +75,20 @@ def main():
             Stealth().apply_stealth_sync(context)
             page = context.new_page()
             page.on('response', on_response)
-            page.goto(url, wait_until='load', timeout=NAV_TIMEOUT_MS)
-            waited = 0
-            while not captured.get('done') and waited < EXTRA_WAIT_MS:
-                time.sleep(0.3)
-                waited += 300
+            # Chờ 'domcontentloaded' chứ KHÔNG chờ 'load': trang Douyin tải thêm tài nguyên liên
+            # tục nên sự kiện 'load' không tới trong 30s (đo trên image Railway), goto ném lỗi và
+            # script thoát dù API chi tiết video đã về. Hết giờ điều hướng cũng không bỏ cuộc —
+            # thứ cần là response của API, không phải trang tải xong.
+            try:
+                page.goto(url, wait_until='domcontentloaded', timeout=NAV_TIMEOUT_MS)
+            except Exception as e:  # noqa: BLE001
+                print(f'goto: {e.__class__.__name__}', file=sys.stderr)
+            # Phải chờ bằng page.wait_for_timeout: API đồng bộ của Playwright chỉ xử lý sự kiện
+            # (on_response) khi được trao quyền điều khiển. time.sleep chặn luôn việc đó nên
+            # bản cũ chờ đủ 20s mà không bao giờ nhận được response.
+            deadline = time.time() + EXTRA_WAIT_MS / 1000
+            while not captured.get('done') and time.time() < deadline:
+                page.wait_for_timeout(300)
         finally:
             browser.close()
 

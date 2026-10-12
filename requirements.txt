@@ -19,7 +19,7 @@ httpx>=0.27.0
 
 # AI APIs
 openai>=1.0.0
-google-generativeai>=0.3.0
+google-generativeai>=0.8.0
 anthropic>=0.25.0
 
 # Document Processing
@@ -73,3 +73,4 @@ yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@aefce1eea4
 # Chromium headless để chính trang tự gọi API đó (xem video_management/scripts/douyin_extract.py).
 # Sau khi cài, chạy thêm: playwright install chromium (tải trình duyệt, ~280MB, 1 lần).
 playwright>=1.61.0
+playwright-stealth>=2.0.3

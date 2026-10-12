@@ -70,6 +70,19 @@ class HeyGenClient:
         mode_str = "TEST (watermarked, FREE)" if self.test_mode else "PRODUCTION (costs credits)"
         logger.info(f"HeyGen client initialized - Mode: {mode_str}, API URL: {self.api_url}")
 
+    def _api_root(self) -> str:
+        """Gốc không kèm phiên bản — api_url mặc định mang hậu tố /v2."""
+        u = self.api_url.rstrip('/')
+        return u[:-3] if u.endswith('/v2') else u
+
+    def _video_status_endpoint(self) -> str:
+        # v1 chứ không phải v2: status check trên v2 không ổn định (xem check_video_status)
+        return f"{self._api_root()}/v1/video_status.get"
+
+    def _voice_clone_endpoint(self) -> str:
+        u = self.api_url.rstrip('/')
+        return f"{u}/voice/clone" if u.endswith('/v2') else f"{u}/v2/voice/clone"
+
     async def close(self):
         """Close the shared HTTP session — call on app shutdown."""
         if self._session and not self._session.closed:
@@ -228,7 +241,7 @@ class HeyGenClient:
             VideoStatusResponse with current status and progress
         """
         # v2 API often has issues with status check or moves it, falling back to v1 for status check which works reliably
-        endpoint = "https://api.heygen.com/v1/video_status.get"
+        endpoint = self._video_status_endpoint()
         
         params = {"video_id": video_id}
         
@@ -380,7 +393,7 @@ class HeyGenClient:
         Returns:
             Dict containing 'voice_id' and metadata
         """
-        endpoint = "https://api.heygen.com/v2/voice/clone"
+        endpoint = self._voice_clone_endpoint()
         
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")

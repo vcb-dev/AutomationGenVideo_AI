@@ -226,7 +226,10 @@ def get_user_channels(user_name: str) -> list:
 
 # ─── Facebook Graph API ──────────────────────────────────────────────────────
 
-FB_BASE = "https://graph.facebook.com/v19.0"
+def _fb_base() -> str:
+    return _env('FACEBOOK_GRAPH_BASE_URL').rstrip('/')
+
+FB_BASE = _fb_base()
 
 def _fb_token() -> str:
     return _env('FACEBOOK_ACCESS_TOKEN')

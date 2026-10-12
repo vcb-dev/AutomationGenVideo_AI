@@ -5,11 +5,15 @@ API Docs: https://platform.minimax.io/docs/api-reference/voice-cloning-intro
 """
 
 import logging
+
+from .minimax_errors import minimax_error_message
 import re
 import requests
 import os
 import uuid
 from typing import Optional, Dict, Any
+
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +44,6 @@ class MinimaxVoiceCloneService:
     Service for cloning custom voices using Minimax Voice Cloning API.
     """
     
-    BASE_URL = "https://api.minimax.io/v1"
-    
     def __init__(self, api_key: Optional[str] = None, group_id: Optional[str] = None):
         """
         Initialize Minimax Voice Clone Service.
@@ -50,11 +52,12 @@ class MinimaxVoiceCloneService:
             api_key: Minimax API Key (JWT token)
             group_id: Minimax Group ID
         """
-        self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
+        self.api_key = api_key or getattr(settings, 'MINIMAX_API_KEY', '')
         # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
         # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
         # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
-        self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
+        self.group_id = group_id or getattr(settings, 'MINIMAX_GROUP_ID', '')
+        self.base_url = getattr(settings, 'MINIMAX_API_BASE_URL', 'https://api.minimax.io/v1')
 
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
@@ -64,7 +67,7 @@ class MinimaxVoiceCloneService:
 
     def _build_url(self, path: str) -> str:
         """Build API URL; chỉ gắn GroupId khi có (key JWT cũ)."""
-        url = f"{self.BASE_URL}{path}"
+        url = f"{self.base_url}{path}"
         return f"{url}?GroupId={self.group_id}" if self.group_id else url
 
     def _post_with_retry(self, request_fn, max_attempts: int = 10):
@@ -168,7 +171,8 @@ class MinimaxVoiceCloneService:
         file_id: str,
         voice_name: str,
         voice_id: Optional[str] = None,
-        prompt_file_id: Optional[str] = None
+        prompt_file_id: Optional[str] = None,
+        prompt_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Clone voice from uploaded audio.
@@ -178,6 +182,7 @@ class MinimaxVoiceCloneService:
             voice_name: Name for the cloned voice
             voice_id: Custom voice ID (optional, will be generated if not provided)
             prompt_file_id: Optional ID of uploaded prompt audio for better quality
+            prompt_text: Optional text of prompt audio
             
         Returns:
             Dictionary with:
@@ -207,7 +212,7 @@ class MinimaxVoiceCloneService:
                 pid = int(prompt_file_id) if isinstance(prompt_file_id, str) else prompt_file_id
                 payload["clone_prompt"] = {
                     "prompt_audio": pid,
-                    "prompt_text": "Sample prompt for voice cloning."
+                    "prompt_text": (prompt_text or "Sample prompt for voice cloning.").strip()
                 }
             
             url = self._build_url("/voice_clone")
@@ -239,7 +244,7 @@ class MinimaxVoiceCloneService:
             status_msg = base_resp.get('status_msg', '')
             
             if status_code != 0:
-                raise Exception(f"Minimax API error ({status_code}): {status_msg}")
+                raise Exception(minimax_error_message(status_code, status_msg))
             
             # API returns success without voice_id in body; we use the one we sent
             
@@ -266,7 +271,8 @@ class MinimaxVoiceCloneService:
         audio_path: str,
         voice_name: str,
         voice_id: Optional[str] = None,
-        prompt_audio_path: Optional[str] = None
+        prompt_audio_path: Optional[str] = None,
+        prompt_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Complete workflow: Upload audio + Clone voice.
@@ -276,14 +282,18 @@ class MinimaxVoiceCloneService:
             voice_name: Name for the cloned voice
             voice_id: Custom voice ID (optional)
             prompt_audio_path: Optional path to prompt audio (<8s) for better quality
+            prompt_text: Optional text of prompt audio to align and enhance similarity
             
         Returns:
             Dictionary with voice_id and other info
         """
+        trimmed_prompt_path = None
         try:
             logger.info(f"[Voice Clone] Starting voice clone workflow...")
             logger.info(f"[Voice Clone] Audio: {audio_path}")
             logger.info(f"[Voice Clone] Name: {voice_name}")
+            if prompt_text:
+                logger.info(f"[Voice Clone] Prompt text length: {len(prompt_text)} chars")
             
             # Step 1: Upload source audio
             file_id = self.upload_audio(audio_path, purpose="voice_clone")
@@ -293,13 +303,57 @@ class MinimaxVoiceCloneService:
             if prompt_audio_path:
                 logger.info(f"[Voice Clone] Uploading prompt audio: {prompt_audio_path}")
                 prompt_file_id = self.upload_audio(prompt_audio_path, purpose="prompt")
+            else:
+                # Tự động trích xuất 7.5s audio từ file mẫu để khớp âm vị (audio-phoneme alignment)
+                try:
+                    import subprocess
+                    import uuid
+                    import tempfile
+                    import imageio_ffmpeg
+                    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                    temp_dir = tempfile.gettempdir()
+                    trimmed_prompt_path = os.path.join(temp_dir, f"prompt_{uuid.uuid4().hex}.mp3")
+                    cmd = [
+                        ffmpeg_exe, "-y", "-i", audio_path,
+                        "-t", "7.5", "-ac", "1", "-ar", "32000",
+                        trimmed_prompt_path
+                    ]
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                    if os.path.exists(trimmed_prompt_path) and os.path.getsize(trimmed_prompt_path) > 0:
+                        logger.info(f"[Voice Clone] Created 7.5s prompt audio ({os.path.getsize(trimmed_prompt_path)} bytes)")
+                        
+                        # Nếu người dùng không nhập prompt_text, tự động dùng OpenAI Whisper nhận diện chữ từ đoạn audio
+                        if not prompt_text or not prompt_text.strip():
+                            try:
+                                import openai
+                                openai_key = os.getenv("OPENAI_API_KEY")
+                                if openai_key:
+                                    client = openai.OpenAI(api_key=openai_key)
+                                    with open(trimmed_prompt_path, "rb") as audio_f:
+                                        transcription = client.audio.transcriptions.create(
+                                            model="whisper-1",
+                                            file=audio_f,
+                                            language="vi"
+                                        )
+                                        if transcription and transcription.text:
+                                            prompt_text = transcription.text.strip()
+                                            logger.info(f"[Voice Clone] Auto-transcribed prompt_text via Whisper: {prompt_text}")
+                            except Exception as transcribe_err:
+                                logger.warning(f"[Voice Clone] Whisper auto-transcribe fallback: {transcribe_err}")
+
+                        # Nếu có prompt_text (từ người dùng nhập hoặc Whisper tự nhận dạng), upload prompt audio
+                        if prompt_text and prompt_text.strip():
+                            prompt_file_id = self.upload_audio(trimmed_prompt_path, purpose="prompt")
+                except Exception as trim_err:
+                    logger.warning(f"[Voice Clone] Auto-trim prompt audio fallback: {trim_err}")
             
             # Step 3: Clone voice
             result = self.clone_voice(
                 file_id=file_id,
                 voice_name=voice_name,
                 voice_id=voice_id,
-                prompt_file_id=prompt_file_id
+                prompt_file_id=prompt_file_id,
+                prompt_text=prompt_text,
             )
             
             logger.info(f"[Voice Clone] Workflow complete! voice_id: {result['voice_id']}")
@@ -308,6 +362,62 @@ class MinimaxVoiceCloneService:
         except Exception as e:
             logger.error(f"[Voice Clone] Workflow error: {str(e)}", exc_info=True)
             raise
+        finally:
+            if trimmed_prompt_path and os.path.exists(trimmed_prompt_path):
+                try:
+                    os.remove(trimmed_prompt_path)
+                except Exception:
+                    pass
+
+    def delete_voice(self, voice_id: str) -> Dict[str, Any]:
+        """
+        Xoá hẳn một giọng đã clone khỏi tài khoản MiniMax (giải phóng slot giọng).
+
+        API: POST /v1/delete_voice, body {"voice_type": "voice_cloning", "voice_id": ...}
+        https://platform.minimax.io/docs/api-reference/voice-cloning-delete
+
+        Trả về {'deleted': True} khi MiniMax xác nhận đã xoá, hoặc
+        {'deleted': False, 'reason': ...} khi giọng KHÔNG còn tồn tại phía MiniMax
+        (đã bị xoá tay, hoặc hết hạn 168h). Không tồn tại thì không phải lỗi —
+        người dùng vẫn cần dọn bản ghi trong DB của mình, xem voice_views.delete_voice_api.
+        Mọi lỗi khác (mạng, key sai, quyền) đều raise để tầng trên chặn việc xoá DB.
+        """
+        url = self._build_url("/delete_voice")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {"voice_type": "voice_cloning", "voice_id": voice_id}
+
+        logger.info(f"[Voice Clone] Deleting voice: {voice_id}")
+        # Ít lần thử hơn clone: xoá chạy đồng bộ trong request của người dùng, không
+        # phải background thread — chờ 10 x 30s sẽ làm treo cả BE lẫn trình duyệt.
+        response = self._post_with_retry(
+            lambda: requests.post(url, headers=headers, json=payload, timeout=30),
+            max_attempts=3,
+        )
+
+        if response.status_code != 200:
+            logger.error(f"[Voice Clone] Delete failed: {response.text}")
+            raise Exception(f"Delete failed ({response.status_code}): {response.text}")
+
+        data = response.json()
+        base_resp = data.get('base_resp', {}) or {}
+        status_code = base_resp.get('status_code', -1)
+        status_msg = base_resp.get('status_msg', '')
+
+        if status_code != 0:
+            # 2013 = "invalid params, voice_id does not exist" — đo thật ngày 2026-08-06 bằng
+            # cách gọi delete_voice trên một voice_id vừa bị xoá. Đừng nhầm với 2054
+            # ("voice id not exist") mà endpoint TTS trả về: hai endpoint dùng hai mã khác nhau
+            # cho cùng một tình huống.
+            if status_code == 2013:
+                logger.warning(f"[Voice Clone] Voice {voice_id} không còn trên MiniMax: {status_msg}")
+                return {'deleted': False, 'reason': status_msg or 'voice not found'}
+            raise Exception(minimax_error_message(status_code, status_msg))
+
+        logger.info(f"[Voice Clone] Delete success! voice_id: {voice_id}")
+        return {'deleted': True}
 
 
 # Singleton instance

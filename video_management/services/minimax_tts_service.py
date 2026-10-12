@@ -1,16 +1,128 @@
 """
 Minimax TTS Service - Text-to-Speech using Minimax AI.
 
-API Docs: https://platform.minimaxi.com/document/T2A%20V2?key=66719005a427f0c8a5701643
+API Docs: https://platform.minimax.io/docs/api-reference/text-to-speech-t2a-v2
 """
 
 import logging
-import requests
 import os
+import re
 import time
 from typing import Optional, Dict, Any
 
+from django.conf import settings
+import requests
+
+from .minimax_errors import minimax_error_from_response
+
 logger = logging.getLogger(__name__)
+
+
+def split_sentences_for_tts(text: str) -> str:
+    """
+    Chuẩn hoá văn bản trước khi gửi tới MiniMax TTS:
+    Tách các câu và vế câu thành các dòng riêng biệt (\\n) theo dấu chấm, chấm hỏi,
+    chấm than, dấu phẩy, hai chấm, chấm phẩy, gạch ngang.
+    MiniMax API chỉ phân tách phụ đề (subtitle) theo từng dòng (\\n).
+    Tách theo cả dấu phẩy giúp phụ đề hiển thị ngắn gọn, nhịp nhàng từng vế câu
+    chuẩn theo từng giây ngắt nghỉ của giọng đọc (tối ưu cho video ngắn / TikTok / Reels).
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    result_lines = []
+    for line in lines:
+        # Chuẩn hoá khoảng trắng trước dấu câu: ' ,' -> ','
+        cleaned = re.sub(r'\s+([.!?;:,—–])', r'\1', line)
+        # Tách sau dấu câu (. ! ? : ; — –) và dấu phẩy (,) khi có khoảng trắng theo sau và không phải giữa các chữ số
+        parts = re.split(r'(?<=[.!?:;—–])\s+(?=[^\s])|(?<=,)\s+(?=[^\s\d])', cleaned)
+        for p in parts:
+            p_strip = p.strip()
+            if p_strip:
+                result_lines.append(p_strip)
+
+    return '\n'.join(result_lines)
+
+
+
+
+def format_srt_timestamp(ms: float) -> str:
+    """Chuyển milliseconds thành định dạng chuẩn timestamp của SRT: HH:MM:SS,mmm"""
+    total_ms = max(0, int(round(ms)))
+    hours = total_ms // 3600000
+    mins = (total_ms % 3600000) // 60000
+    secs = (total_ms % 60000) // 1000
+    millis = total_ms % 1000
+    return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
+
+
+def normalize_subtitle_entry(entry: dict) -> Optional[dict]:
+    """Chuẩn hoá 1 mục subtitle từ nhiều kiểu tên field của MiniMax sang {text, start_ms, end_ms}"""
+    if not isinstance(entry, dict):
+        return None
+
+    text = (entry.get('text') or entry.get('content') or entry.get('word') or '').strip()
+    if not text:
+        return None
+
+    # Tìm thời gian bắt đầu (hỗ trợ nhiều biến thể theo format API và extension cũ)
+    start_val = None
+    for k in ('time_begin', 'start_time', 'begin_time', 'start', 'begin'):
+        if k in entry and entry[k] is not None:
+            start_val = entry[k]
+            break
+
+    # Tìm thời gian kết thúc
+    end_val = None
+    for k in ('time_end', 'end_time', 'finish_time', 'end', 'finish'):
+        if k in entry and entry[k] is not None:
+            end_val = entry[k]
+            break
+
+    if start_val is None or end_val is None:
+        return None
+
+    try:
+        start_ms = float(start_val)
+        end_ms = float(end_val)
+    except (ValueError, TypeError):
+        return None
+
+    if end_ms < start_ms:
+        end_ms = start_ms
+
+    return {
+        'text': text,
+        'start_ms': start_ms,
+        'end_ms': end_ms,
+    }
+
+
+def subtitles_to_srt(subtitles_list: list) -> str:
+    """Chuyển danh sách các mục subtitle thành chuỗi chuẩn SRT."""
+    if not subtitles_list or not isinstance(subtitles_list, list):
+        return ""
+
+    normalized = []
+    for item in subtitles_list:
+        norm = normalize_subtitle_entry(item)
+        if norm:
+            normalized.append(norm)
+
+    if not normalized:
+        return ""
+
+    # Sắp xếp theo thời gian bắt đầu
+    normalized.sort(key=lambda s: s['start_ms'])
+
+    blocks = []
+    for idx, item in enumerate(normalized, start=1):
+        start_ts = format_srt_timestamp(item['start_ms'])
+        end_ts = format_srt_timestamp(item['end_ms'])
+        blocks.append(f"{idx}\n{start_ts} --> {end_ts}\n{item['text']}\n")
+
+    return "\n".join(blocks).strip() + "\n"
 
 
 class MinimaxTTSService:
@@ -18,12 +130,23 @@ class MinimaxTTSService:
     Service for generating audio using Minimax TTS API.
     """
     
-    BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+    # Retry mạng: kết nối tới api.minimax.io chập chờn ở cả 2 IP load-balancer (đo
+    # 2026-07-07). 5 x 45s = ~225s, cố ý dưới trần chờ 300s của BE. TTS thật chỉ mất
+    # 3-10s nên 45s/lần là quá đủ. ĐỌC TỪ ĐÂY, đừng gõ lại số vào chuỗi log.
+    MAX_ATTEMPTS = 5
+    ATTEMPT_TIMEOUT_S = 45
+    # Tải file audio khi MiniMax trả URL thay vì bytes — file mp3 vài MB.
+    DOWNLOAD_TIMEOUT_S = 120
 
-    # speech-2.8-hd: model HD mới nhất (01/2026), chất lượng + độ giống giọng clone
-    # cao nhất. Nếu giọng clone nghe chưa giống, thử "speech-2.6-hd" (được MiniMax
-    # ghi nhận "excellent cloning similarity") qua env MINIMAX_TTS_MODEL.
-    DEFAULT_MODEL = "speech-2.8-hd"
+    # Chất lượng cao nhất cho MP3 của MiniMax: 44.1kHz / 256kbps / mono.
+    # Hạ xuống chỉ nên làm khi có lý do đo được (dung lượng, băng thông) — giọng
+    # clone nghe rõ sự khác biệt ở bitrate thấp.
+    AUDIO_SETTING = {
+        "sample_rate": 44100,
+        "bitrate": 256000,
+        "format": "mp3",
+        "channel": 1,
+    }
 
     def __init__(self, api_key: Optional[str] = None, group_id: Optional[str] = None):
         """
@@ -33,12 +156,13 @@ class MinimaxTTSService:
             api_key: Minimax API Key (JWT token)
             group_id: Minimax Group ID
         """
-        self.api_key = api_key or os.getenv('MINIMAX_API_KEY')
+        self.api_key = api_key or getattr(settings, 'MINIMAX_API_KEY', '')
         # Key kiểu mới "sk-api-..." tự gắn với group — KHÔNG cần GroupId; gửi kèm
         # GroupId của account khác sẽ lỗi 1004 "token not match group". Chỉ key JWT
         # kiểu cũ (eyJ...) mới cần. Vì vậy group_id là tùy chọn.
-        self.group_id = group_id or os.getenv('MINIMAX_GROUP_ID')
-        self.model = os.getenv('MINIMAX_TTS_MODEL', self.DEFAULT_MODEL)
+        self.group_id = group_id or getattr(settings, 'MINIMAX_GROUP_ID', '')
+        self.model = getattr(settings, 'MINIMAX_TTS_MODEL', 'speech-2.8-hd')
+        self.base_url = f"{getattr(settings, 'MINIMAX_API_BASE_URL', 'https://api.minimax.io/v1')}/t2a_v2"
 
         if not self.api_key:
             raise ValueError("MINIMAX_API_KEY is required")
@@ -55,7 +179,8 @@ class MinimaxTTSService:
         pitch: int = 0,
         emotion: Optional[str] = None,
         language_boost: Optional[str] = None,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate audio from text using Minimax TTS.
@@ -71,6 +196,7 @@ class MinimaxTTSService:
                      ép cứng 1 emotion cho mọi câu dễ làm giọng đọc bị "kịch"/méo).
             language_boost: Minimax language hint (e.g. "Vietnamese", "English", "auto")
             output_path: Optional local path to save audio file
+            model: Optional model override (e.g. "speech-2.8-turbo", "speech-2.8-hd")
 
         Returns:
             Dictionary with:
@@ -79,11 +205,16 @@ class MinimaxTTSService:
                 'audio_url': str,          # URL to download audio
                 'file_path': str,          # Local path if output_path provided
                 'duration': float,         # Audio duration in seconds
-                'extra_info': dict
+                'extra_info': dict,
+                'srt_content': Optional[str],
+                'srt_file_path': Optional[str],
             }
         """
         try:
-            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Text: {len(text)} chars")
+            chosen_model = model or self.model
+            text_to_synthesize = split_sentences_for_tts(text)
+            line_count = len(text_to_synthesize.splitlines())
+            logger.info(f"🎤 Minimax TTS - Voice: {voice_id}, Model: {chosen_model}, Text: {len(text)} chars, Lines: {line_count}")
             
             # Build request payload
             voice_setting = {
@@ -99,17 +230,14 @@ class MinimaxTTSService:
                 voice_setting["emotion"] = emotion
 
             payload = {
-                "model": self.model,
-                "text": text,
+                "model": chosen_model,
+                "text": text_to_synthesize,
                 "stream": False,
                 "voice_setting": voice_setting,
-                # Chất lượng cao nhất cho MP3: 44.1kHz / 256kbps
-                "audio_setting": {
-                    "sample_rate": 44100,
-                    "bitrate": 256000,
-                    "format": "mp3",
-                    "channel": 1
-                }
+                "audio_setting": dict(self.AUDIO_SETTING),
+                # Bật tạo phụ đề để xuất file SRT đồng bộ cùng voice
+                "subtitle_enable": True,
+                "subtitle_type": "sentence",
             }
             if language_boost:
                 payload["language_boost"] = language_boost
@@ -121,25 +249,26 @@ class MinimaxTTSService:
             }
             
             # Chỉ gắn GroupId khi có (key JWT cũ); key sk-api không cần
-            url = f"{self.BASE_URL}?GroupId={self.group_id}" if self.group_id else self.BASE_URL
+            url = f"{self.base_url}?GroupId={self.group_id}" if self.group_id else self.base_url
             
             logger.info(f"📡 Calling Minimax API: {url[:50]}...")
 
-            # Make request — retry khi lỗi tầng mạng. Kết nối tới api.minimax.io
-            # chập chờn (cả 2 IP load-balancer, xác nhận 2026-07-07): 1 request treo
-            # 300s vượt luôn quota chờ của BE. Thay bằng 5 lần thử x 45s (~225s max,
-            # dưới trần 300s của BE); TTS thật chỉ mất 3-10s nên 45s/lần là quá đủ.
+            # Retry khi lỗi tầng mạng — xem MAX_ATTEMPTS / ATTEMPT_TIMEOUT_S.
             start_time = time.time()
             last_network_error = None
             response = None
-            for attempt in range(1, 6):
+            for attempt in range(1, self.MAX_ATTEMPTS + 1):
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=45)
+                    response = requests.post(
+                        url, headers=headers, json=payload, timeout=self.ATTEMPT_TIMEOUT_S
+                    )
                     last_network_error = None
                     break
                 except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
                     last_network_error = net_err
-                    logger.warning(f"📡 Minimax TTS attempt {attempt}/5 failed (network): {net_err}")
+                    logger.warning(
+                        f"📡 Minimax TTS attempt {attempt}/{self.MAX_ATTEMPTS} failed (network): {net_err}"
+                    )
             if response is None:
                 raise last_network_error if last_network_error else RuntimeError("TTS retry loop exited without result")
 
@@ -167,7 +296,10 @@ class MinimaxTTSService:
 
             if not audio_file:
                 logger.error(f"❌ No audio in response: {data}")
-                raise Exception(f"No audio in Minimax response: {data}")
+                # Dict thô của MiniMax từng đi thẳng ra toast cho người bán hàng đọc. Lỗi hay gặp
+                # nhất ở đây là giới hạn tài khoản (hết tiền/hết slot) — chuyện có người xử lý
+                # được, nên phải nói thành câu họ hiểu.
+                raise Exception(minimax_error_from_response(data))
 
             if audio_file.startswith('http'):
                 audio_url = audio_file
@@ -175,7 +307,7 @@ class MinimaxTTSService:
                 # Caller (voice_tts_api) serves the file from output_path via /media —
                 # nếu không tải về thì URL /media trả 404. Download về output_path.
                 if output_path:
-                    dl = requests.get(audio_file, timeout=120)
+                    dl = requests.get(audio_file, timeout=self.DOWNLOAD_TIMEOUT_S)
                     dl.raise_for_status()
                     with open(output_path, 'wb') as f:
                         f.write(dl.content)
@@ -201,6 +333,52 @@ class MinimaxTTSService:
                 audio_url = output_path
                 logger.info(f"✅ Audio saved to: {output_path}")
             
+            # Trích xuất subtitle (phụ đề SRT) từ phản hồi của MiniMax
+            srt_content = None
+            srt_file_path = None
+            raw_subtitles = None
+
+            # 1. Kiểm tra mảng subtitles trực tiếp trong response hoặc extra_info
+            if isinstance(data.get('subtitles'), list):
+                raw_subtitles = data.get('subtitles')
+            elif isinstance(inner.get('subtitles'), list):
+                raw_subtitles = inner.get('subtitles')
+            elif isinstance(extra_info.get('subtitles'), list):
+                raw_subtitles = extra_info.get('subtitles')
+
+            # 2. Nếu MiniMax trả về URL subtitle_file (link JSON chứa timestamps)
+            subtitle_file_url = (
+                data.get('subtitle_file')
+                or inner.get('subtitle_file')
+                or extra_info.get('subtitle_file')
+            )
+            if not raw_subtitles and subtitle_file_url and str(subtitle_file_url).startswith('http'):
+                try:
+                    logger.info(f"📥 Downloading subtitle_file from: {str(subtitle_file_url)[:80]}...")
+                    sub_resp = requests.get(subtitle_file_url, timeout=15)
+                    if sub_resp.status_code == 200:
+                        sub_json = sub_resp.json()
+                        if isinstance(sub_json, list):
+                            raw_subtitles = sub_json
+                        elif isinstance(sub_json, dict):
+                            raw_subtitles = sub_json.get('subtitles') or sub_json.get('data') or sub_json.get('sentences')
+                except Exception as sub_err:
+                    logger.warning(f"⚠️ Failed to download/parse subtitle_file: {sub_err}")
+
+            # 3. Tạo chuỗi SRT và lưu file nếu có dữ liệu
+            if raw_subtitles and isinstance(raw_subtitles, list):
+                srt_content = subtitles_to_srt(raw_subtitles)
+                if srt_content and output_path:
+                    # Ghi file .srt cùng tên với file .mp3
+                    base_no_ext, _ = os.path.splitext(output_path)
+                    srt_file_path = f"{base_no_ext}.srt"
+                    try:
+                        with open(srt_file_path, 'w', encoding='utf-8') as srt_f:
+                            srt_f.write(srt_content)
+                        logger.info(f"✅ Subtitle SRT saved to: {srt_file_path}")
+                    except Exception as srt_write_err:
+                        logger.warning(f"⚠️ Failed to write SRT file to disk: {srt_write_err}")
+
             # Get duration from extra_info
             duration = extra_info.get('audio_length', 0) or extra_info.get('duration', 0)
             
@@ -209,10 +387,12 @@ class MinimaxTTSService:
                 'audio_url': audio_url,
                 'file_path': output_path if output_path else None,
                 'duration': duration,
-                'extra_info': extra_info
+                'extra_info': extra_info,
+                'srt_content': srt_content,
+                'srt_file_path': srt_file_path,
             }
             
-            logger.info(f"✅ Minimax TTS Success - Duration: {duration}s")
+            logger.info(f"✅ Minimax TTS Success - Duration: {duration}s, Subtitle: {'Yes' if srt_content else 'No'}")
             return result
             
         except Exception as e:

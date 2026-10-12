@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, truqhieu]
+  push:
+    branches: [main, truqhieu]
+
+concurrency:
+  group: ci-ai-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-build:
+    name: Docker build (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build image bằng Dockerfile.railway để chắc chắn deps + collectstatic OK.
+      # Không push — chỉ verify build.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.railway
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

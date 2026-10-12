@@ -11,6 +11,8 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
+from .tikhub_errors import raise_if_auth_exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,6 +79,7 @@ def fetch_user_posts(
             )
             resp.raise_for_status()
         except requests.RequestException as e:
+            raise_if_auth_exception(e, 'tiktok fetch_user_post_videos_v3')
             logger.error(f"[TT-PROFILE-TH] Request failed: {e}")
             break
 

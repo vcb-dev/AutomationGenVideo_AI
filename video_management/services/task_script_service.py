@@ -9,24 +9,24 @@ BE chỉ gọi endpoint này để lấy kết quả rồi tự lưu (cache) và
 import json
 import logging
 import re
-from io import BytesIO
 from typing import Any, Dict, Optional
 
 import requests
 from django.conf import settings
 
+from video_management.services.file_text_extract import read_drive_file as _read_drive_file
+
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_BASE = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
+# URL/model đọc từ settings LÚC GỌI (không phải lúc import) — theo mẫu _tikhub_base():
+# đổi .env là đổi được, và override_settings trong test cũng có tác dụng.
+def _deepseek_base() -> str:
+    return getattr(settings, 'DEEPSEEK_API_BASE_URL', 'https://api.deepseek.com')
 
-# MIME types đọc được thành text để đưa vào prompt (DeepSeek chỉ nhận text)
-TEXT_MIMES = {
-    "text/plain",
-    "text/html",
-    "text/csv",
-    "text/markdown",
-}
+
+def _deepseek_model() -> str:
+    # DeepSeek đã bỏ tên "deepseek-chat" — chỉ còn deepseek-v4-pro / deepseek-v4-flash.
+    return getattr(settings, 'DEEPSEEK_MODEL', 'deepseek-v4-flash')
 
 # Mô tả định hướng & chiến lược theo từng tuyến nội dung
 CONTENT_LINE_GUIDE: Dict[str, Dict[str, str]] = {
@@ -92,95 +92,6 @@ def detect_content_line_type(content_line: Optional[str]) -> Optional[str]:
         if upper.startswith(line_type):
             return line_type
     return None
-
-
-def _extract_doc_id(url: str) -> Optional[str]:
-    m = re.search(r"/document/d/([a-zA-Z0-9_-]+)", url)
-    return m.group(1) if m else None
-
-
-def _extract_drive_id(url: str) -> Optional[str]:
-    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
-    return m.group(1) if m else None
-
-
-def _detect_mime_from_bytes(content: bytes, header_content_type: str) -> str:
-    head = content[:8]
-    # PDF: bắt đầu bằng %PDF (25 50 44 46)
-    if head[:4] == b"%PDF":
-        return "application/pdf"
-
-    header_mime = (header_content_type or "").split(";")[0].strip()
-    if header_mime and header_mime != "application/octet-stream":
-        return header_mime
-
-    return "application/octet-stream"
-
-
-def _extract_pdf_text(content: bytes) -> Optional[str]:
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        logger.warning("pypdf chưa được cài đặt, không thể trích xuất text từ PDF")
-        return None
-
-    try:
-        reader = PdfReader(BytesIO(content))
-        text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        text = text.strip()
-        return text or None
-    except Exception as err:  # noqa: BLE001
-        logger.warning(f"Không trích xuất được text từ PDF: {err}")
-        return None
-
-
-def _read_drive_file(file_url: str) -> Optional[str]:
-    """Đọc nội dung file nguồn (Google Docs export txt, hoặc Google Drive file: pdf/text)."""
-    try:
-        if "docs.google.com/document" in file_url:
-            doc_id = _extract_doc_id(file_url)
-            if not doc_id:
-                return None
-            res = requests.get(
-                f"https://docs.google.com/document/d/{doc_id}/export?format=txt",
-                timeout=12,
-            )
-            if not res.ok:
-                return None
-            text = res.text.strip()
-            return text or None
-
-        file_id = _extract_drive_id(file_url)
-        if not file_id:
-            return None
-        res = requests.get(
-            f"https://drive.google.com/uc?export=download&id={file_id}",
-            timeout=20,
-        )
-        if not res.ok:
-            return None
-
-        content_type = res.headers.get("content-type", "")
-        if "text/html" in content_type:
-            return None
-
-        content = res.content
-        if len(content) > 10 * 1024 * 1024:
-            return None
-
-        mime_type = _detect_mime_from_bytes(content, content_type)
-
-        if mime_type == "application/pdf":
-            return _extract_pdf_text(content)
-
-        if mime_type in TEXT_MIMES:
-            text = content.decode("utf-8", errors="ignore").strip()
-            return text or None
-
-        # Loại file không đọc được thành text (DeepSeek chỉ nhận text) → bỏ qua
-        return None
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _build_prompt(p: Dict[str, Any]) -> str:
@@ -416,13 +327,13 @@ def _call_deepseek(prompt: str) -> Dict[str, Any]:
         raise ValueError("DEEPSEEK_API_KEY chưa được cấu hình")
 
     res = requests.post(
-        f"{DEEPSEEK_BASE}/chat/completions",
+        f"{_deepseek_base()}/chat/completions",
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {deepseek_key}",
         },
         json={
-            "model": DEEPSEEK_MODEL,
+            "model": _deepseek_model(),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.8,
             "max_tokens": 8192,

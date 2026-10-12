@@ -46,21 +46,34 @@ if exist "%~dp0cloudflared.exe" (
 )
 
 REM ── Python và venv ─────────────────────────────────────────
-set PYTHON_CMD=python
-%PYTHON_CMD% --version >nul 2>&1
-if errorlevel 1 (
-    set PYTHON_CMD=py
-    %PYTHON_CMD% --version >nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Python not found in PATH
-        pause
-        exit /b 1
-    )
+REM LUÔN gọi thẳng venv theo đường dẫn tuyệt đối. Nếu chỉ `set PYTHON_CMD=python`
+REM rồi call activate.bat, khi activate không ăn thì rơi về Python hệ thống — thiếu
+REM PyJWT nên Django sập và server trả 500 cho MỌI request mà vẫn "chạy" bình thường.
+REM LƯU Ý batch: KHÔNG dùng %PYTHON_CMD% ngay bên trong khối if/else vừa `set` nó —
+REM cả khối được nở biến TRƯỚC khi chạy nên sẽ ra chuỗi rỗng. Mọi lệnh dùng biến này
+REM phải đặt SAU khi khối kết thúc.
+if exist "venv\Scripts\python.exe" (
+    set PYTHON_CMD=venv\Scripts\python.exe
+    echo [OK] Dung Python trong venv
+) else (
+    echo [WARN] Khong thay venv\Scripts\python.exe — dung Python he thong, DE THIEU GOI!
+    set PYTHON_CMD=python
 )
 
-if exist "venv\Scripts\activate.bat" (
-    echo [OK] Activating virtual environment...
-    call venv\Scripts\activate.bat
+%PYTHON_CMD% --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Khong chay duoc Python: %PYTHON_CMD%
+    pause
+    exit /b 1
+)
+
+REM Chặn sớm: Django phải khởi tạo được, nếu không thì đừng bật server hỏng.
+%PYTHON_CMD% -c "import django,os;os.environ.setdefault('DJANGO_SETTINGS_MODULE','core.settings');django.setup();import core.urls" 2>nul
+if errorlevel 1 (
+    echo [ERROR] Django khong khoi tao duoc — server se tra 500 o moi endpoint.
+    echo         Chay: %PYTHON_CMD% -m pip install -r requirements.txt
+    pause
+    exit /b 1
 )
 
 REM ── Migrations ─────────────────────────────────────────────
