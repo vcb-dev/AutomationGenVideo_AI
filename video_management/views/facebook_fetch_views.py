@@ -232,16 +232,32 @@ def fetch_managed_pages(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def fetch_page_sync(request):
-    """GĐ2 (+ trigger thủ công): metadata + N bài mới nhất của 1 page, kèm metrics thật.
+    """GĐ2 (+ trigger thủ công): metadata + bài mới của 1 page, kèm metrics thật.
 
-    Body: { "page_id": "...", "page_access_token_encrypted": "...", "max_posts": 10 }
+    Body: { "page_id": "...", "page_access_token_encrypted": "...", "max_posts": 10,
+            "since": <unix giây, tuỳ chọn>, "until": <unix giây, tuỳ chọn> }
+
+    Không có `since`: N bài mới nhất (1 lượt gọi, như cũ). Có `since`: MỌI bài trong khoảng
+    since..until, lần theo phân trang (tối đa max_posts) — trước đây chỉ lấy 10 bài nên ngày đăng
+    > 10 bài hoặc cron lỡ vài hôm là mất bài vĩnh viễn (audit 29/09/2026: 1.296 video thiếu).
     """
     data = request.data or {}
     page_id = data.get('page_id')
     if not page_id:
         return Response({'error': 'page_id is required'}, status=400)
 
-    max_posts = int(data.get('max_posts') or 10)
+    try:
+        max_posts = int(data.get('max_posts') or 10)
+        since = int(data['since']) if data.get('since') not in (None, '') else None
+        until = int(data['until']) if data.get('until') not in (None, '') else None
+    except (TypeError, ValueError):
+        return Response({'error': 'max_posts/since/until phải là số nguyên'}, status=400)
+    if not 1 <= max_posts <= 5000:
+        return Response({'error': 'max_posts phải trong khoảng 1..5000'}, status=400)
+    if until is not None and since is None:
+        return Response({'error': 'until chỉ hợp lệ khi có since'}, status=400)
+    if since is not None and until is not None and until <= since:
+        return Response({'error': 'until phải lớn hơn since'}, status=400)
     token = _decrypt_token(data.get('page_access_token_encrypted') or '')
 
     graph = FacebookGraphService()
@@ -256,11 +272,26 @@ def fetch_page_sync(request):
         status_code = 403 if ("chưa cấp quyền" in friendly or "hết hạn" in friendly) else 502
         return Response({'error': friendly}, status=status_code)
 
-    raw_posts = graph.get_page_posts(page_id, max_results=max_posts, access_token=token or None)
+    if since is not None:
+        try:
+            raw_posts = graph.get_page_posts_deep(
+                page_id=page_id, max_total=max_posts, page_size=50, cooldown=1.0,
+                access_token=token or None, since=since, until=until,
+            )
+        except Exception as e:
+            friendly = _format_facebook_error(e)
+            logger.warning(f"Lỗi sync theo khoảng thời gian cho page {page_id}: {friendly} (gốc: {e})")
+            status_code = 403 if ("chưa cấp quyền" in friendly or "hết hạn" in friendly) else 502
+            return Response({'error': friendly}, status=status_code)
+    else:
+        raw_posts = graph.get_page_posts(page_id, max_results=max_posts, access_token=token or None)
     video_posts = [p for p in raw_posts if p.get('is_video') is True]
     videos = _merge_batch_metrics(video_posts, graph) if video_posts else []
 
     return Response({
+        # Chạm trần max_posts ⇒ có thể còn bài cũ hơn trong khoảng since..until chưa lấy.
+        'truncated': since is not None and len(raw_posts) >= max_posts,
+        'posts_scanned': len(raw_posts),
         'page_metadata': {
             'page_id': str(meta.get('page_id') or page_id),
             'name': meta.get('name', ''),

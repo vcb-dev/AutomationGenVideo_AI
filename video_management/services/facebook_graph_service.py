@@ -13,11 +13,32 @@ import logging
 import re
 import requests
 from typing import Dict, Any, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from django.conf import settings
 
 from .facebook_token_store import get_token
 
 logger = logging.getLogger(__name__)
+
+_MIN_BACKFILL_PAGE_SIZE = 5
+
+
+def _is_reduce_data_error(response) -> bool:
+    """Graph API từ chối vì một trang trả quá nhiều dữ liệu (code 1 là mã chung, nên so chữ)."""
+    text = getattr(response, 'text', '') or ''
+    return 'reduce the amount of data' in text.lower()
+
+
+def _with_limit(url: str, params: dict, limit: int) -> tuple:
+    """Đổi `limit` của request kế tiếp. Trang đầu mang limit trong `params`; các trang sau đi
+    theo paging.next nên limit nằm sẵn trong query string của URL."""
+    if params:
+        return url, {**params, 'limit': limit}
+    parts = urlsplit(url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != 'limit']
+    query.append(('limit', str(limit)))
+    return urlunsplit(parts._replace(query=urlencode(query))), params
+
 
 # Dừng ở & hoặc khoảng trắng hoặc nháy — token nằm cuối chuỗi cũng phải che được.
 _TOKEN_RE = re.compile(r'(access_token=)[^&\s"\'\\]+')
@@ -308,12 +329,18 @@ class FacebookGraphService:
         page_size: int = 50,
         access_token: Optional[str] = None,
         cooldown: float = 1.5,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
     ) -> list:
         """Cào sâu lịch sử bài viết bằng cách lần theo paging.next.
 
         Dùng cho Giai đoạn 1 (Initial Backfill). Tích hợp Dual Cooldown:
         - Nghỉ `cooldown` giây giữa mỗi trang phân trang
         - Tự dừng khi hết data hoặc đạt max_total
+
+        `since`/`until` (unix giây): chỉ lấy bài trong khoảng đó — dùng cho delta sync và nút
+        "Cập nhật" theo khoảng ngày. Có `since` thì lỗi ở BẤT KỲ trang nào cũng ném ra (không trả
+        về phần đã lấy): trả thiếu mà vẫn "thành công" thì BE dời mốc sync, phần sót mất luôn.
         """
         import time
 
@@ -336,42 +363,61 @@ class FacebookGraphService:
             'limit': min(page_size, 100),
             'access_token': active_token,
         }
+        if since is not None:
+            params['since'] = int(since)
+        if until is not None:
+            params['until'] = int(until)
+        strict = since is not None
 
         all_posts = []
         page_num = 0
+        limit = params['limit']
 
         while url and len(all_posts) < max_total:
-            page_num += 1
             try:
                 response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
             except requests.exceptions.HTTPError as e:
-                logger.error(f"❌ Backfill trang {page_num} lỗi: {e.response.text[:200]}")
-                if page_num == 1:
+                # Trang 50-100 bài kèm media{source} có thể vượt ngưỡng dữ liệu của Graph API
+                # ("Please reduce the amount of data") → hạ limit rồi hỏi lại đúng trang đó.
+                if _is_reduce_data_error(e.response) and limit > _MIN_BACKFILL_PAGE_SIZE:
+                    limit = max(_MIN_BACKFILL_PAGE_SIZE, limit // 2)
+                    logger.warning(f"⚠️ Backfill trang {page_num + 1}: Facebook đòi giảm dữ liệu, hạ limit còn {limit}")
+                    url, params = _with_limit(url, params, limit)
+                    continue
+                logger.error(f"❌ Backfill trang {page_num + 1} lỗi: {e.response.text[:200]}")
+                if page_num == 0 or strict:
                     raise
                 break
             except Exception as e:
-                logger.error(f"❌ Backfill trang {page_num} exception: {e}")
-                if page_num == 1:
+                logger.error(f"❌ Backfill trang {page_num + 1} exception: {e}")
+                if page_num == 0 or strict:
                     raise
                 break
 
+            page_num += 1
             posts = data.get('data', [])
             if not posts:
                 logger.info(f"📭 Backfill: hết bài ở trang {page_num}")
                 break
 
+            reached_since = False
             for post in posts:
                 normalized = self._normalize_post(post)
-                if normalized:
-                    all_posts.append(normalized)
+                if not normalized:
+                    continue
+                # Graph đã lọc theo since, chặn thêm phòng khi paging trả lố sang bài cũ hơn.
+                if since is not None and normalized.get('timestamp') and normalized['timestamp'] < since:
+                    reached_since = True
+                    continue
+                all_posts.append(normalized)
 
             logger.info(f"📄 Backfill trang {page_num}: +{len(posts)} bài (tổng: {len(all_posts)})")
 
             # Lấy URL trang tiếp theo
             next_url = data.get('paging', {}).get('next')
-            if not next_url or len(all_posts) >= max_total:
+            if not next_url or reached_since or len(all_posts) >= max_total:
                 break
 
             url = next_url
