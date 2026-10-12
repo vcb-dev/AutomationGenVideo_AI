@@ -12,7 +12,6 @@ from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
 from django.http import FileResponse, Http404, HttpResponse, StreamingHttpResponse
 from video_management.models import Voice
-from video_management.services.minimax_voice_clone_service import get_voice_clone_service
 from video_management.services.voice_backend import get_clone_service, get_tts_service, get_voice_provider
 from video_management.views.mix_progress_store import progress_set, progress_get, progress_update
 
@@ -51,22 +50,16 @@ def _validate_clone_input(voice_name, gender):
 
 
 def _find_duplicate_cloned_voice(voice_name):
-    """Tìm giọng clone trùng tên (không phân biệt hoa thường) — mỗi lần clone MiniMax
-    đều tính phí và tạo voice_id mới, nên trùng tên gần như luôn là thao tác nhầm."""
+    """Tìm giọng clone trùng tên (không phân biệt hoa thường)."""
     return Voice.objects.filter(name__iexact=(voice_name or '').strip(), is_cloned=True).first()
 
 
 def _duplicate_voice_error(existing):
     created = existing.created_at.strftime('%d/%m/%Y') if getattr(existing, 'created_at', None) else ''
     suffix = f' (clone ngày {created})' if created else ''
-    fee_note = (
-        'Mỗi lần clone đều tính phí MiniMax. '
-        if get_voice_provider() != 'local'
-        else ''
-    )
     return (
         f'Đã có giọng clone tên "{existing.name}"{suffix}. '
-        f'{fee_note}Nếu vẫn muốn tạo lại, hãy đặt tên khác hoặc xoá giọng cũ trước.'
+        'Nếu vẫn muốn tạo lại, hãy đặt tên khác hoặc xoá giọng cũ trước.'
     )
 
 
@@ -196,16 +189,13 @@ def delete_voice_api(request, voice_id):
             )
 
         voice_name = voice.name
-        provider = voice.provider or 'minimax'
+        provider = voice.provider or 'local'
         minimax_deleted = None
 
-        if provider == 'minimax':
-            clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
-            result = clone_service.delete_voice(voice_id)
-            minimax_deleted = bool(result.get('deleted'))
-        elif provider == 'local':
+        if provider == 'local':
             from video_management.services.local_voice_service import get_local_voice_service
             get_local_voice_service().delete_voice(voice_id)
+        # Giọng MiniMax cũ: chỉ xoá bản ghi DB, không gọi API trả phí.
 
         deleted_count, _ = Voice.objects.filter(voice_id=voice_id).delete()
         logger.info(f"🗑️ Đã xoá giọng clone: name={voice_name}, voice_id={voice_id}, minimax_deleted={minimax_deleted}")
@@ -215,8 +205,7 @@ def delete_voice_api(request, voice_id):
             'message': f'Đã xoá giọng "{voice_name}"',
             'voice_id': voice_id,
             'name': voice_name,
-            # False = giọng đã không còn trên MiniMax từ trước (hết hạn/xoá tay),
-            # None = provider khác minimax nên không gọi API xoá nào cả
+            # None = không gọi MiniMax; giọng GPU xoá file local, giọng MiniMax cũ chỉ xoá DB
             'minimax_deleted': minimax_deleted,
             'db_deleted': deleted_count,
         }, status=status.HTTP_200_OK)
@@ -232,11 +221,7 @@ def clone_voice_start_api(request):
     """
     Bắt đầu clone giọng ở chế độ NỀN và trả về job_id ngay lập tức.
 
-    Lý do: mạng tới api.minimax.io có thể chập chờn 1-3 phút (2 IP load-balancer
-    của họ thỉnh thoảng không phản hồi, xác nhận qua test thủ công 2026-07-07),
-    khiến bản clone đồng bộ (một request chờ tới khi xong) dễ bị BE/FE tự timeout
-    giữa chừng dù MiniMax cuối cùng vẫn xử lý xong. Client poll qua
-    GET /api/voice/clone/status/<job_id>/ thay vì chờ 1 request treo.
+    Client poll qua GET /api/voice/clone/status/<job_id>/ thay vì chờ 1 request treo.
 
     Đây là đường clone DUY NHẤT. Bản đồng bộ POST /api/voice/clone/ đã bị gỡ
     (2026-08-07): không client nào gọi nó nữa, mà nó giữ bản sao riêng của luật
@@ -277,9 +262,6 @@ def clone_voice_start_api(request):
             for chunk in audio_file.chunks():
                 temp_f.write(chunk)
 
-        # Bắt key ra biến TRƯỚC khi spawn thread — request object không dùng được an toàn trong thread nền
-        minimax_key = request.headers.get('X-Minimax-Key')
-
         job_id = uuid.uuid4().hex
         job_key = f"{_CLONE_JOB_PREFIX}{job_id}"
         progress_set(job_key, {
@@ -289,15 +271,9 @@ def clone_voice_start_api(request):
         })
 
         def _run_clone_job():
-            provider = get_voice_provider()
-            running_msg = (
-                'Đang clone giọng trên GPU...'
-                if provider == 'local'
-                else 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'
-            )
-            progress_update(job_key, {'status': 'running', 'message': running_msg})
+            progress_update(job_key, {'status': 'running', 'message': 'Đang clone giọng trên GPU...'})
             try:
-                clone_service = get_clone_service(api_key=minimax_key)
+                clone_service = get_clone_service()
                 clone_result = clone_service.clone_voice_from_file(
                     audio_path=temp_path,
                     voice_name=voice_name,
@@ -424,7 +400,7 @@ def voice_tts_api(request):
         filename = f"tts_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(audio_dir, filename)
 
-        tts_service = get_tts_service(api_key=request.headers.get('X-Minimax-Key'))
+        tts_service = get_tts_service()
         result = tts_service.generate_audio(
             text=text,
             voice_id=voice_id,

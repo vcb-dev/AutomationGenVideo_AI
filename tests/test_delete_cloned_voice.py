@@ -94,7 +94,7 @@ class DeleteVoiceService(SimpleTestCase):
 
 
 class DeleteVoiceApi(SimpleTestCase):
-    """Tầng view: chốt chặn + thứ tự MiniMax-trước-DB."""
+    """Tầng view: không gọi MiniMax. Giọng GPU xoá file local; giọng cũ chỉ xoá DB."""
 
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -112,80 +112,44 @@ class DeleteVoiceApi(SimpleTestCase):
 
     def test_refuses_to_delete_system_voice(self):
         """Giọng hệ thống (vd HuyK mặc định) dùng chung cho nhiều luồng khác."""
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service') as lay_svc:
+        with patch.object(voice_views, 'Voice') as Voice:
             Voice.objects.filter.return_value.first.return_value = _voice(name='HuyK', is_system=True)
             res = self._call('huyk')
 
         self.assertEqual(res.status_code, 400)
-        lay_svc.assert_not_called()
         Voice.objects.filter.return_value.delete.assert_not_called()
 
-    def test_success_calls_minimax_then_deletes_db(self):
-        order = []
-        svc = MagicMock()
-        svc.delete_voice.side_effect = lambda vid: order.append('minimax') or {'deleted': True}
-
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service', return_value=svc):
-            Voice.objects.filter.return_value.first.return_value = _voice()
-            Voice.objects.filter.return_value.delete.side_effect = lambda: order.append('db') or (1, {})
-            res = self._call()
-
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(res.data['success'])
-        self.assertTrue(res.data['minimax_deleted'])
-        self.assertEqual(order, ['minimax', 'db'], 'Phải xoá trên MiniMax TRƯỚC khi xoá bản ghi DB.')
-
-    def test_minimax_error_does_NOT_delete_db_row(self):
-        """Chốt chính của cả file: MiniMax lỗi → DB còn nguyên → người dùng bấm xoá lại được."""
-        svc = MagicMock()
-        svc.delete_voice.side_effect = Exception('Minimax API error (1004): token not match group')
-
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service', return_value=svc):
-            Voice.objects.filter.return_value.first.return_value = _voice()
-            res = self._call()
-
-        self.assertEqual(res.status_code, 500)
-        Voice.objects.filter.return_value.delete.assert_not_called()
-
-    def test_voice_gone_on_minimax_still_deletes_row(self):
-        svc = MagicMock()
-        svc.delete_voice.return_value = {'deleted': False, 'reason': 'voice not found'}
-
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service', return_value=svc):
-            Voice.objects.filter.return_value.first.return_value = _voice()
+    def test_old_minimax_voice_deletes_db_only(self):
+        with patch.object(voice_views, 'Voice') as Voice:
+            Voice.objects.filter.return_value.first.return_value = _voice(provider='minimax')
             Voice.objects.filter.return_value.delete.return_value = (1, {})
             res = self._call()
 
         self.assertEqual(res.status_code, 200)
-        self.assertFalse(res.data['minimax_deleted'])
+        self.assertTrue(res.data['success'])
+        self.assertIsNone(res.data['minimax_deleted'])
+        Voice.objects.filter.return_value.delete.assert_called_once()
+
+    def test_local_voice_deletes_files_then_db(self):
+        local_svc = MagicMock()
+        local_svc.delete_voice.return_value = {'deleted': True}
+
+        with patch.object(voice_views, 'Voice') as Voice, \
+                patch('video_management.services.local_voice_service.get_local_voice_service', return_value=local_svc):
+            Voice.objects.filter.return_value.first.return_value = _voice(provider='local')
+            Voice.objects.filter.return_value.delete.return_value = (1, {})
+            res = self._call()
+
+        self.assertEqual(res.status_code, 200)
+        local_svc.delete_voice.assert_called_once()
         Voice.objects.filter.return_value.delete.assert_called_once()
 
     def test_other_provider_skips_minimax_api(self):
-        """Giọng clone của HeyGen: delete_voice là API riêng của MiniMax, gọi sang là lỗi."""
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service') as lay_svc:
+        with patch.object(voice_views, 'Voice') as Voice:
             Voice.objects.filter.return_value.first.return_value = _voice(provider='heygen')
             Voice.objects.filter.return_value.delete.return_value = (1, {})
             res = self._call()
 
         self.assertEqual(res.status_code, 200)
         self.assertIsNone(res.data['minimax_deleted'])
-        lay_svc.assert_not_called()
-
-    def test_forwards_minimax_key_from_header(self):
-        """Key MiniMax nằm ở .env của BE, gửi kèm từng request qua X-Minimax-Key."""
-        svc = MagicMock()
-        svc.delete_voice.return_value = {'deleted': True}
-
-        with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service', return_value=svc) as lay_svc:
-            Voice.objects.filter.return_value.first.return_value = _voice()
-            Voice.objects.filter.return_value.delete.return_value = (1, {})
-            request = self.factory.delete('/api/voice/delete/v1/', HTTP_X_MINIMAX_KEY='sk-api-abc')
-            voice_views.delete_voice_api(request, 'v1')
-
-        lay_svc.assert_called_once_with(api_key='sk-api-abc')
+        Voice.objects.filter.return_value.delete.assert_called_once()

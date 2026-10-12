@@ -29,8 +29,10 @@ class VoiceProviderSwitch(SimpleTestCase):
         self.assertEqual(get_voice_provider(), 'local')
 
     @override_settings(VOICE_PROVIDER='minimax')
-    def test_minimax_flag(self):
-        self.assertEqual(get_voice_provider(), 'minimax')
+    def test_minimax_is_rejected_no_fallback(self):
+        with self.assertRaises(RuntimeError) as raised:
+            get_voice_provider()
+        self.assertIn('MiniMax', str(raised.exception))
 
     @override_settings(VOICE_PROVIDER='local')
     def test_clone_and_tts_use_same_local_service(self):
@@ -42,18 +44,11 @@ class VoiceProviderSwitch(SimpleTestCase):
             local.assert_called()
 
     @override_settings(VOICE_PROVIDER='minimax')
-    def test_minimax_still_uses_api_key(self):
-        with patch(
-            'video_management.services.minimax_voice_clone_service.get_voice_clone_service'
-        ) as clone, patch(
-            'video_management.services.minimax_tts_service.get_minimax_service'
-        ) as tts:
-            clone.return_value = 'clone'
-            tts.return_value = 'tts'
-            self.assertEqual(get_clone_service(api_key='sk-api-abc'), 'clone')
-            clone.assert_called_once_with(api_key='sk-api-abc')
-            self.assertEqual(get_tts_service(api_key='sk-api-abc'), 'tts')
-            tts.assert_called_once_with(api_key='sk-api-abc')
+    def test_minimax_clone_tts_do_not_call_api(self):
+        with self.assertRaises(RuntimeError):
+            get_clone_service(api_key='sk-api-abc')
+        with self.assertRaises(RuntimeError):
+            get_tts_service(api_key='sk-api-abc')
 
 
 class LocalDeleteVoice(SimpleTestCase):
@@ -66,7 +61,6 @@ class LocalDeleteVoice(SimpleTestCase):
         local_svc.delete_voice.return_value = {'deleted': True}
 
         with patch.object(voice_views, 'Voice') as Voice, \
-                patch.object(voice_views, 'get_voice_clone_service') as minimax, \
                 patch('video_management.services.local_voice_service.get_local_voice_service', return_value=local_svc):
             Voice.objects.filter.return_value.first.return_value = _voice()
             Voice.objects.filter.return_value.delete.return_value = (1, {})
@@ -75,7 +69,6 @@ class LocalDeleteVoice(SimpleTestCase):
 
         self.assertEqual(res.status_code, 200)
         self.assertIsNone(res.data['minimax_deleted'])
-        minimax.assert_not_called()
         local_svc.delete_voice.assert_called_once_with('local_abc')
 
 

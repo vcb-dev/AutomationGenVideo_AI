@@ -411,17 +411,14 @@ GEMINI_API_KEY = env('GEMINI_API_KEY', default='')
 # ==========================================
 # MINIMAX API CONFIGURATION (TTS + clone giọng)
 # ==========================================
-# Key thường do BE gửi kèm từng request qua header X-Minimax-Key; các biến dưới đây
-# chỉ là fallback cho management command chạy tay (vd clone_koc_voice).
+# MiniMax TTS đã tắt. Key/env dưới đây không dùng cho voice; giữ để không vỡ config cũ.
 MINIMAX_API_KEY = env('MINIMAX_API_KEY', default='')
-# Key kiểu mới "sk-api-..." tự gắn group nên để trống; chỉ key JWT cũ (eyJ...) mới cần.
 MINIMAX_GROUP_ID = env('MINIMAX_GROUP_ID', default='')
 MINIMAX_API_BASE_URL = env('MINIMAX_API_BASE_URL', default='https://api.minimax.io/v1')
-# speech-2.8-hd: model chất lượng HD phòng thu cao cấp ($100/1M ký tự ~2.600đ/1.000 ký tự).
 MINIMAX_TTS_MODEL = env('MINIMAX_TTS_MODEL', default='speech-2.8-hd')
 
-# local = F5-TTS trên GPU (RunPod). minimax = API trả phí (Railway mặc định).
-VOICE_PROVIDER = env('VOICE_PROVIDER', default='minimax')
+# Chỉ GPU local. Giá trị khác 'local' sẽ lỗi lúc clone/TTS — không fallback MiniMax.
+VOICE_PROVIDER = env('VOICE_PROVIDER', default='local')
 LOCAL_VOICE_DIR = env('LOCAL_VOICE_DIR', default='')
 LOCAL_MODEL_DIR = env('LOCAL_MODEL_DIR', default='')
 LOCAL_WHISPER_MODEL = env('LOCAL_WHISPER_MODEL', default='small')
