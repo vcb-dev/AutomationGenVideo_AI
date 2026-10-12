@@ -1,0 +1,50 @@
+# Image GPU cho RunPod: clone/TTS local (F5-TTS), không gọi MiniMax.
+# Volume gắn /workspace để giữ model + giọng mẫu khi stop/đổi GPU.
+#
+# RunPod UI: Container Image = image này, HTTP port 8000, VOICE_PROVIDER=local.
+# BE: AI_SERVICE_URL_VOICE = https://<pod>-8000.proxy.runpod.net
+
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8000 \
+    VOICE_PROVIDER=local \
+    LOCAL_MODEL_DIR=/workspace/models \
+    LOCAL_VOICE_DIR=/workspace/voices \
+    HF_HOME=/workspace/models/hf \
+    HUGGINGFACE_HUB_CACHE=/workspace/models/hf \
+    ALLOWED_HOSTS=*
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements_cloud.txt requirements_gpu.txt ./
+RUN pip install --no-cache-dir -r requirements_cloud.txt \
+    && pip install --no-cache-dir -r requirements_gpu.txt \
+    && rm -rf /root/.cache
+
+COPY . .
+
+RUN mkdir -p /workspace/models /workspace/voices \
+    && python manage.py collectstatic --noinput || true
+
+EXPOSE 8000
+
+# 1 worker: mỗi process load 1 bản F5-TTS (~VRAM). Nhiều worker dễ OOM.
+CMD gunicorn core.wsgi:application \
+    --bind 0.0.0.0:${PORT} \
+    --workers 1 \
+    --threads 4 \
+    --timeout 3600 \
+    --log-level info
