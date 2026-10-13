@@ -1,9 +1,0 @@
-# Deps GPU cho TTS/clone local trên RunPod. Cài SAU requirements_cloud.txt.
-# Image pytorch (RunPod template / Dockerfile.runpod) đã có torch — không pin lại.
-faster-whisper>=1.1.0
-f5-tts>=1.1.0
-huggingface_hub>=0.26.0
-soundfile>=0.12.1
-einops>=0.8.0
-vocos>=0.1.0
-tomli>=2.0.0
