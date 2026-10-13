@@ -13,7 +13,7 @@ from django.core.files.base import ContentFile
 from django.http import FileResponse, Http404, HttpResponse, StreamingHttpResponse
 from video_management.models import Voice
 from video_management.services.minimax_voice_clone_service import get_voice_clone_service
-from video_management.services.minimax_tts_service import get_minimax_service
+from video_management.services.voice_backend import get_clone_service, get_tts_service, get_voice_provider
 from video_management.views.mix_progress_store import progress_set, progress_get, progress_update
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,10 @@ _VALID_GENDERS = ('male', 'female')
 def _validate_clone_input(voice_name, gender):
     """Trả câu lỗi nếu đầu vào không thể ghi được vào bảng Voice, None nếu hợp lệ.
 
-    PHẢI gọi trước clone_voice_from_file(). Thứ tự trong job nền là gọi MiniMax
-    xong mới ghi DB, nên dữ liệu lọt qua đây rồi bị DB từ chối = người dùng đã bị
-    tính phí, giọng nằm lại bên MiniMax mà không có bản ghi nào để xoá nó đi.
+    PHẢI gọi trước clone_voice_from_file(). Với MiniMax: gọi API xong mới ghi DB,
+    nên dữ liệu lọt qua đây rồi bị DB từ chối = người dùng đã bị tính phí, giọng
+    nằm lại bên MiniMax mà không có bản ghi nào để xoá nó đi. Local GPU không
+    tính phí API nhưng vẫn ghi DB sau khi lưu file mẫu — chặn sớm vẫn đúng.
     """
     if not voice_name:
         return 'voice_name is required'
@@ -58,9 +59,14 @@ def _find_duplicate_cloned_voice(voice_name):
 def _duplicate_voice_error(existing):
     created = existing.created_at.strftime('%d/%m/%Y') if getattr(existing, 'created_at', None) else ''
     suffix = f' (clone ngày {created})' if created else ''
+    fee_note = (
+        'Mỗi lần clone đều tính phí MiniMax. '
+        if get_voice_provider() != 'local'
+        else ''
+    )
     return (
         f'Đã có giọng clone tên "{existing.name}"{suffix}. '
-        f'Mỗi lần clone đều tính phí MiniMax — nếu vẫn muốn tạo lại, hãy đặt tên khác hoặc xoá giọng cũ trước.'
+        f'{fee_note}Nếu vẫn muốn tạo lại, hãy đặt tên khác hoặc xoá giọng cũ trước.'
     )
 
 
@@ -197,6 +203,9 @@ def delete_voice_api(request, voice_id):
             clone_service = get_voice_clone_service(api_key=request.headers.get('X-Minimax-Key'))
             result = clone_service.delete_voice(voice_id)
             minimax_deleted = bool(result.get('deleted'))
+        elif provider == 'local':
+            from video_management.services.local_voice_service import get_local_voice_service
+            get_local_voice_service().delete_voice(voice_id)
 
         deleted_count, _ = Voice.objects.filter(voice_id=voice_id).delete()
         logger.info(f"🗑️ Đã xoá giọng clone: name={voice_name}, voice_id={voice_id}, minimax_deleted={minimax_deleted}")
@@ -255,7 +264,11 @@ def clone_voice_start_api(request):
         if existing:
             return Response({'error': _duplicate_voice_error(existing)}, status=status.HTTP_400_BAD_REQUEST)
 
-        logger.info(f"🎤 Minimax Voice Cloning (bg): name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes, prompt_text_len={len(prompt_text) if prompt_text else 0}")
+        logger.info(
+            f"🎤 Voice Cloning (bg, provider={get_voice_provider()}): "
+            f"name={voice_name}, file={audio_file.name}, size={audio_file.size} bytes, "
+            f"prompt_text_len={len(prompt_text) if prompt_text else 0}"
+        )
 
         temp_dir = tempfile.gettempdir()
         _, ext = os.path.splitext(audio_file.name)
@@ -276,9 +289,15 @@ def clone_voice_start_api(request):
         })
 
         def _run_clone_job():
-            progress_update(job_key, {'status': 'running', 'message': 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'})
+            provider = get_voice_provider()
+            running_msg = (
+                'Đang clone giọng trên GPU...'
+                if provider == 'local'
+                else 'Đang upload + clone giọng (có thể mất vài phút nếu mạng chập chờn)...'
+            )
+            progress_update(job_key, {'status': 'running', 'message': running_msg})
             try:
-                clone_service = get_voice_clone_service(api_key=minimax_key)
+                clone_service = get_clone_service(api_key=minimax_key)
                 clone_result = clone_service.clone_voice_from_file(
                     audio_path=temp_path,
                     voice_name=voice_name,
@@ -293,7 +312,7 @@ def clone_voice_start_api(request):
                     voice_id=voice_id,
                     defaults={
                         'name': voice_name,
-                        'provider': 'minimax',
+                        'provider': provider,
                         'is_cloned': True,
                         'is_system': False,
                         'language': 'vi',
@@ -369,21 +388,34 @@ def voice_tts_api(request):
         if not voice_id:
             return Response({'error': 'voice_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        logger.info(f"🎤 Minimax TTS Request: voice={voice_id}, model={model}, emotion={emotion}, text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}")
+        provider = get_voice_provider()
+        logger.info(
+            f"🎤 TTS Request ({provider}): voice={voice_id}, model={model}, emotion={emotion}, "
+            f"text_len={len(text)}, speed={speed}, pitch={pitch}, vol={volume}, language={language}"
+        )
 
-        # Check the voice belongs to Minimax before forwarding — a HeyGen/ElevenLabs
-        # voice_id would otherwise be sent straight to Minimax and fail with an opaque error.
         voice = Voice.objects.filter(voice_id=voice_id).first()
-        if voice and voice.provider and voice.provider != 'minimax':
+        if provider == 'local':
+            if voice and voice.provider and voice.provider not in ('local',):
+                return Response(
+                    {
+                        'error': (
+                            f"Giọng '{voice.name}' đang gắn provider '{voice.provider}'. "
+                            'Server GPU không dùng được giọng MiniMax — hãy clone lại trong Tiện ích.'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif voice and voice.provider and voice.provider != 'minimax':
             return Response(
                 {'error': f"Voice '{voice_id}' belongs to provider '{voice.provider}', not Minimax"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Adjust volume from 0-100 scale to Minimax 0.1-10.0 scale
+        # Adjust volume from 0-100 scale to Minimax 0.1-10.0 scale (local ignores this)
         vol_minimax = max(0.1, min(10.0, volume / 100.0 * 1.0))
 
-        # Prepare output audio file path in Django's media storage
+        # File vẫn ghi vào minimax_tts/ để BE/FE stream qua /api/voice/tts/file/<filename>
         media_root = default_storage.location
         audio_dir = os.path.join(media_root, 'minimax_tts')
         if not os.path.exists(audio_dir):
@@ -392,8 +424,7 @@ def voice_tts_api(request):
         filename = f"tts_{uuid.uuid4().hex}.mp3"
         output_path = os.path.join(audio_dir, filename)
 
-        # Key MiniMax do BE gửi kèm (X-Minimax-Key) — key lưu ở .env BE, không còn ở .env AI
-        tts_service = get_minimax_service(api_key=request.headers.get('X-Minimax-Key'))
+        tts_service = get_tts_service(api_key=request.headers.get('X-Minimax-Key'))
         result = tts_service.generate_audio(
             text=text,
             voice_id=voice_id,
@@ -458,5 +489,5 @@ def voice_tts_api(request):
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
-        logger.error(f"Error in Minimax TTS API: {e}", exc_info=True)
+        logger.error(f"Error in TTS API: {e}", exc_info=True)
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
