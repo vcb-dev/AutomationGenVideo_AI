@@ -5,8 +5,6 @@ scraper_fanpage_metrics_history. AI chỉ gọi RapidAPI + parse dữ liệu, tr
 thô cho BE tự lưu.
 """
 
-import re
-
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -14,16 +12,12 @@ from rest_framework.response import Response
 
 from ..services import apify_facebook as apify_svc
 from ..services import rapidapi_facebook as rapidapi_svc
-
-# Handle không phải tên page — không dùng làm định danh fallback được.
-_NON_PAGE_HANDLES = {'profile.php', 'watch', 'reel', 'reels', 'groups', 'share'}
-
+from ..services.facebook_page_url import extract_page_handle
 
 def _extract_page_handle(page_url: str) -> str:
-    """Trích handle từ URL fanpage. Trả '' nếu URL không chứa tên page."""
-    m = re.search(r'facebook\.com/([^/?&#]+)', page_url or '')
-    handle = m.group(1) if m else ''
-    return '' if handle in _NON_PAGE_HANDLES else handle
+    """Trích handle từ URL fanpage. Trả '' nếu URL không chứa tên page — handle rỗng thì
+    không dựng profile tạm, tránh mọi page /p/... cùng nhận id tạm 'tmp_p'."""
+    return extract_page_handle(page_url)
 
 
 def _fallback_from_cache(handle: str) -> dict:

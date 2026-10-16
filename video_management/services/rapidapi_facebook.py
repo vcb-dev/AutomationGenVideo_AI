@@ -13,6 +13,8 @@ from datetime import datetime, timezone as tz_dt
 from typing import Optional
 from django.conf import settings
 
+from .facebook_page_url import extract_page_handle
+
 logger = logging.getLogger(__name__)
 
 
@@ -303,8 +305,7 @@ def fetch_reels_only(
 # ── Helper: parse ─────────────────────────────────────────────────────────────
 
 def _extract_handle(url: str) -> str:
-    m = re.search(r'facebook\.com/([^/?&#]+)', url or '')
-    return m.group(1) if m else ''
+    return extract_page_handle(url)
 
 
 def _extract_hashtags(text: str) -> list:

@@ -14,11 +14,9 @@ from datetime import datetime, timezone as tz_dt
 from typing import Optional, List, Dict, Any
 from django.conf import settings
 
+from .facebook_page_url import extract_page_handle
+
 logger = logging.getLogger(__name__)
-
-# Handle không phải tên page
-_NON_PAGE_HANDLES = {'profile.php', 'watch', 'reel', 'reels', 'groups', 'share'}
-
 
 def _get_apify_token() -> str:
     """Lấy API token của Apify từ settings hoặc env."""
@@ -42,9 +40,7 @@ def clean_facebook_url(url: str) -> str:
 
 def _extract_handle(url: str) -> str:
     """Trích handle từ URL fanpage. Trả '' nếu URL không chứa tên page."""
-    m = re.search(r'facebook\.com/([^/?&#]+)', url or '')
-    handle = m.group(1) if m else ''
-    return '' if handle in _NON_PAGE_HANDLES else handle
+    return extract_page_handle(url)
 
 
 def _to_int(value: Any, default: int = 0) -> int:
