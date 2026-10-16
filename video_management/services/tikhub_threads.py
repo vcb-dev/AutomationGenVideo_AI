@@ -316,6 +316,18 @@ def is_vietnamese_text(text: str) -> bool:
     return len(words & VI_COMMON_WORDS) >= 2
 
 
+def extract_topic_tag(post: dict) -> str:
+    """Tag chủ đề của bài (dòng "người đăng > trang sức" trên Threads), '' nếu bài không gắn tag.
+
+    Chỉ dữ liệu crawl trang tìm kiếm Threads mới có trường này; TikHub trả về không kèm tag.
+    """
+    info = post.get('text_post_app_info') if isinstance(post, dict) else None
+    header = info.get('tag_header') if isinstance(info, dict) else None
+    if not isinstance(header, dict):
+        return ''
+    return str(header.get('display_name') or '').strip()
+
+
 def parse_threads_posts(items: list, default_username: str = '', query: str = '') -> list:
     """Parse raw TikHub thread items thành danh sách post chuẩn hóa cho BE."""
     parsed = []
@@ -406,6 +418,7 @@ def parse_threads_posts(items: list, default_username: str = '', query: str = ''
         is_vn = is_vietnamese_text(text)
 
         parsed.append({
+            'topic_tag': extract_topic_tag(item),
             'post_id': post_id,
             'shortcode': code,
             'url': post_url,
