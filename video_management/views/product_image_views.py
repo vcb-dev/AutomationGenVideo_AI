@@ -2,21 +2,16 @@
 Tạo ảnh sản phẩm mới — 3 endpoint cho 3 chế độ, xem mô tả đầy đủ ở
 video_management/services/product_image_service.py.
 
-- POST /api/ai/product-image/cutout/           — rembg tách nền + model tự huấn luyện nhận diện đúng SP (0đ,
-                                                 không gọi dịch vụ tính phí nào)
+- POST /api/ai/product-image/cutout/           — rembg tách nền + model nhận diện đúng SP (0đ)
 - POST /api/ai/product-image/held-product/     — Gemini thay SP trên tay chị Nhạm (tính phí)
 - POST /api/ai/product-image/held-swap/        — đổi SP trên tay chị Nhạm bằng model tự huấn luyện + SAM + LaMa
-                                                 (0đ, xem services/held_swap.py)
+                                                 (0đ)
 - POST /api/ai/product-image/held-auto/        — chỉ ảnh SP mới: tự chọn tư thế chị Nhạm hợp nhất trong thư viện tư thế
-                                                 dựng sẵn rồi ghép (0đ, xem services/pose_library.py)
+                                                 dựng sẵn rồi ghép (0đ)
 - POST /api/ai/product-image/scene-placement/  — Gemini đặt SP vào ảnh cảnh (tính phí)
 
-Ảnh gửi dạng file multipart (`image`, `person_image`, `product_image`, `scene_image` kèm trường `*mime_type`);
-vẫn nhận kiểu cũ `<tên>_base64` trong JSON — xem _input_image.
-
-Cả bốn bắt buộc JWT (IsAuthenticated): BE ký token theo đúng người bấm rồi gọi server-to-server.
-Khác ảnh thẻ đang để AllowAny — URL AI service trên Railway gọi thẳng được từ ngoài, để trống
-thì ai biết địa chỉ cũng đốt được tiền Gemini qua các endpoint Gemini.
+Ảnh gửi dạng file multipart (hoặc `<tên>_base64` trong JSON — kiểu cũ). Mọi endpoint bắt buộc JWT (BE ký theo
+người bấm) — URL AI gọi thẳng được từ ngoài.
 """
 import base64
 import io
@@ -41,16 +36,12 @@ from video_management.services import product_upscale as up
 
 logger = logging.getLogger(__name__)
 
-# BE chờ lượt Gemini tối đa 90s (product-image.service.ts#HELD_PRODUCT_TIMEOUT_MS, dùng cho cả hai
-# chế độ Gemini). Ngân sách bên này thấp hơn hẳn để AI service luôn kịp trả lỗi rõ ràng trước khi
-# BE tự huỷ — cùng mốc với id_photo_views.MERGE_OUTFIT_TIMEOUT_SECONDS.
+# Thấp hơn mốc chờ 90s của BE để AI kịp trả lỗi rõ ràng.
 HELD_PRODUCT_TIMEOUT_SECONDS = 75
 
 
 def _input_image(request, field, mime_field, label):
-    """Một ảnh BE gửi: file multipart `field` (cách BE gửi từ 13/10), hoặc base64 `<field>_base64` trong JSON
-    (cách cũ — giữ để deploy BE/AI lệch nhau không vỡ). Base64 trong JSON bị Django chặn khi body quá
-    DATA_UPLOAD_MAX_MEMORY_SIZE (mặc định 2,5MB) — ảnh máy ảnh của media đều quá; phần file multipart không tính.
+    """Một ảnh BE gửi: file multipart `field`, hoặc `<field>_base64` trong JSON (kiểu cũ, ảnh nhỏ hơn 2,5MB).
     """
     try:
         upload = request.FILES.get(field)
@@ -83,9 +74,7 @@ def cutout(request):
                                | {"status": "skipped", "source": "model", "reason": "...", "model_reasons": [...]},
                     "body_box": [x0, y0, x1, y1] | null, "source_size": [w, h], "upscaled": 1 | 4,
                     "quality_warnings": ["Ảnh gốc cắt mất một phần sản phẩm ở mép phải — ..."] }
-    rembg tách nền, rồi model tự huấn luyện (PRODUCT_IMAGE_DETECTOR_MODEL_PATH) nhận diện đúng SP để bỏ giá
-    trưng bày/đạo cụ — toàn bộ chạy trên AI service, 0đ. Model chưa chắc thì lọc thận trọng
-    (product_detector.decide_cutout); "skipped" = còn phần dính liền túi model nghi là kệ, FE cảnh báo.
+    "skipped" = còn phần dính liền túi model nghi là kệ, FE cảnh báo.
     """
     try:
         image_bytes, _ = _input_image(request, 'image', 'mime_type', 'ảnh sản phẩm')
@@ -191,8 +180,7 @@ def held_swap(request):
     }
     Response 200: { "success": true, "image_base64": "<JPEG>", "mime_type": "image/jpeg", "usage": {0đ},
                     "info": {"hands": 2, "strap_kept": false, "scale": 1.02, "warnings": [...], ...} }
-    0đ: SP mới tách nền bằng đúng quy trình cutout (rembg + model nhận diện SP), rồi held_swap đổi SP trên tay chị
-    Nhạm bằng model người cầm SP + MobileSAM + LaMa — không gọi dịch vụ tính phí nào.
+    0đ: tách nền như cutout rồi held_swap đổi SP.
     """
     try:
         person_bytes, _ = _input_image(request, 'person_image', 'person_mime_type', 'ảnh chị Nhạm cầm sản phẩm')
@@ -250,13 +238,11 @@ def held_swap(request):
 def held_auto(request):
     """
     Body (multipart): product_image=<file>, product_mime_type=image/png, width_cm=24  (hoặc JSON kiểu cũ
-                      product_image_base64) — width_cm: bề ngang thật thân túi người dùng nhập; có thì túi đúng cỡ so
-                      với bàn tay chị Nhạm (held_swap.pixels_per_cm), không có thì theo cỡ SP cũ như trước
+                      product_image_base64) — width_cm: bề ngang thật thân túi
     Response 200: { "success": true, "usage": {0đ},
                     "candidates": [{"image_base64": "<JPEG>", "mime_type": "image/jpeg",
                                     "info": {"pose_id", "score", "hands", "warnings", "real_size", ...}}, ...] }
-    0đ: SP mới tách nền như tab Ghép background, chấm điểm mọi tư thế trong thư viện (POSE_LIBRARY_DIR_ENV) rồi ghép vào
-    POSE_CANDIDATES_ENV tư thế hợp nhất bằng held_swap.compose_product — không gọi dịch vụ tính phí nào.
+    0đ: tách nền rồi ghép vào các tư thế hợp nhất trong thư viện (pose_library.compose_best).
     """
     try:
         product_bytes, _ = _input_image(request, 'product_image', 'product_mime_type', 'ảnh sản phẩm mới')
@@ -368,8 +354,7 @@ def _generate_image(tag, images, prompt, model_name):
     try:
         response = model.generate_content(
             [*images, prompt],
-            # Xin cả TEXT lẫn IMAGE như ảnh thẻ: chỉ xin IMAGE thì vài phiên bản API báo lỗi;
-            # phần chữ đi kèm còn là manh mối khi model không trả ảnh.
+            # Xin cả TEXT lẫn IMAGE — chữ đi kèm là manh mối khi không có ảnh.
             generation_config={'response_modalities': ['TEXT', 'IMAGE']},
             request_options={'timeout': HELD_PRODUCT_TIMEOUT_SECONDS},
         )
@@ -421,8 +406,7 @@ def _generate_image(tag, images, prompt, model_name):
             f"{log} Gemini không trả ảnh sau {elapsed:.1f}s. "
             f"finish_reason={finish_reason}, text={texts[:1]}"
         )
-        # Không đoán lý do: model chỉ ra chữ, bộ lọc an toàn, hay ảnh khó đều cho cùng triệu
-        # chứng — đưa nguyên lời model nói (nếu có) để người dùng/quản trị tự phán đoán.
+        # Không đoán lý do — đưa nguyên lời model nói.
         detail = f' Gemini trả lời: "{texts[0][:300]}"' if texts else ''
         return _error(
             f'Gemini không trả về ảnh (finish_reason={finish_reason}).{detail} Thử lại, đổi ảnh '

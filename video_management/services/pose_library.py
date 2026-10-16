@@ -1,22 +1,10 @@
-"""Thư viện tư thế chị Nhạm cầm SP — tab "Chị Nhạm cầm SP" chế độ TỰ CHỌN TƯ THẾ (người dùng 13/10: "tôi add ảnh túi
-vào, bạn phân tích và ghép vào tay chị Nhạm cầm sao cho hợp lý"), 0đ.
+"""Thư viện tư thế chị Nhạm cầm SP — chế độ tự chọn tư thế, 0đ.
 
-Mỗi ảnh chị Nhạm (media chụp sẵn) được dựng trước một lần bằng held_swap.prepare_scene — tìm SP cũ, tách bàn tay, xoá
-SP cũ — rồi lưu ra thư mục (lệnh `manage.py build_pose_library`). Khi người dùng thêm ảnh túi mới: tách nền, CHẤM
-ĐIỂM mọi tư thế (đặt thử túi mới theo đúng luật held_swap.place_product trên mặt nạ thu nhỏ) rồi ghép thật vào các tư
-thế điểm tốt nhất. Điểm (càng thấp càng hợp):
-  - phần SP cũ đã xoá mà túi mới KHÔNG che (vùng LaMa vẽ lại — lộ ra là chỗ nhoè, soát 13/10) / diện tích SP cũ;
-  - đáy túi mới lệch ngón tay đỡ (túi to/nhỏ quá so với khoảng giữa tay nắm và tay đỡ) / chiều cao túi mới;
-  - quai túi mới cao/thấp khác quai SP cũ (tay nắm quai cũ trông gượng với túi không quai và ngược lại);
-  - phần túi mới tràn ra ngoài ảnh;
-  - biết cỡ thật túi mới (cm người dùng nhập): túi chị Nhạm cầm trong ảnh gốc khác cỡ bao nhiêu — ví nhỏ hợp tư thế cầm
-    ví, túi lớn hợp tư thế cầm túi lớn. Tư thế cầm túi lệch cỡ quá SIZE_GATE bị xếp sau mọi tư thế cùng cỡ (soát 15/10: túi
-    24cm đặt vào tư thế nâng ví 11cm sát mặt trông "to hơn cả người").
-Thước cm của ảnh thư viện = khung ảnh (FRAME_HEIGHT_CM): media chụp chị Nhạm cùng khoảng cách, cùng khung.
+Mỗi ảnh chị Nhạm được xoá SP cũ sẵn một lần (`manage.py build_pose_library`). Khi có túi mới: chấm điểm mọi tư thế
+(phần túi cũ không được che, lệch tay đỡ, lệch quai, tràn ảnh, lệch cỡ cm, khác dáng) rồi ghép vào các tư thế tốt nhất.
+Thước cm = khung ảnh (FRAME_HEIGHT_CM).
 
-Biến môi trường (BẮT BUỘC, không mặc định — thiếu thì báo đúng tên biến):
-  POSE_LIBRARY_DIR_ENV  thư mục thư viện tư thế (INDEX_FILE + mỗi tư thế một thư mục con)
-  POSE_CANDIDATES_ENV   số ảnh ghép trả về mỗi lượt (mỗi ảnh ~1–2s CPU)"""
+Biến môi trường bắt buộc: POSE_LIBRARY_DIR_ENV (thư mục thư viện), POSE_CANDIDATES_ENV (số ảnh trả về mỗi lượt)."""
 import json
 import os
 import threading
@@ -30,40 +18,24 @@ from video_management.services.product_image_service import ProductImageConfigEr
 POSE_LIBRARY_DIR_ENV = 'PRODUCT_IMAGE_POSE_LIBRARY_DIR'
 POSE_CANDIDATES_ENV = 'PRODUCT_IMAGE_POSE_CANDIDATES'
 INDEX_FILE = 'index.json'
-# Tư thế bỏ ra sau khi soát bằng mắt (ảnh đã xoá túi cũ còn sót dây đeo / mảnh túi cũ bị tính là bàn tay — ghép kiểu gì
-# cũng lộ): {id: lý do}. Không bắt buộc có; dựng lại thư viện vẫn giữ danh sách này.
+# Tư thế loại sau khi soát bằng mắt: {id: lý do} — không bắt buộc có.
 EXCLUDED_FILE = 'excluded.json'
 RGB_FILE, CLEAN_FILE, MASKS_FILE, META_FILE = 'rgb.jpg', 'clean.jpg', 'masks.npz', 'meta.json'
 JPEG_QUALITY = 93
-# Chấm điểm trên mặt nạ thu cạnh dài còn chừng này — đủ phân biệt dáng túi, ~vài ms mỗi tư thế.
 SCORE_LONG_SIDE = 384
 SUPPORT_GAP_WEIGHT = 0.5
 HANDLE_MISMATCH_WEIGHT = 0.3
 OUTSIDE_WEIGHT = 1.0
 SIZE_MISMATCH_WEIGHT = 1.0
-# |ln(cỡ túi mới / cỡ túi cũ)| quá mốc này (lệch ~35%) = tư thế cầm túi khác hẳn cỡ → chỉ dùng khi không đủ tư thế cùng cỡ.
-SIZE_GATE = 0.3
-# Túi mới để hở quá tỉ lệ này phần túi cũ đã xoá → chỗ hở phải vẽ lại cả mảng lớn, trông giả (soát 15/10: túi dây dài
-# thân thấp đặt vào tư thế cầm túi cao — vệt nhoè lớn sau túi) → không dùng tư thế đó. Không tư thế nào đạt thì báo rõ.
+SIZE_GATE = 0.3  # |ln(cỡ mới / cỡ cũ)| quá mốc này → xếp sau tư thế cùng cỡ
+# Ngưỡng loại tư thế (usable_fit / load_library).
 MAX_UNCOVERED = 0.3
-# Chỉ ghép vào tư thế mà túi chị Nhạm cầm có HÌNH DÁNG gần túi mới (trùng khít / gộp, không tính chỗ tay che) — khác dáng thì
-# ngón tay nắm vào khoảng không, tay đỡ lệch đáy (soát 15/10, video người dùng: "quá lạ, không ăn khớp"). Đo 15/10: Kelly,
-# Birkin, túi xách đen có tư thế khớp 0,75–0,83; túi tote cao 0,57; túi dây dài thân thấp chỉ 0,40 (không ghép được thật).
-# 16/10 nâng 0,55 → 0,6: soát lại ảnh ghép, tư thế khớp 0,56–0,57 lộ mảng túi cũ dưới đáy túi mới (cặp quai dẹt).
 MIN_SHAPE_IOU = 0.6
 SHAPE_WEIGHT = 1.0
-# Lệch cỡ quá mốc này (|ln| 0,45 ≈ ±57%) thì không dùng tư thế đó dù không còn tư thế nào khác (túi 24cm vào tư thế cầm ví).
 MAX_SIZE_MISMATCH = 0.45
-# Tư thế mà mặt nạ tay nắm quai chỉ phủ chưa tới tỉ lệ này phần MÀU DA trong khung tay = tách bàn tay hỏng (bắt được một
-# mảng lòng bàn tay, sót ngón) → dán lên thành mảng thịt dị dạng (soát 16/10, video người dùng). Đo 16/10 trên 96 tư thế:
-# trung vị 0,89; 12 tư thế < 0,6 (thấp nhất 0,38). Không dùng các tư thế đó.
-MIN_GRIP_COVERAGE = 0.6
-# Ảnh thư viện cao chừng này cm người thật: đo 15/10 trên 16 tư thế biết cỡ túi chị đang cầm (mã SP có cm) — trung vị 96cm,
-# lệch 9% (thước bàn tay lệch 12% và sai hẳn khi tay mở). Túi cũ đo theo thước này: trung vị 24,4cm, 90% trong 11–31cm.
-FRAME_HEIGHT_CM = 96.0
-# Ảnh media chụp liên tiếp nên nhiều tư thế gần như trùng nhau: khung thân SP cũ (theo tỉ lệ ảnh) chồng nhau ≥ chừng
-# này với tư thế đã chọn thì bỏ, lấy tư thế khác cho người dùng có cái để chọn (soát 13/10: 2/3 ảnh túi Kelly trùng).
-SIMILAR_POSE_IOU = 0.7
+MIN_GRIP_COVERAGE = 0.6  # mặt nạ tay nắm phủ ít màu da = tách tay hỏng
+FRAME_HEIGHT_CM = 96.0  # chiều cao thật của khung ảnh thư viện
+SIMILAR_POSE_IOU = 0.7  # bỏ tư thế gần trùng tư thế đã chọn
 
 _library = {}
 _library_lock = threading.Lock()
@@ -92,8 +64,7 @@ def read_library_settings():
 
 
 def pose_usable(scene):
-    """Tư thế dùng được cho thư viện: thấy tay, có tay nắm quai hoặc tay đỡ đáy, không cầm dây đeo dài (phần dây cũ giữ
-    lại tuỳ túi mới nên không dựng sẵn được). → (được không, lý do)."""
+    """→ (dùng được không, lý do): cần tay nắm quai hoặc tay đỡ đáy, không cầm dây dài."""
     if scene.long_strap:
         return False, 'cầm dây đeo dài'
     if not scene.hands:
@@ -179,7 +150,7 @@ class Pose:
 
 
 def load_library(folder):
-    """Các tư thế trong thư viện (nạp một lần mỗi worker; dựng lại thư viện → INDEX_FILE đổi giờ sửa → nạp lại)."""
+    """Các tư thế dùng được — nạp lại khi INDEX_FILE đổi."""
     index_path = os.path.join(folder, INDEX_FILE)
     stamp = os.path.getmtime(index_path)
     with _library_lock:
@@ -251,8 +222,6 @@ def score_pose(pose, product_alpha, product_rows, apex_x, product_body, width_cm
     total = max(1, int(placed_small.sum()))
     old = pose.old_small & ~pose.hand_small
     uncovered = float((old & ~alpha).sum()) / max(1, int(old.sum()))
-    # Hình dáng túi mới khớp túi cũ tới đâu (trùng khít / gộp, không tính chỗ tay che): túi khác dáng thì ngón tay đang
-    # nắm quai cũ thành nắm vào khoảng không, tay đỡ lệch đáy (soát 15/10 video người dùng: "không ăn khớp").
     visible_new = alpha & ~pose.hand_small
     shape_iou = float((old & visible_new).sum()) / max(1, int((old | visible_new).sum()))
     height = max(1.0, (product_rows[1] - product_rows[0]) * scale)
@@ -278,8 +247,7 @@ def rank_poses(poses, product_rgba, product_body, width_cm=None):
     for pose in poses:
         score, detail = score_pose(pose, alpha, rows, apex_x, product_body, width_cm)
         ranked.append((score, pose, detail))
-    # Tư thế cầm túi cùng cỡ trước (theo điểm), tư thế lệch cỡ quá SIZE_GATE sau (cỡ gần trước) — điểm trọng số không đủ
-    # chặn: túi cũ càng nhỏ thì túi mới càng che kín (điểm "uncovered" tốt) nên tư thế cầm ví hay lên đầu.
+    # Tư thế cùng cỡ trước, lệch cỡ quá SIZE_GATE sau.
     ranked.sort(key=lambda item: (item[2].get('size_mismatch', 0) > SIZE_GATE,
                                   item[2].get('size_mismatch', 0) if item[2].get('size_mismatch', 0) > SIZE_GATE else 0,
                                   item[0]))
@@ -301,8 +269,7 @@ def _iou(a, b):
 
 
 def pick_distinct(ranked, count):
-    """`count` tư thế điểm tốt nhất, bỏ tư thế gần trùng tư thế đã chọn (SIMILAR_POSE_IOU); thiếu thì lấy bù theo
-    điểm."""
+    """`count` tư thế tốt nhất, ưu tiên không trùng nhau."""
     chosen = []
     for item in ranked:
         box = _relative_box(item[1].meta, 'body')
@@ -325,8 +292,7 @@ def usable_fit(detail):
 
 
 def compose_best(models, poses, product_rgba, product_body, count, width_cm=None):
-    """Ghép SP mới vào `count` tư thế hợp nhất (không trùng nhau) → [(JPEG bytes, thông tin)]. `width_cm` = bề ngang
-    thật thân SP mới (người dùng nhập) → đúng cỡ so với bàn tay chị Nhạm + ưu tiên tư thế cầm túi cùng cỡ."""
+    """Ghép SP mới vào `count` tư thế hợp nhất → [(JPEG bytes, thông tin)]."""
     if not poses:
         raise ProductImageInputError('Thư viện tư thế rỗng.')
     product_rgba = hs.trim_to_held_product(product_rgba, product_body)

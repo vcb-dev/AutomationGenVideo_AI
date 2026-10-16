@@ -1,20 +1,12 @@
-"""Tab "Chị Nhạm cầm sản phẩm" — ĐỔI SP chị Nhạm đang cầm sang SP mới, 0đ, chạy CPU (không gọi Gemini).
+"""Đổi SP chị Nhạm đang cầm sang SP mới — 0đ, chạy CPU.
 
-Các bước (đo trên 120 ảnh chị Nhạm thật ở bag-detector-training/swap, người dùng duyệt hướng "0đ, ảnh tốt nhất" 13/10):
-  1. model người cầm SP tự huấn luyện (ONNX, PERSON_DETECTOR_MODEL_ENV) → khung SP cũ / thân / người / từng bàn tay
-  2. MobileSAM (ONNX, MIT) → mặt nạ TỪNG ĐIỂM ẢNH của SP cũ (cả quai/dây/móc treo) và của bàn tay
-  3. LaMa (ONNX, Apache-2.0) → xoá SP cũ, vẽ lại phần nền/tạp dề phía sau
-  4. SP mới (đã tách nền bằng đúng quy trình tab Ghép background) đặt theo cỡ + vị trí thân SP cũ, nhuộm ấm theo
-     cảnh như FE realism, bóng đổ mềm + bóng tiếp xúc chỗ ngón tay
-  5. dán lại bàn tay lên trên SP mới → tay cầm đè lên SP như thật
-Bàn tay lấy từ CHÍNH model người cầm SP (lớp "hand") — không dùng MediaPipe (gói đó kéo jax/jaxlib/matplotlib +
-opencv-contrib). Xử lý ảnh chỉ bằng numpy/scipy/Pillow (image AI production KHÔNG có OpenCV; scipy đi kèm rembg) —
-không thêm thư viện nào cho server, chỉ thêm file model.
+  1. model người cầm SP (ONNX) → khung SP cũ / thân / từng bàn tay
+  2. MobileSAM → mặt nạ SP cũ (cả quai) và bàn tay
+  3. LaMa → xoá SP cũ, vẽ lại nền
+  4. đặt SP mới theo cỡ thật, nhuộm ấm theo cảnh, bóng đổ; dán lại ngón tay lên trên
+Chỉ dùng numpy/scipy/Pillow (image production không có OpenCV).
 
-Biến môi trường (BẮT BUỘC, không mặc định — thiếu thì báo đúng tên biến):
-  PERSON_DETECTOR_MODEL_ENV  file ONNX model người cầm SP (lớp person, bag, bag_body, hand)
-  SWAP_MODELS_DIR_ENV        thư mục chứa model bên thứ ba cố định: SAM_ENCODER_FILE, SAM_DECODER_FILE,
-                             SAM_MULTI_DECODER_FILE (Acly/MobileSAM), LAMA_FILE (Carve/LaMa-ONNX lama_fp32)"""
+Biến môi trường bắt buộc: PERSON_DETECTOR_MODEL_ENV (model người cầm SP), SWAP_MODELS_DIR_ENV (thư mục SAM/LaMa)."""
 import io
 import json
 import os
@@ -34,101 +26,66 @@ SAM_MULTI_DECODER_FILE = 'sam_mask_decoder_multi.onnx'
 LAMA_FILE = 'lama_fp32.onnx'
 REQUIRED_PERSON_CLASSES = ('person', 'bag', 'bag_body', 'hand')
 
-# Ngưỡng độ tin: lớp chính thấp (không sót), lớp phụ cao — như product_detector.
 MAIN_CLASS_MIN_SCORE = 0.25
 OTHER_CLASS_MIN_SCORE = 0.5
 MAIN_CLASSES = ('bag', 'bag_body', 'person', 'hand')
 SAM_LONG_SIDE = 1024
 LAMA_SIZE = 512
-# Ảnh chị Nhạm thu còn cạnh dài chừng này trước khi xử lý (ảnh media gốc tới 6000px) — LaMa/SAM vốn chạy 512/1024.
-# 16/10 nâng 2048 → 3072: người dùng thấy ảnh ra "mất nét" — ảnh media gốc 6000px mà ảnh ra chỉ 1365×2048, kém cả tab Ghép
-# background (1707×2560). Thời gian xử lý tăng theo số điểm ảnh (~2,25×) nhưng SAM/LaMa vẫn chạy cỡ cố định của model.
 MAX_SWAP_SIDE_PX = 3072
 JPEG_QUALITY = 92
 
-# Phân loại bàn tay theo thân SP cũ (người dùng soát 13/10: túi đặt theo thân cũ nên quai nổi cao hơn tay, tay đỡ bị
-# dán đè lên mặt túi): tâm tay cao hơn đỉnh thân + GRIP_BAND chiều cao thân = tay NẮM quai; thấp hơn đáy thân −
-# SUPPORT_BAND = tay ĐỠ đáy; còn lại = tay ôm thân. Tay nắm cao hơn đỉnh thân quá LONG_STRAP chiều cao thân = đang cầm
-# dây đeo dài → đặt theo thân như cũ, giữ đoạn dây cũ phía trên SP mới.
+# Phân loại tay theo thân SP cũ (tỉ lệ chiều cao thân): nắm quai / đỡ đáy / cầm dây dài.
 GRIP_BAND = 0.2
 SUPPORT_BAND = 0.25
 LONG_STRAP = 0.9
-# Chỗ quai đi qua nắm tay, tính từ đỉnh khung tay ≈ hàng khớp ngón.
-GRIP_IN_HAND = 0.45
-# Đáy SP mới đè lên đầu ngón tay đỡ chừng này chiều cao khung tay (SP tựa trên ngón, không lơ lửng).
-SUPPORT_OVERLAP = 0.25
-# Cỡ SP mới = cỡ thân cũ (căn bậc hai diện tích); khi khớp quai vào tay nắm + đáy lên tay đỡ thì được co/giãn trong
-# [SCALE_MIN, SCALE_MAX] lần cỡ đó — ngoài khoảng này là sai cỡ thật, giữ khớp tay nắm và để đáy lệch.
+GRIP_IN_HAND = 0.45  # chỗ quai qua nắm tay, tính từ đỉnh khung tay
+SUPPORT_OVERLAP = 0.25  # đáy SP tựa lên ngón tay đỡ
 SCALE_MIN = 0.75
 SCALE_MAX = 1.15
-# CỠ THẬT (người dùng 15/10: "thêm túi vào, biết kích thước túi, căn khoảng tay chị Nhạm cầm" — số cm do người thả ảnh
-# nhập). Ảnh thư viện tư thế dùng thước KHUNG ẢNH (pose_library.FRAME_HEIGHT_CM — ổn định hơn). Ảnh chị Nhạm bất kỳ (chế độ
-# đổi SP trên ảnh tự chọn) thì đo bằng bàn tay: 16 tư thế biết cỡ túi → cạnh dài khung tay NẮM quai ≈ 9,4cm (lệch 12%),
-# khung tay ĐỠ đáy ≈ 16,4cm (13%). Tay MỞ cầm dây dài thì khung tay dài cả bàn tay (~17cm) → thước tay sai gần gấp đôi
-# (người dùng thấy túi 24cm "to hơn cả người", 15/10) — chỉ là thước dự phòng.
+# Thước dự phòng khi không có thước khung ảnh: cạnh dài khung tay nắm / tay đỡ (cm).
 GRIP_HAND_CM = 9.4
 SUPPORT_HAND_CM = 16.4
-# Mép trên THÂN SP mới không cao hơn chỗ này của khung tay nắm (tính từ đỉnh khung): quai thấp/dẹt (cặp, túi xách công
-# sở) mà đặt đỉnh quai vào khớp ngón thì nắp túi che mất các ngón — trông như tay ở sau lưng túi (soát 16/10). Hạ SP
-# xuống cho thân nằm dưới ngón; quai vẫn nằm trong nắm tay (ngón vẽ đè lên quai).
-GRIP_BODY_CLEAR = 0.8
-# Quai SP mới dời ngang cho đỉnh quai vào giữa nắm tay, tối đa chừng này bề ngang thân cũ.
+GRIP_BODY_CLEAR = 0.8  # đỉnh thân SP mới không cao hơn chỗ này của khung tay nắm (nắp túi không che ngón)
 GRIP_SHIFT_MAX = 0.25
-# Quai cũ đi từ nắm tay xuống đỉnh thân: SAM hay sót (đo 13/10 trên ảnh balo — 2 dây da dưới nắm tay còn nguyên sau
-# khi xoá). Trong dải dưới nắm tay (rộng khung tay + HANDLE_ZONE_PAD mỗi bên), điểm ảnh lệch màu thân SP cũ
-# ≤ HANDLE_COLOR_TOL lần độ lệch màu bình thường của thân và gần màu thân hơn màu da → tính là SP cũ.
+# Quai cũ dưới nắm tay mà SAM sót: nhận theo màu thân SP cũ.
 HANDLE_COLOR_TOL = 3.0
 HANDLE_ZONE_PAD = 0.5
 HANDLE_MAX_WIDTH = 0.08
 HANDLE_AMBIGUOUS_FRACTION = 0.5
 SKIN_SAMPLE_MIN_BAG_DIST = 1.5
-# Nới khung tay của model khi nhắc SAM / khi giữ mặt nạ tay (mỗi phía, theo cỡ khung) — xem segment_hand.
 HAND_PROMPT_PAD = 0.12
 HAND_KEEP_PAD = 0.25
-# Bàn tay = vùng MÀU DA trong khung tay (luật YCbCr; đo 13/10 trên 6 ảnh studio đèn ấm: da Cb 100–128, Cr 133–165,
-# Y > 90; nền kệ tối / túi đen / áo navy đều ngoài khoảng). SAM nhắc bằng khung có lúc trả KHE NỀN giữa các ngón thay
-# vì bàn tay (ảnh túi hobo đen: cả bàn tay bị xoá rồi vẽ nhoè) — nên lấy vùng da làm lõi, SAM chỉ bù mép trong
-# HAND_EDGE_PX quanh vùng da.
+# Màu da (YCbCr) làm lõi mặt nạ tay; SAM chỉ bù mép HAND_EDGE_PX quanh lõi.
 SKIN_CB = (77, 128)
 SKIN_CR = (133, 180)
 SKIN_MIN_LUMA = 90
 HAND_EDGE_PX = 5
-# Vùng da liền khối nhỏ hơn chừng này diện tích khung tay = không nhận ra da (găng tay, ánh sáng lạ) → dùng SAM như cũ.
 MIN_SKIN_FRACTION = 0.08
-# SAM (nhắc bằng điểm trong vùng da) được tin khi phủ ≥ SAM_CORE_COVER phần sâu của vùng da và không lớn quá
-# SAM_MAX_GROWTH lần vùng da — xem segment_hand.
 SAM_CORE_COVER = 0.8
 SAM_MAX_GROWTH = 1.6
-# Trong nắm tay (từ GRIP_GAP_FROM chiều cao khung tay trở xuống), điểm ảnh không phải da cách bàn tay ≤ GRIP_GAP_PX =
-# khe giữa ngón / quai cũ khác màu (quai kim loại xám túi be) → xoá, không dán lại.
+# Khe giữa ngón / quai cũ khác màu trong nắm tay → xoá.
 GRIP_GAP_PX = 15
 GRIP_GAP_FROM = 0.3
-# Nhuộm ấm theo nền — đúng hệ số FE realism.applyLook / estimateWarmth.
+# Nhuộm ấm theo nền — cùng hệ số FE realism.
 WARM_GAINS = (0.06, -0.01, -0.14)
 WARM_INDEX_FULL = 0.8
 SHADOW_OPACITY = 0.35
 CONTACT_DARKEN = 0.25
-# Hạt ảnh cho vùng LaMa vẽ lại: LaMa chạy 512px rồi phóng về cỡ lỗ nên vùng đó mịn bệt — đo 16/10 trên ảnh chị Nhạm 3072px:
-# chi tiết vùng vẽ lại 0,89 so với 3,69 của ảnh thật ngay cạnh (người dùng: "bị mất nét"). Thêm hạt (cùng nhiễu cho 3 kênh,
-# làm mềm GRAIN_SIGMA px như hạt máy ảnh) đủ bù phần chi tiết thiếu so với dải ảnh thật quanh lỗ (cách lỗ GRAIN_RING_GAP,
-# rộng GRAIN_RING_PX); hạt cố định theo GRAIN_SEED để chạy lại ra đúng ảnh cũ.
-# Lớp chồng bàn tay nắm quai (soát 16/10, video người dùng: "cầm bị mất quai, cắt quá tay"): ảnh gốc chỉ có NGÓN tay vòng
-# ra trước quai, lòng bàn tay nằm SAU túi cũ. Túi mới cao hơn túi cũ thì dán cả bàn tay đè lên = khoét một mảng hình lòng
-# bàn tay vào nắp túi, che mất quai. Trong khung tay nắm (nới GRIP_LAYER_PAD), phần tay rơi vào THÂN túi mới để túi đè lên.
+# Lớp ngón tay nắm quai: chỉ phần ngón (tới FINGERTIP_LINE khung tay) vẽ đè lên túi mới.
 GRIP_LAYER_PAD = 0.3
 FINGERTIP_LINE = 0.8
+# Cắt chân/cột giá trưng bày còn dính sau tách nền.
 TRIM_BELOW_BODY = 0.01
 STAND_ROD_BAND = 0.2
 STAND_ROD_MIN_RUN = 0.5
 STAND_ROD_MAX_WIDTH = 0.04
-# Vẽ lại riêng vùng lỗ trong khung tay nắm nới chừng này (refine_grip_fill).
 GRIP_REFILL_PAD = 0.6
+# Hạt ảnh bù chi tiết cho vùng LaMa vẽ lại (LaMa chạy 512px nên mịn bệt).
 GRAIN_SIGMA = 0.6
 GRAIN_RING_GAP = 8
 GRAIN_RING_PX = 40
 GRAIN_HIGHPASS_SIGMA = 1.5
 GRAIN_SEED = 20261016
-# Vùng đã có ≥ tỉ lệ này độ chi tiết của ảnh thật thì để nguyên (sai số đo không thành hạt thừa).
 GRAIN_ENOUGH = 0.9
 
 _models = {}
@@ -259,8 +216,7 @@ def dilate(mask, size):
 
 
 def old_product_mask(body_mask, extra_masks, product_box, hand_mask):
-    """SP cũ = mặt nạ thân + phần của các mặt nạ "cả vật" nằm trong khung SP (nới 4%) và NỐI LIỀN thân (8 hướng) —
-    quai/dây/móc treo thì giữ, phần lấn sang đồ trên kệ phía sau thì bỏ. Tay không tính là SP."""
+    """SP cũ = mặt nạ thân + phần mặt nạ "cả vật" trong khung SP nối liền thân (giữ quai, bỏ đồ trên kệ phía sau)."""
     from scipy import ndimage
     h, w = body_mask.shape
     pad = 0.04 * max(product_box[2] - product_box[0], product_box[3] - product_box[1])
@@ -315,8 +271,7 @@ def _box_mask(shape, hb, pad=0.0):
 
 
 def hand_core(skin, hb):
-    """Vùng da liền khối chạm khung tay nhiều nhất (trong khung nới HAND_KEEP_PAD); rỗng nếu da < MIN_SKIN_FRACTION
-    diện tích khung (găng tay, ánh sáng lạ)."""
+    """Vùng da liền khối chạm khung tay nhiều nhất; rỗng nếu quá ít da (găng tay, ánh sáng lạ)."""
     from scipy import ndimage
     labels, n = ndimage.label(skin & _box_mask(skin.shape, hb, HAND_KEEP_PAD))
     if not n:
@@ -328,10 +283,8 @@ def hand_core(skin, hb):
 
 
 def segment_hand(sam, core, hb, negatives):
-    """Mặt nạ một bàn tay. Lõi = vùng da (hand_core). SAM nhắc bằng khung + 2 điểm sâu nhất trong lõi, điểm âm ở
-    `negatives` (giữa thân SP cũ, đoạn quai cũ thò khỏi nắm tay): SAM tách được dây da màu bò khỏi ngón tay — luật màu
-    da thì không (soát 13/10, ảnh balo). SAM ôm đúng lõi (≥ SAM_CORE_COVER phần sâu, không phình quá SAM_MAX_GROWTH)
-    → tay = SAM trong HAND_EDGE_PX quanh lõi; SAM trượt (lấy khe nền) → tay = lõi. Không có lõi → SAM như cũ."""
+    """Mặt nạ một bàn tay: SAM nhắc bằng khung + điểm sâu nhất trong lõi da, điểm âm ở `negatives`. SAM ôm đúng lõi
+    thì lấy SAM quanh lõi, không thì lấy lõi; không có lõi thì dùng SAM."""
     from scipy import ndimage
     region = _box_mask(core.shape, hb, HAND_KEEP_PAD)
     bw, bh = hb[2] - hb[0], hb[3] - hb[1]
@@ -353,16 +306,13 @@ def segment_hand(sam, core, hb, negatives):
     deep = depth >= 0.5 * depth.max()
     good = (m & deep).sum() >= SAM_CORE_COVER * deep.sum() and m.sum() <= SAM_MAX_GROWTH * core.sum()
     hand = (m & dilate(core, 2 * HAND_EDGE_PX + 1)) if good else core
-    # Chỗ sáng bóng / sơn móng / bóng tối trên ngón lệch luật màu da → lỗ trong mặt nạ; không lấp thì SP mới lộ qua
-    # thành đốm trên ngón (soát 13/10, ảnh áo navy).
+    # Lấp lỗ (móng, chỗ bóng) để SP mới không lộ qua thành đốm trên ngón.
     hand = ndimage.binary_closing(hand, structure=np.ones((3, 3)), iterations=HAND_EDGE_PX)
     return ndimage.binary_fill_holes(hand) & region
 
 
 def whole_product_mask(sam, bag, body, grip_hands, handle_pts):
-    """SAM "cả SP cũ": khung SP + điểm dương giữa thân và trên đoạn quai cũ dưới nắm tay + điểm âm giữa nắm tay. Ôm cả
-    quai/dây và phần SP lẫn màu da (tấm lưng balo trong bóng giữa 2 dây — luật màu không bắt được, soát 13/10) mà
-    không tô kín lòng quai (đo trên 6 ảnh)."""
+    """SAM "cả SP cũ": khung SP + điểm dương ở thân/quai cũ + điểm âm giữa nắm tay."""
     points = [[(body[0] + body[2]) / 2, (body[1] + body[3]) / 2]] + [list(p) for p in handle_pts]
     labels = [1] * len(points)
     for hb in grip_hands:
@@ -372,7 +322,7 @@ def whole_product_mask(sam, bag, body, grip_hands, handle_pts):
 
 
 def handle_points(handle, core, hb):
-    """≤ 2 điểm trên đoạn quai cũ ngay dưới nắm tay (nửa trái / nửa phải) — điểm âm khi nhắc SAM tách bàn tay."""
+    """≤ 2 điểm trên quai cũ ngay dưới nắm tay — điểm âm khi tách bàn tay."""
     bh = hb[3] - hb[1]
     window = np.zeros_like(handle)
     window[int(hb[1] + 0.6 * bh):int(hb[3] + 0.3 * bh), int(hb[0]):int(np.ceil(hb[2]))] = True
@@ -388,13 +338,8 @@ def handle_points(handle, core, hb):
 
 
 def handle_by_color(body_mask, rgb, zone, skin_core, grip_boxes):
-    """Mặt nạ quai SP cũ trong `zone` (khung tay nắm + dải dưới tới đỉnh thân) theo màu + hình dạng:
-      - lệch màu thân SP cũ ≤ HANDLE_COLOR_TOL lần độ lệch bình thường của thân VÀ gần màu thân hơn mọi màu da chuẩn;
-      - nếu điểm ảnh cùng màu túi chiếm > HANDLE_AMBIGUOUS_FRACTION dải xét (túi đen trước nền/áo tối — soát 13/10, ảnh
-        túi hobo: cả vùng sau tay bị xoá rồi vẽ nhoè) thì màu không phân biệt được → chỉ nhận vệt MẢNH (bề ngang
-        ≤ HANDLE_MAX_WIDTH bề ngang thân cũ); còn lại nhận cả mảng dày (tấm lưng balo giữa 2 dây, ảnh balo);
-      - nối ra NGOÀI khung tay nắm: dây da màu bò lọt vào luật màu da nên dính liền vùng da (ảnh balo), vệt sáng giữa
-        khớp ngón cùng màu túi kem thì không nối ra ngoài (ảnh áo navy)."""
+    """Mặt nạ quai SP cũ trong `zone` (dưới nắm tay tới đỉnh thân): gần màu thân hơn màu da và nối ra ngoài khung tay.
+    Màu túi trùng màu nền quanh tay thì chỉ nhận vệt mảnh."""
     from scipy import ndimage
     core = ndimage.binary_erosion(body_mask, iterations=5)
     depth = ndimage.distance_transform_edt(skin_core)
@@ -405,17 +350,13 @@ def handle_by_color(body_mask, rgb, zone, skin_core, grip_boxes):
     pixels = rgb[core].astype(np.float32)
     ref = np.median(pixels, axis=0)
     spread = max(6.0, float(np.median(np.linalg.norm(pixels - ref, axis=1))))
-    # Da có chỗ tối (kẽ ngón) chỗ sáng (khớp ngón, da ngực) → 3 màu da chuẩn theo 3 khoảng độ sáng; một màu trung bình thì
-    # vệt sáng trên da gần màu túi kem hơn và bị coi nhầm là quai (soát 13/10, ảnh áo navy).
+    # 3 màu da chuẩn theo độ sáng; bỏ khỏi mẫu các điểm sát màu túi (dây da lọt vào luật màu da).
     skin_px = rgb[skin].astype(np.float32)
-    # Bỏ khỏi mẫu da các điểm sát màu thân SP cũ: dây da màu bò lọt vào vùng da (luật màu da) thì thành "màu da chuẩn"
-    # và che mất chính nó (đo 13/10 ảnh balo: một màu chuẩn = 175,122,91 đúng màu dây).
     unlike_bag = np.linalg.norm(skin_px - ref, axis=1) > SKIN_SAMPLE_MIN_BAG_DIST * spread
     if unlike_bag.sum() >= 20:
         skin_px = skin_px[unlike_bag]
     order = np.argsort(skin_px.sum(axis=1))
     skin_refs = [np.median(part, axis=0) for part in np.array_split(skin_px[order], 3) if len(part)]
-    # Chỉ tính trong khung bao của zone cho nhanh.
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     sub = rgb[y0:y1, x0:x1].astype(np.float32)
     to_bag = np.linalg.norm(sub - ref, axis=2)
@@ -424,7 +365,6 @@ def handle_by_color(body_mask, rgb, zone, skin_core, grip_boxes):
     cand = ndimage.binary_opening(cand, iterations=1)  # bỏ chấm lẻ
     zone_sub = zone[y0:y1, x0:x1]
     if cand.sum() > HANDLE_AMBIGUOUS_FRACTION * zone_sub.sum():
-        # Màu túi trùng màu nền/áo quanh tay (túi đen trước áo đen) → màu không phân biệt được, chỉ tin vệt MẢNH.
         bx = np.flatnonzero(body_mask.any(axis=0))
         radius = max(2, int(HANDLE_MAX_WIDTH * (bx[-1] - bx[0] + 1) / 2)) if len(bx) else 2
         thick = ndimage.binary_opening(cand, structure=np.ones((3, 3)), iterations=radius)
@@ -435,12 +375,12 @@ def handle_by_color(body_mask, rgb, zone, skin_core, grip_boxes):
     handle_sub = np.isin(labels, outside[outside > 0])
     handle = np.zeros_like(zone)
     handle[y0:y1, x0:x1] = handle_sub
-    # Nới mép quai (viền khử răng cưa) ra ngoài, không nới vào da — nới vào là ăn mất ngón.
+    # Nới mép quai, không nới vào da.
     return handle | (dilate(handle, 5) & zone & ~skin_core)
 
 
 def pixels_per_cm(grips, supports):
-    """Điểm ảnh / cm của ảnh chị Nhạm theo cỡ bàn tay (GRIP_HAND_CM / SUPPORT_HAND_CM) — None nếu không thấy tay."""
+    """Điểm ảnh / cm theo cỡ bàn tay — None nếu không thấy tay."""
     for boxes, cm in ((grips, GRIP_HAND_CM), (supports, SUPPORT_HAND_CM)):
         if boxes:
             hb = boxes[0]
@@ -450,13 +390,9 @@ def pixels_per_cm(grips, supports):
 
 def place_product(product_rows, apex_x, product_body, old_body, grips, supports, long_strap=False, width_cm=None,
                   px_per_cm=None):
-    """Cỡ + vị trí SP mới: (tỉ lệ phóng, toạ độ x, y góc trên-trái của ảnh SP trong ảnh chị Nhạm).
-    product_rows = (hàng đầu, hàng cuối) có điểm ảnh SP trong ảnh SP; apex_x = cột giữa đỉnh quai SP mới;
-    product_body/old_body = khung thân [x0,y0,x1,y1]; grips/supports = khung tay nắm quai / tay đỡ đáy (classify_hands).
-    Cỡ gốc: biết bề ngang thật `width_cm` → thân mới rộng đúng width_cm theo thước `px_per_cm` (không truyền thì đo bằng
-    bàn tay — pixels_per_cm), giữ nguyên cỡ đó; không thì thân mới = thân cũ (căn bậc hai diện tích) và có cả tay đỡ thì co/giãn (trong
-    SCALE_MIN..SCALE_MAX) cho đáy tựa lên ngón tay đỡ. Có tay nắm: đỉnh quai vào giữa nắm tay. Chỉ có tay đỡ: đáy tựa lên
-    ngón. Không tay / cầm dây dài: tâm thân mới trùng tâm thân cũ."""
+    """→ (tỉ lệ phóng, x, y góc trên-trái ảnh SP). Có `width_cm` thì thân mới rộng đúng cỡ thật theo `px_per_cm` (hoặc
+    thước bàn tay); không thì bằng thân cũ. Tay nắm: đỉnh quai vào nắm tay; tay đỡ: đáy tựa lên ngón; còn lại: theo tâm
+    thân cũ."""
     ptop, pbot = product_rows
     px0, py0, px1, py1 = product_body
     ow, oh = old_body[2] - old_body[0], old_body[3] - old_body[1]
@@ -497,7 +433,7 @@ def product_apex_x(alpha):
 
 
 def scene_warmth(rgb):
-    """Như FE realism.estimateWarmth: nền càng ngả cam (đèn LED vàng) → càng nhuộm ấm SP (0..1)."""
+    """Độ ấm của nền 0..1 — như FE realism.estimateWarmth."""
     r, g, b = rgb.reshape(-1, 3).astype(np.float64).mean(axis=0)
     return float(np.clip(((r - b) / max(1.0, r + g + b)) * 3 / WARM_INDEX_FULL, 0, 1))
 
@@ -509,9 +445,8 @@ def harmonize(product_rgba, warmth):
 
 
 def inpaint(lama, rgb, hole, hide=None):
-    """LaMa 512×512: cắt vùng vuông quanh lỗ (lề 60%), vẽ lại, chỉ dán phần lỗ (mép mềm) vào ảnh. `hide` (bàn tay):
-    trong ảnh ĐƯA CHO LaMa thay bằng màu điểm nền gần nhất — để nguyên thì LaMa loang màu da xuống chỗ quai cũ vừa xoá
-    thành mảng hồng dưới nắm tay (soát 13/10, ảnh balo); ảnh ra vẫn giữ nguyên bàn tay."""
+    """LaMa vẽ lại vùng vuông quanh lỗ, dán phần lỗ (mép mềm). `hide` (bàn tay) được che khỏi ngữ cảnh để LaMa không
+    loang màu da."""
     from scipy import ndimage
     ys, xs = np.nonzero(hole)
     if not len(ys):
@@ -543,9 +478,7 @@ def inpaint(lama, rgb, hole, hide=None):
 
 
 def refine_grip_fill(lama, clean, hole, hand_mask, grips):
-    """Vẽ lại RIÊNG vùng lỗ quanh tay nắm quai: lượt LaMa đầu chạy 512px trên cả cái túi cũ nên chỗ quanh nắm tay — đúng
-    chỗ lộ ra trong lòng quai túi mới — thành mảng nhoè/khối da/khối đen (soát 16/10). Khung nhỏ quanh tay → LaMa nét hơn,
-    lấy ngữ cảnh từ lượt đầu."""
+    """Vẽ lại riêng vùng lỗ quanh tay nắm (lộ ra trong lòng quai túi mới) với khung nhỏ cho nét hơn."""
     for hb in grips:
         zone = _box_mask(hole.shape, hb, GRIP_REFILL_PAD) & hole
         if zone.sum() > 64:
@@ -565,12 +498,9 @@ def front_layer(scene, alpha, product_body, scale, ox, oy):
     product = alpha > 0.5
     body &= product
     zone = np.any([_box_mask(shape, hb, GRIP_LAYER_PAD) for hb in scene.grips], axis=0)
-    # Cổ tay/cẳng tay (ngoài khung tay nắm) nằm SAU quai túi mới: quai túi mới rộng/khác chỗ quai cũ thì đi ngang qua cổ
-    # tay — dán đè cổ tay lên thì quai bị cắt cụt (soát 16/10, Birkin). Chỉ ngón tay trong khung tay nắm vẽ đè lên quai.
+    # Chỉ ngón tay vẽ đè lên quai; lòng bàn tay / cổ tay nằm sau quai.
     fingers = np.zeros(shape, bool)
     for hb in scene.grips:
-        # Ngón tay vòng qua quai chỉ tới FINGERTIP_LINE chiều cao khung tay; phần dưới (lòng bàn tay/cổ tay trong khung) nằm
-        # sau quai — khung tay nắm hay dài xuống cả cổ tay.
         fingers[int(max(0, hb[1])):int(min(shape[0], hb[1] + FINGERTIP_LINE * (hb[3] - hb[1]))),
                 int(max(0, hb[0])):int(min(shape[1], np.ceil(hb[2])))] = True
     above_body = np.zeros(shape, bool)
@@ -579,8 +509,7 @@ def front_layer(scene, alpha, product_body, scale, ox, oy):
 
 
 def add_matched_grain(image, region, reference):
-    """Thêm hạt vào `region` (vùng vẽ lại) của `image` cho bằng độ chi tiết của `reference` (ảnh thật) ở dải quanh vùng đó.
-    image/reference: uint8 HxWx3 cùng cỡ; region: bool. Trả ảnh mới (uint8)."""
+    """Thêm hạt vào `region` cho bằng độ chi tiết của `reference` ở dải quanh vùng đó."""
     from scipy import ndimage
     if not region.any():
         return image
@@ -599,8 +528,7 @@ def add_matched_grain(image, region, reference):
         return a - ndimage.gaussian_filter(a, (GRAIN_HIGHPASS_SIGMA, GRAIN_HIGHPASS_SIGMA, 0))
 
     crop = image[y0:y1, x0:x1]
-    # Ước lượng BỀN (1,4826 × trung vị độ lệch tuyệt đối): std bị các cạnh rõ trong dải quanh (mép tay, mép túi) kéo lên
-    # → hạt quá to, thành "lông" quanh ngón tay (soát 16/10).
+    # Ước lượng bền (MAD) — std bị các cạnh rõ kéo lên.
     robust = lambda v: 1.4826 * np.median(np.abs(v - np.median(v, axis=0)), axis=0)
     real = robust(highpass(reference[y0:y1, x0:x1])[ring])
     have = robust(highpass(crop)[reg])
@@ -608,7 +536,6 @@ def add_matched_grain(image, region, reference):
     if not need.any():
         return image
     noise = ndimage.gaussian_filter(np.random.default_rng(GRAIN_SEED).standard_normal(reg.shape).astype(np.float32), GRAIN_SIGMA)
-    # Hạt sau khi lọc tần cao phải đúng `need` → chuẩn hoá theo độ lệch của chính phần tần cao của nhiễu.
     noise /= max(1e-6, float((noise - ndimage.gaussian_filter(noise, GRAIN_HIGHPASS_SIGMA)).std()))
     soft = ndimage.gaussian_filter(reg.astype(np.float32), 2)
     out = image.copy()
@@ -617,9 +544,7 @@ def add_matched_grain(image, region, reference):
 
 
 class Scene:
-    """Ảnh chị Nhạm đã xoá SP cũ, sẵn sàng ghép SP mới — không phụ thuộc SP mới nên dựng một lần (thư viện tư thế dựng
-    sẵn, xem pose_library.py). `clean` = None khi cầm dây đeo dài: phần dây cũ giữ lại tuỳ đỉnh SP mới nên phải xoá
-    sau khi đặt SP (compose_product)."""
+    """Ảnh chị Nhạm đã xoá SP cũ. `clean` = None khi cầm dây dài (xoá sau khi đặt SP mới)."""
 
     def __init__(self, rgb, clean, hole, old_mask, hand_mask, front_mask, bag, body, hands, grips, supports, long_strap,
                  found=None, detector=''):
@@ -647,27 +572,23 @@ def prepare_scene(models, person_image, debug=None):
     grips, supports, _sides, long_strap = classify_hands(hands, body)
     hand_mask = np.zeros(body_mask.shape, bool)
     skin = skin_mask(rgb)
-    # Tay vẽ ĐÈ lên SP mới (tay nắm quai, tay ôm thân); tay đỡ đáy nằm DƯỚI SP — dán đè thì thành dải ngón tay phẳng
-    # trên mặt túi (người dùng soát 13/10).
+    # Tay nắm / ôm thân vẽ đè lên SP mới; tay đỡ đáy nằm dưới SP.
     front_mask = np.zeros(body_mask.shape, bool)
     cores = [hand_core(skin, hb) for hb in hands]
     handle = np.zeros(body_mask.shape, bool)
     if grips and not long_strap:
         zone = np.zeros(body_mask.shape, bool)
         for hb in grips:
-            # Dải ngay dưới nắm tay tới đỉnh thân, rộng bằng khung tay nới HANDLE_ZONE_PAD mỗi bên — quai cũ đi qua đây;
-            # không lấy cả bề ngang khung SP (đồ trên kệ phía sau cùng màu sẽ bị xoá nhầm, soát 13/10).
+            # Dải dưới nắm tay tới đỉnh thân — quai cũ đi qua đây.
             pad = HANDLE_ZONE_PAD * (hb[2] - hb[0])
             zone[int(hb[1]):int(body[1] + 0.05 * (body[3] - body[1])),
                  int(max(bag[0], hb[0] - pad)):int(min(bag[2], hb[2] + pad))] = True
         grip_boxes = np.any([_box_mask(zone.shape, hb) for hb in grips], axis=0)
         handle = handle_by_color(body_mask, rgb, zone, np.any(cores, axis=0) if cores else np.zeros_like(zone), grip_boxes)
-        # Dây da màu bò lọt vào vùng da (cùng luật màu) → gỡ khỏi lõi trước khi tách bàn tay.
         cores = [hand_core(skin & ~handle, hb) for hb in hands]
     grip_gaps = np.zeros(body_mask.shape, bool)
     handle_pts = []
     for hb, core in zip(hands, cores):
-        # Khung tay model hay hẹp hơn nhãn (chấm chéo 13/10: 7/120 ảnh hụt đầu ngón) → xét vùng da trong khung nới.
         pts = handle_points(handle, core, hb) if hb in grips else []
         handle_pts += pts
         negatives = [(cx, cy)] + pts
@@ -684,7 +605,7 @@ def prepare_scene(models, person_image, debug=None):
     old_mask = old_product_mask(body_mask, sam.masks_box(bag), bag, hand_mask) | handle | (whole & ~hand_mask)
     if debug is not None:
         debug['handle'] = handle
-    # Lỗ vẽ lại: SP cũ + cả khung thân (móc treo/charm màu khác rủ trên thân SAM hay sót), nới 6px, trừ tay.
+    # Lỗ vẽ lại: SP cũ + cả khung thân, nới ra, trừ tay.
     hole = old_mask.copy()
     hole[int(body[1]):int(np.ceil(body[3])), int(body[0]):int(np.ceil(body[2]))] = True
     hole = (dilate(hole, 13) | grip_gaps) & ~hand_mask
@@ -698,24 +619,20 @@ def prepare_scene(models, person_image, debug=None):
 
 
 def trim_to_held_product(product_rgba, product_body):
-    """Bỏ phần không thuộc túi khi CẦM trên tay: (1) dưới đáy thân quá TRIM_BELOW_BODY chiều cao thân — chân giá trưng bày
-    còn dính sau tách nền (soát 16/10: Kelly trên giá, 2 chân giá thòng dưới đáy túi); (2) cột giá mảnh thẳng đứng trong
-    lòng quai (giữa thân, từ đỉnh thân lên). Túi cầm tay không có gì thòng dưới đáy thân; dây đeo dài đã bị loại tư thế."""
+    """Bỏ chân giá dưới đáy thân và cột giá mảnh trong lòng quai — còn dính sau tách nền."""
     from scipy import ndimage
     out = product_rgba.copy()
     x0, y0, x1, y1 = (float(v) for v in product_body)
     bh, bw = max(1.0, y1 - y0), max(1.0, x1 - x0)
     cut = int(min(out.shape[0], np.ceil(y1 + TRIM_BELOW_BODY * bh)))
     out[cut:, :, 3] = 0
-    # Cột giá: trong dải giữa thân (STAND_ROD_BAND mỗi bên tâm), phía trên đỉnh thân, các cột điểm đặc chạy liền ≥
-    # STAND_ROD_MIN_RUN chiều cao vùng quai, cụm cột rộng ≤ STAND_ROD_MAX_WIDTH bề ngang thân → xoá.
+    # Cột giá: cụm cột hẹp giữa thân, chạy liền từ đỉnh thân lên.
     top = int(max(0, np.flatnonzero((out[..., 3] > 128).any(axis=1))[0])) if (out[..., 3] > 128).any() else 0
     yb = int(max(0, y0))
     if yb - top > 8:
         zone = out[top:yb, :, 3] > 128
         cx = (x0 + x1) / 2
         lo, hi = int(max(0, cx - STAND_ROD_BAND * bw)), int(min(out.shape[1], cx + STAND_ROD_BAND * bw))
-        # Chạy liền tính từ đỉnh thân lên.
         run = np.zeros(out.shape[1], int)
         for c in range(lo, hi):
             col = zone[::-1, c]
@@ -740,9 +657,7 @@ def product_geometry(product_rgba):
 
 
 def compose_product(models, scene, product_rgba, product_body, debug=None, width_cm=None, px_per_cm=None):
-    """Đặt SP mới vào tay trong `scene` (prepare_scene) → (JPEG bytes, thông tin cho FE/nhật ký). `width_cm` = bề ngang
-    thật thân SP mới (người dùng nhập) → đúng cỡ thật; `px_per_cm` = thước của ảnh (thư viện tư thế: theo khung ảnh),
-    không có thì đo bằng bàn tay."""
+    """Đặt SP mới vào tay trong `scene` → (JPEG bytes, thông tin). `width_cm`: bề ngang thật; `px_per_cm`: thước ảnh."""
     from scipy import ndimage
     rgb, body, hand_mask, front_mask = scene.rgb, scene.body, scene.hand_mask, scene.front_mask
     product_rows, apex_x = product_geometry(product_rgba)
@@ -765,7 +680,7 @@ def compose_product(models, scene, product_rgba, product_body, debug=None, width
     strap_kept = scene.long_strap
     clean = scene.clean
     if clean is None:
-        # Cầm dây đeo dài: giữ đoạn dây cũ phía trên đỉnh SP mới (trông như SP mới treo trên dây), xoá phần còn lại.
+        # Cầm dây dài: giữ đoạn dây cũ phía trên SP mới.
         yy = np.arange(H)[:, None]
         strap = scene.old_mask & (yy < new_top + 0.03 * (body[3] - body[1]))
         strap &= ~dilate(alpha > 0.5, 5)
@@ -778,8 +693,7 @@ def compose_product(models, scene, product_rgba, product_body, debug=None, width
     shadow = ndimage.gaussian_filter(np.roll(alpha, int(0.02 * bh), axis=0), 0.03 * bh)
     out = clean.astype(np.float32) * (1 - SHADOW_OPACITY * shadow * (1 - alpha))[..., None]
     front = front_layer(scene, alpha, product_body, scale, ox, oy)
-    # Bóng tiếp xúc chỉ quanh phần tay Ở TRƯỚC túi — tính theo cả bàn tay (gồm lòng bàn tay nằm sau túi) thì in thành
-    # mảng tối hình bàn tay trên nắp túi (soát 16/10, túi Roulis).
+    # Bóng tiếp xúc chỉ quanh phần tay ở trước túi.
     dist = ndimage.distance_transform_edt(~front)
     color *= (1 - CONTACT_DARKEN * np.clip(1 - dist / (0.025 * bh), 0, 1))[..., None]
     out = color * alpha[..., None] + out * (1 - alpha[..., None])
@@ -798,7 +712,5 @@ def compose_product(models, scene, product_rgba, product_body, debug=None, width
 
 
 def swap_product(models, person_image, product_rgba, product_body, debug=None, width_cm=None):
-    """Đổi SP trên MỘT ảnh chị Nhạm do người dùng chọn. person_image: PIL RGB (đã xoay đúng chiều). product_rgba: mảng
-    RGBA ảnh SP đã tách nền; product_body: khung thân trong ảnh đó. → (JPEG bytes, thông tin). `debug` (dict, chỉ dùng
-    khi soát ảnh ngoài server) nhận các mặt nạ trung gian."""
+    """Đổi SP trên một ảnh chị Nhạm → (JPEG bytes, thông tin). `debug` (dict) nhận các mặt nạ trung gian."""
     return compose_product(models, prepare_scene(models, person_image, debug), product_rgba, product_body, debug, width_cm)

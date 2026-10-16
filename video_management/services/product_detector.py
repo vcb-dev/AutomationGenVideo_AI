@@ -1,22 +1,8 @@
-"""
-Nhận diện túi bằng model tự huấn luyện (YOLOX-tiny xuất ONNX) — chạy CPU ngay trong AI service, 0đ.
+"""Nhận diện túi / thân / kệ / túi khác / đạo cụ bằng model YOLOX-tiny ONNX tự huấn luyện — CPU, 0đ.
 
-Model học trên ảnh túi của phòng media (nhãn gán một lần lúc huấn luyện), nhận 5 lớp: túi chính (kèm
-quai/dây/khăn), thân túi, kệ/hộp/giá đỡ, túi khác phía sau, đạo cụ. Bước tách nền chỉ dùng model này —
-không gọi dịch vụ tính phí nào. Model chưa thấy loại ảnh nào thì dễ đoán sai, nên mỗi ảnh được tự kiểm,
-không cần đáp án, và ảnh model chưa chắc được lọc thận trọng (decide_cutout):
-
-1. Dự đoán 3 lần — ảnh gốc, ảnh lật ngang, ảnh thu nhỏ — model chắc chắn thì 3 lần ra cùng khung.
-2. Luật hình học: có túi và thân túi, độ tin đủ cao, thân nằm trong túi.
-3. Đối chiếu mặt nạ rembg: phần SP nối liền với túi mà chạy ra ngoài khung túi (quai vượt mép trên,
-   dây đeo trải sang bên) và không thuộc kệ/đạo cụ/túi khác → khung túi hụt. Đây là lỗi model lặp
-   lại y hệt ở cả 3 lần nên bước 1 không bắt được (đo trên ảnh có đáp án: 5/24 ảnh "khớp 3 lần"
-   vẫn lệch nhãn Gemini, đều do quai/dây). Phần đó ít thì giữ lại luôn trong ảnh kết quả (không cắt
-   cụt quai), nhiều thì coi như model chưa chắc.
-
-File model là đường dẫn trong biến môi trường (bắt buộc, không mặc định); danh sách lớp và cỡ ảnh đọc
-từ metadata của chính file ONNX để đổi model không phải sửa code. Biến nhận tối đa 2 đường dẫn cách nhau
-dấu phẩy "<model chính>,<model phụ>" → GỘP 2 model (xem fuse_predictions).
+Tự kiểm mỗi ảnh: dự đoán 3 lần (gốc, lật, thu nhỏ) phải khớp, luật hình học, và quai/dây chạy ra ngoài khung túi
+(đối chiếu mặt nạ rembg). Model chưa chắc thì lọc thận trọng (decide_cutout).
+Biến DETECTOR_MODEL_ENV bắt buộc; ghi "<model chính>,<model phụ>" để gộp 2 model. Lớp và cỡ ảnh đọc từ metadata ONNX.
 """
 import json
 import os
@@ -36,37 +22,22 @@ DETECTOR_MODEL_ENV = 'PRODUCT_IMAGE_DETECTOR_MODEL_PATH'
 REQUIRED_CLASSES = ('bag', 'bag_body', 'stand')
 CLASS_NAMES_VI = {'bag': 'túi', 'bag_body': 'thân túi', 'stand': 'kệ/hộp', 'other_bag': 'túi khác', 'prop': 'đạo cụ'}
 
-# Ngưỡng độ tin để giữ một khung: túi/thân/kệ thấp hơn để không sót, túi khác/đạo cụ cao hơn vì chỉ
-# dùng để không xoá nhầm và không tính là "phần túi chạy ra ngoài khung".
 MAIN_CLASS_MIN_SCORE = 0.25
 OTHER_CLASS_MIN_SCORE = 0.5
 NMS_IOU = 0.45
 LETTERBOX_PAD = 114
-# Tự kiểm: IoU tối thiểu giữa khung ảnh gốc với khung ảnh lật / ảnh thu nhỏ. Kệ lỏng hơn vì kệ hay
-# gồm nhiều mảnh (hộp, thanh, đế) mà khung điểm cao nhất có thể là mảnh khác nhau giữa các lần.
+# IoU tối thiểu giữa 3 lần dự đoán.
 VIEW_AGREEMENT = {'bag': 0.85, 'bag_body': 0.85, 'stand': 0.75}
 SHRUNK_VIEW_SCALE = 0.8
-# Độ tin tối thiểu của khung túi và khung thân ở ảnh gốc.
 MIN_MAIN_SCORE = 0.6
-# Thân túi phải nằm trong khung túi ít nhất chừng này diện tích.
 BODY_INSIDE_FRACTION = 0.9
-# Phần SP nối liền với túi nằm ngoài khung túi (đã nới PRODUCT_BOX_MARGIN), không thuộc khung kệ/đạo
-# cụ/túi khác, lớn hơn tỉ lệ này so với phần trong khung → khung túi hụt quai/dây. Đo trên 34 ảnh của 2
-# mẫu túi model chưa học (đáp án = mặt nạ lọc theo khung nhãn Gemini): 1%/2% đẩy thêm ảnh đúng sang nhánh
-# "chưa chắc" mà không bớt ảnh sai; 3–8% như nhau (22 ảnh model tự tin, 20 ảnh trùng đáp án ≥97%).
+# Phần túi ngoài khung quá tỉ lệ này → khung túi hụt quai/dây.
 OUTSIDE_MASK_MAX_FRACTION = 0.03
-# Model chưa chắc thì không cắt phần dính liền túi (cắt theo khung lệch là mất quai/thân), chỉ bỏ vật TÁCH
-# RỜI khỏi túi. Phần dính liền mà model nghi là kệ/đạo cụ lớn hơn tỉ lệ này (so với cả SP) thì báo để người
-# dùng xem lại ảnh — nhỏ hơn thì kết quả gần như không khác, không làm phiền.
+# Model chưa chắc mà phần dính liền nghi là kệ quá tỉ lệ này → báo người dùng xem lại.
 UNSURE_ATTACHED_WARN_FRACTION = 0.02
-# Vật tách rời nhỏ hơn tỉ lệ này của ảnh là vụn rembg, không đếm vào số vật đã bỏ.
 SEPARATE_OBJECT_MIN_FRACTION = 0.0005
-# Gộp 2 model (người dùng 15/10: "gộp cả 2 model vào để nhận diện"). Model CHÍNH (học thêm ảnh túi hiệu web) được tin
-# khi hai model lệch nhau; model PHỤ (model ảnh shop cũ) góp khung: trùng nhau ≥ ENSEMBLE_AGREE_IOU thì lấy trung bình
-# theo độ tin, chỉ model phụ thấy túi/thân thì giữ, chỉ model phụ thấy kệ/đạo cụ/túi khác thì giữ khi độ tin
-# ≥ SECONDARY_EXTRA_MIN_SCORE (giữ hết thì kệ bịa 21 ảnh, bỏ hết thì khung kệ hụt). Chọn trên ảnh CẢ HAI model chưa học
-# (bag-detector-training/train/eval_fusion.py): ảnh shop TB 87,3% (= model cũ; kệ bịa 8 ảnh so với 19), ảnh túi hiệu
-# web khung túi 77,4% (model cũ 28,4%).
+# Gộp 2 model: model chính thắng khi lệch; khung trùng thì lấy trung bình; khung chỉ model phụ thấy thì giữ (kệ/đạo cụ
+# cần độ tin ≥ SECONDARY_EXTRA_MIN_SCORE).
 MAX_ENSEMBLE_MODELS = 2
 ENSEMBLE_AGREE_IOU = 0.7
 SECONDARY_EXTRA_MIN_SCORE = 0.6
@@ -108,15 +79,14 @@ class EnsembleDetector:
 
     def __init__(self, primary, secondary):
         self.members = (primary, secondary)
-        # Tên ghi vào nhật ký chi phí (cột model VarChar(100)): bỏ tiền tố chung của tên model phụ cho gọn.
+        # Tên ngắn cho nhật ký: bỏ tiền tố chung.
         common = os.path.commonprefix([primary.name, secondary.name])
         common = common[:common.rfind('-') + 1]
         self.name = f'{primary.name}+{secondary.name[len(common):]}'
 
 
 def get_detector(path):
-    """Nạp model một lần cho mỗi worker (giống session rembg) — lần sau dùng lại. `path` là tuple 2 đường dẫn
-    (read_detector_model_path) → gộp 2 model."""
+    """Nạp model một lần mỗi worker; `path` là tuple 2 đường dẫn → gộp 2 model."""
     if isinstance(path, (tuple, list)):
         return EnsembleDetector(*(_load_detector(p) for p in path))
     return _load_detector(path)
@@ -212,7 +182,7 @@ def _weighted_box(a, b):
 
 
 def fuse_predictions(primary, secondary):
-    """Gộp dự đoán một lần nhìn của model chính + model phụ (cùng dạng decode) — luật ở chú thích ENSEMBLE_*."""
+    """Gộp dự đoán model chính + model phụ — luật ở chú thích ENSEMBLE_*."""
     out = {}
     for name in set(primary) | set(secondary):
         mains, extras = primary.get(name, []), secondary.get(name, [])
@@ -274,11 +244,8 @@ def self_check(views):
 
 
 def outside_mask(alpha, main):
-    """(mặt nạ, tỉ lệ) của phần SP (mặt nạ rembg) nối liền với túi mà nằm ngoài khung túi đã nới và ngoài
-    mọi khung kệ/đạo cụ/túi khác; tỉ lệ so với phần trong khung túi. Quai vượt mép trên ảnh, dây đeo trải
-    ngang mà model khoanh hụt nằm ở đây: ít thì giữ lại luôn (nới khung theo đúng điểm ảnh, không theo
-    hình chữ nhật), nhiều thì model khoanh sai hẳn → chuyển Gemini."""
-    from scipy import ndimage   # có sẵn: rembg (requirements) cài kèm scipy
+    """(mặt nạ, tỉ lệ) phần SP nối liền túi nằm ngoài khung túi và ngoài khung kệ/đạo cụ — quai/dây model khoanh hụt."""
+    from scipy import ndimage
 
     height, width = alpha.shape
     x0, y0, x1, y1 = (int(round(v)) for v in main['bag'][0][:4])
@@ -290,7 +257,6 @@ def outside_mask(alpha, main):
     for name in ('stand', 'other_bag', 'prop'):
         for bx0, by0, bx1, by1, _ in main.get(name, []):
             explained[int(by0):int(np.ceil(by1)), int(bx0):int(np.ceil(bx1))] = True
-    # Chỉ tính phần nối liền với SP trong khung túi (8 hướng) — vụn nền rời rạc thì không phải túi.
     labels, _ = ndimage.label(opaque & ~(explained & ~inside), structure=np.ones((3, 3)))
     touching = np.unique(labels[opaque & inside])
     outside = np.isin(labels, touching[touching > 0]) & ~explained
@@ -303,7 +269,6 @@ class DetectionResult:
         self.main = main
         self.agreement = agreement
         self.reasons = reasons
-        # Phần túi ngoài khung cần giữ lại (quai/dây model khoanh hụt) — mảng bool cùng cỡ ảnh hoặc None.
         self.keep_outside = keep_outside
 
     @property
@@ -325,8 +290,7 @@ def detect_product(detector, image, alpha):
 
 
 def to_located(main, keep_outside=None):
-    """(khung SP, [khung đạo cụ], khung thân | None, phần ngoài khung cần giữ | None) theo pixel nguyên —
-    3 phần đầu cùng dạng product_image_service.split_product_and_props để isolate_product dùng chung."""
+    """(khung SP, [khung đạo cụ], khung thân | None, phần ngoài khung cần giữ | None) theo pixel nguyên."""
     def pixels(box):
         return (int(np.floor(box[0])), int(np.floor(box[1])), int(np.ceil(box[2])), int(np.ceil(box[3])))
 
@@ -341,12 +305,8 @@ def to_located(main, keep_outside=None):
 
 
 def decide_cutout(alpha, result):
-    """Cách lọc ảnh tách nền theo kết quả model — luôn 0đ, không gọi dịch vụ ngoài. Trả (located | None,
-    detection) — located cùng dạng to_located cho product_image_service.cut_out_product:
-    - model tự tin: bỏ kệ/đạo cụ theo khung model, giữ quai/dây ngoài khung;
-    - model chưa chắc: chỉ bỏ vật tách rời khỏi túi; phần dính liền mà model nghi là kệ/đạo cụ nhiều thì
-      giữ lại và báo (status "skipped") để người dùng xem lại ảnh;
-    - không thấy túi: giữ nguyên ảnh rembg và báo."""
+    """→ (located | None, detection). Tự tin: bỏ kệ/đạo cụ theo khung. Chưa chắc: chỉ bỏ vật tách rời, báo nếu nghi
+    kệ dính liền. Không thấy túi: giữ nguyên rembg."""
     from scipy import ndimage
 
     main = result.main
@@ -369,7 +329,6 @@ def decide_cutout(alpha, result):
     separate = [n for n in np.unique(labels[opaque & ~keep]) if (labels == n).sum() >= SEPARATE_OBJECT_MIN_FRACTION * alpha.size]
     conservative = (located[0], [], located[2], keep)
 
-    # Bản tự tin sẽ cắt bao nhiêu phần dính liền túi — nhiều thì có thể đó là kệ/đạo cụ thật, cần người xem.
     full = isolate_product(alpha, located[0], located[1])
     if located[3] is not None:
         full = np.where(located[3], alpha, full)

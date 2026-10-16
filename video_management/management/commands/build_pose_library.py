@@ -2,9 +2,7 @@
 
   python manage.py build_pose_library <thư mục ảnh> <thư mục thư viện> [--exclude tên-file ...]
 
-Chạy lại được: ảnh đã dựng (cùng nội dung → cùng id) thì bỏ qua; ảnh không dùng được (không thấy SP/tay, cầm dây đeo
-dài) thì in lý do và bỏ. Cần đủ biến model của held_swap (PRODUCT_IMAGE_PERSON_DETECTOR_MODEL_PATH,
-PRODUCT_IMAGE_SWAP_MODELS_DIR) — mỗi ảnh ~5–10s CPU."""
+Chạy lại được (ảnh đã dựng thì bỏ qua). Cần biến model của held_swap; mỗi ảnh ~5–10s CPU."""
 import hashlib
 import json
 import os
@@ -61,7 +59,6 @@ class Command(BaseCommand):
                 self.stdout.write(f'[{i}/{len(names)}] bỏ {name}: {reason}')
                 continue
             metas.append(pl.save_pose(scene, target, pose_id, name))
-            # Ghi index sau mỗi ảnh — dừng giữa chừng vẫn dùng được phần đã dựng.
             pl.write_index(target, metas)
             self.stdout.write(f'[{i}/{len(names)}] {name} → {pose_id}')
         pl.write_index(target, metas)
