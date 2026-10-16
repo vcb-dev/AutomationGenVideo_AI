@@ -59,6 +59,8 @@ pillow>=10.0.0
 # Tạo ảnh sản phẩm (Tiện ích) — tách nền ảnh SP chạy ngay trên máy chủ, không gọi API trả phí.
 # Extra [cpu] kéo onnxruntime; model tải theo biến REMBG_MODEL (xem Dockerfile.railway).
 rembg[cpu]>=2.0.60
+# Đổi SP trên tay chị Nhạm 0đ (held_swap): lấp nền, đo khoảng cách mặt nạ — rembg đã kéo scipy, ghi rõ để không phụ thuộc ngầm.
+scipy>=1.10.0
 
 # HeyGen API (AI Avatar & Lipsync)
 aiohttp>=3.9.0

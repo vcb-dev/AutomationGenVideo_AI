@@ -106,6 +106,12 @@ def usage_not_billed(model, reason):
     return {'model': model, 'input_tokens': 0, 'output_tokens': 0, 'cost_usd': 0.0, 'cost_note': reason}
 
 
+def usage_free(model):
+    """Lượt chạy bằng model tự host trên AI service (vd model nhận diện túi tự huấn luyện) — 0đ, không phải
+    lời cảnh báo nên không kèm ghi chú; tên model đủ để tab Chi phí phân biệt với lượt Gemini."""
+    return {'model': model, 'input_tokens': 0, 'output_tokens': 0, 'cost_usd': 0.0, 'cost_note': None}
+
+
 def usage_unknown(model, reason):
     """Không biết Gemini có tính phí không (vd hết thời gian chờ khi Google có thể vẫn đang xử lý)."""
     return {'model': model, 'input_tokens': 0, 'output_tokens': 0, 'cost_usd': None, 'cost_note': reason}

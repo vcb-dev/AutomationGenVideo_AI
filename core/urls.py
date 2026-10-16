@@ -193,13 +193,16 @@ urlpatterns += [
     path('api/ai/id-photo/merge-outfit/', id_photo_views.merge_outfit, name='id-photo-merge-outfit'),
 ]
 
-# Tạo ảnh sản phẩm mới (Tiện ích) — tách nền rembg (0đ) + Gemini thay SP trên tay chị Nhạm
-# (tính phí). Vô trạng thái như ID Photo, xem product_image_views.py.
+# Tạo ảnh sản phẩm mới (Tiện ích) — tách nền rembg (0đ) + Gemini thay SP trên tay chị Nhạm / đặt SP
+# vào ảnh cảnh (tính phí). Vô trạng thái như ID Photo, xem product_image_views.py.
 from video_management.views import product_image_views
 
 urlpatterns += [
     path('api/ai/product-image/cutout/', product_image_views.cutout, name='product-image-cutout'),
     path('api/ai/product-image/held-product/', product_image_views.held_product, name='product-image-held-product'),
+    path('api/ai/product-image/held-swap/', product_image_views.held_swap, name='product-image-held-swap'),
+    path('api/ai/product-image/held-auto/', product_image_views.held_auto, name='product-image-held-auto'),
+    path('api/ai/product-image/scene-placement/', product_image_views.scene_placement, name='product-image-scene-placement'),
 ]
 
 # Serve media files in development

@@ -1,4 +1,4 @@
-"""Tạo ảnh sản phẩm — chế độ "Ghép background": tách nền ảnh SP bằng rembg (0đ).
+"""Tạo ảnh sản phẩm — chế độ "Ghép background": tách nền ảnh SP bằng rembg + model tự huấn luyện (0đ).
 
 Khoá phần thuần logic quanh rembg: kiểm ảnh đầu vào, xoay theo EXIF, thu nhỏ ảnh quá to, cắt
 sát mép SP (bỏ quầng alpha mờ), báo đúng tên biến khi thiếu REMBG_MODEL, và view bắt buộc JWT.
@@ -11,14 +11,21 @@ import base64
 import io
 import os
 import sys
+import tempfile
 import types
 from unittest import mock
 
-from django.test import SimpleTestCase
+# Nạp scipy.ndimage TRƯỚC các mock.patch.dict(sys.modules, ...) bên dưới: patch.dict khôi phục sys.modules bằng cách
+# gỡ mọi module nạp trong lúc patch → lần sau import lại phần mở rộng C của scipy thì báo "cannot load module more
+# than once per process" (hỏng cả test chạy sau, 13/10).
+import scipy.ndimage  # noqa: F401
+from django.test import SimpleTestCase, override_settings
 from PIL import Image
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from video_management.services import product_detector as det
 from video_management.services import product_image_service as svc
+from video_management.services import product_upscale as up
 from video_management.views import product_image_views
 
 
@@ -115,12 +122,54 @@ class TrimAndDownscaleTests(SimpleTestCase):
 
 class CutOutProductTests(SimpleTestCase):
     def test_tra_png_da_cat_va_kich_thuoc_sp(self):
-        png, width, height = svc.cut_out_product(_png_bytes((120, 80)), _fake_remover((10, 20, 50, 70)))
+        png, width, height, body_box = svc.cut_out_product(_png_bytes((120, 80)), _fake_remover((10, 20, 50, 70)))
         self.assertEqual((width, height), (40, 50))
         result = Image.open(io.BytesIO(png))
         self.assertEqual(result.format, 'PNG')
         self.assertEqual(result.mode, 'RGBA')
         self.assertEqual(result.size, (40, 50))
+
+    def test_anh_nen_trong_suot_dat_len_nen_trang_va_giu_vung_trong_suot(self):
+        """WebP/PNG đã tách nền sẵn: màu dưới vùng trong suốt là rác (sọc) — rembg phải thấy nền TRẮNG, và vùng trong
+        suốt của ảnh gốc vẫn trong suốt dù rembg giữ nhầm."""
+        rgba = Image.new('RGBA', (60, 40), (0, 0, 0, 0))
+        stripes = rgba.load()
+        for y in range(40):
+            for x in range(60):
+                stripes[x, y] = (200, 120, 40, 0) if y % 2 else (90, 60, 20, 0)   # màu rác, alpha 0
+        rgba.paste((150, 90, 50, 255), (20, 10, 40, 30))                         # SP thật
+        buffer = io.BytesIO()
+        rgba.save(buffer, format='WEBP', lossless=True, exact=True)
+        seen = {}
+
+        def keep_everything(image):
+            seen['image'] = image.copy()
+            return Image.new('RGBA', image.size, (128, 128, 128, 255))            # rembg giữ nhầm cả khung
+
+        png, width, height, _ = svc.cut_out_product(buffer.getvalue(), keep_everything)
+        self.assertEqual(seen['image'].mode, 'RGB')
+        self.assertEqual(seen['image'].getpixel((2, 1)), (255, 255, 255))         # nền trắng, không còn sọc
+        self.assertEqual(seen['image'].getpixel((30, 20)), (150, 90, 50))
+        self.assertEqual((width, height), (20, 20))                               # chỉ còn SP thật
+
+    def test_khung_than_lo_ra_vung_trong_suot_khong_thanh_mang_trang(self):
+        """Khung thân model rộng hơn thân thật (lố ra khe cạnh dây): làm đặc thân không được biến khe trong suốt của ảnh
+        gốc thành mảng trắng (gặp 15/10, ảnh WebP túi Nodde)."""
+        rgba = Image.new('RGBA', (60, 40), (0, 0, 0, 0))
+        rgba.paste((150, 90, 50, 255), (20, 10, 40, 30))
+        buffer = io.BytesIO()
+        rgba.save(buffer, format='PNG')
+        locate = lambda image, alpha: ((10, 5, 50, 35), [], (12, 5, 48, 35))
+        png, width, height, _ = svc.cut_out_product(
+            buffer.getvalue(), lambda image: Image.new('RGBA', image.size, (128, 128, 128, 255)), locate)
+        self.assertEqual((width, height), (20, 20))
+        result = Image.open(io.BytesIO(png))
+        self.assertEqual(result.getpixel((0, 0))[3], 255)
+
+    def test_anh_png_dac_hoan_toan_khong_bi_coi_la_trong_suot(self):
+        self.assertIsNone(svc.transparency_of(Image.new('RGBA', (4, 4), (10, 20, 30, 255))))
+        self.assertIsNone(svc.transparency_of(Image.new('RGB', (4, 4))))
+        self.assertIsNotNone(svc.transparency_of(Image.new('RGBA', (4, 4), (10, 20, 30, 0))))
 
     def test_xoay_theo_exif_truoc_khi_tach_nen(self):
         """Ảnh chụp điện thoại lưu 200x100 kèm cờ xoay 90° — rembg phải nhận ảnh đứng 100x200."""
@@ -140,6 +189,41 @@ class CutOutProductTests(SimpleTestCase):
     def test_file_khong_phai_anh(self):
         with self.assertRaisesMessage(svc.ProductImageInputError, 'không phải file ảnh'):
             svc.cut_out_product(b'not an image', _fake_remover((0, 0, 1, 1)))
+
+    def test_bao_sp_cham_mep_anh_goc_va_co_sp_theo_diem_anh_goc(self):
+        """Ảnh gốc cắt mất nửa phải túi (SP chạm mép phải) → báo mép phải; cỡ SP tính theo điểm ảnh GỐC."""
+        info = {}
+        svc.cut_out_product(_png_bytes((120, 80)), _fake_remover((60, 20, 120, 70)), info=info)
+        self.assertEqual(info['cut_off_sides'], ['right'])
+        self.assertEqual(info['product_source_px'], 60)
+
+    def test_co_sp_quy_ve_anh_goc_khi_da_phong(self):
+        """Ảnh nhỏ phóng ×2 trước khi tách nền: SP 80×100 trên ảnh phóng = 50px trên ảnh gốc."""
+        info = {}
+        upscale = lambda image: (image.resize((image.width * 2, image.height * 2)), 2)
+        svc.cut_out_product(_png_bytes((120, 80)), _fake_remover((20, 40, 100, 140)), upscale=upscale, info=info)
+        self.assertEqual(info['cut_off_sides'], [])
+        self.assertEqual(info['product_source_px'], 50)
+
+
+class InputQualityWarningTests(SimpleTestCase):
+    def test_sp_lot_trong_khung_va_du_lon_thi_khong_bao(self):
+        self.assertEqual(svc.input_quality_warnings({'cut_off_sides': [], 'product_source_px': 1200}), [])
+
+    def test_bao_mep_bi_cat_bang_tieng_viet(self):
+        warnings = svc.input_quality_warnings({'cut_off_sides': ['right', 'bottom'], 'product_source_px': 1200})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('mép phải, dưới', warnings[0])
+
+    def test_bao_tui_qua_nho_kem_so_diem_anh(self):
+        warnings = svc.input_quality_warnings({'cut_off_sides': [], 'product_source_px': 180, 'source_size': [192, 256]})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('ảnh 192×256px, túi chỉ ~180px', warnings[0])
+        self.assertIn('Google Hình ảnh', warnings[0])                 # chỉ cách lấy bản lớn khi lưu ảnh trên mạng
+        self.assertIn(f'{svc.SHARP_PRODUCT_MIN_SIDE_PX}px', warnings[0])
+
+    def test_khong_co_thong_tin_thi_khong_bao(self):
+        self.assertEqual(svc.input_quality_warnings({}), [])
 
 
 class RembgSessionTests(SimpleTestCase):
@@ -183,7 +267,22 @@ class ReadRembgModelTests(SimpleTestCase):
             self.assertEqual(svc.read_rembg_model(), 'isnet-general-use')
 
 
+def _view(bag, body=None, stand=None):
+    return {'bag': [bag] if bag else [], 'bag_body': [body] if body else [], 'stand': [stand] if stand else [],
+            'other_bag': [], 'prop': []}
+
+
+def _bag_with_leg_and_jar(image):
+    """rembg giả: "túi" 5..25 × 10..40, "chân giá" dính liền đáy tới y=55, "lọ" tách rời ở góc."""
+    out = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    out.paste((10, 120, 200, 255), (5, 10, 25, 40))
+    out.paste((40, 40, 40, 255), (13, 40, 17, 55))
+    out.paste((200, 200, 200, 255), (45, 45, 55, 55))
+    return out
+
+
 class CutoutViewTests(SimpleTestCase):
+    """Tách nền 0đ: chỉ model tự huấn luyện, không gọi Gemini (không cần GEMINI_API_KEY)."""
     URL = '/api/ai/product-image/cutout/'
 
     def setUp(self):
@@ -198,12 +297,33 @@ class CutoutViewTests(SimpleTestCase):
         self.rembg_patch = mock.patch.dict(sys.modules, {'rembg': fake_rembg})
         self.rembg_patch.start()
         self.addCleanup(self.rembg_patch.stop)
+        model_file = tempfile.NamedTemporaryFile(suffix='.onnx')
+        self.addCleanup(model_file.close)
+        env = mock.patch.dict(os.environ, {'REMBG_MODEL': 'isnet-general-use', 'PRODUCT_IMAGE_DETECTOR_MODEL_PATH': model_file.name,
+                                           'PRODUCT_IMAGE_UPSCALE_MODEL_PATH': model_file.name})
+        env.start()
+        self.addCleanup(env.stop)
+        # Model phóng ảnh giả: giữ nguyên ảnh (khung giả của rembg tính theo ảnh 60px) — đếm số lần gọi.
+        get_upscaler = mock.patch.object(up, 'get_upscaler', return_value=mock.Mock(name='upscaler'))
+        get_upscaler.start()
+        self.addCleanup(get_upscaler.stop)
+        upscale = mock.patch.object(up, 'upscale_if_small', side_effect=lambda session, image: (image, 1))
+        self.upscale = upscale.start()
+        self.addCleanup(upscale.stop)
+        get_detector = mock.patch.object(det, 'get_detector', return_value=mock.Mock(name='detector'))
+        get_detector.start().return_value.name = 'bag-detector-test'
+        self.addCleanup(get_detector.stop)
+        # Model giả mặc định: tự tin, túi chiếm cả ảnh.
+        detect_product = mock.patch.object(det, 'detect_product', return_value=det.DetectionResult(_view((0, 0, 60, 60, 0.95)), {}, []))
+        self.detect_product = detect_product.start()
+        self.addCleanup(detect_product.stop)
 
-    def _post(self, body, authenticated=True):
+    def _post(self, body, authenticated=True, remover=None):
         request = self.factory.post(self.URL, body, format='json')
         if authenticated:
             force_authenticate(request, user=mock.Mock(is_authenticated=True, pk=1))
-        return product_image_views.cutout(request)
+        with mock.patch.object(svc, 'get_rembg_session', return_value=remover or _fake_remover((5, 10, 25, 50))):
+            return product_image_views.cutout(request)
 
     def test_chua_dang_nhap_bi_chan(self):
         self.assertEqual(self._post(self.body, authenticated=False).status_code, 403)
@@ -214,16 +334,88 @@ class CutoutViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 500)
         self.assertIn('REMBG_MODEL', response.data['error_message'])
 
+    def test_thieu_bien_model_tu_huan_luyen_tra_500_neu_ten_bien(self):
+        with mock.patch.dict(os.environ, {'PRODUCT_IMAGE_DETECTOR_MODEL_PATH': ''}):
+            response = self._post(self.body)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('PRODUCT_IMAGE_DETECTOR_MODEL_PATH', response.data['error_message'])
+        self.detect_product.assert_not_called()
+
+    def test_thieu_bien_model_phong_anh_tra_500_neu_ten_bien(self):
+        with mock.patch.dict(os.environ, {'PRODUCT_IMAGE_UPSCALE_MODEL_PATH': ''}), \
+                mock.patch.object(up, 'get_upscaler', side_effect=AssertionError('không được nạp model khi thiếu biến')):
+            response = self._post(self.body)
+        self.assertEqual(response.status_code, 500)
+        self.assertIn('PRODUCT_IMAGE_UPSCALE_MODEL_PATH', response.data['error_message'])
+
+    def test_phong_anh_truoc_khi_tach_nen_va_tra_co_anh_goc(self):
+        response = self._post(self.body)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.upscale.assert_called_once()
+        self.assertEqual(self.upscale.call_args[0][1].size, (60, 60))   # ảnh gốc đưa vào bước phóng
+        self.assertEqual(response.data['source_size'], [60, 60])
+        self.assertEqual(response.data['upscaled'], 1)
+
+    def test_bao_anh_goc_khong_du_lam_anh_thuong_mai(self):
+        """Túi giả 20×40px trong ảnh 60px — quá nhỏ để ghép nét: vẫn ghép (200) nhưng trả câu báo cho FE."""
+        response = self._post(self.body)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data['quality_warnings']), 1)
+        self.assertIn('~40px', response.data['quality_warnings'][0])
+
     def test_sai_dinh_dang_tra_400(self):
         response = self._post({**self.body, 'mime_type': 'image/gif'})
         self.assertEqual(response.status_code, 400)
 
-    def test_thanh_cong_tra_png_va_kich_thuoc(self):
-        with mock.patch.dict(os.environ, {'REMBG_MODEL': 'isnet-general-use'}), \
-                mock.patch.object(svc, 'get_rembg_session', return_value=_fake_remover((5, 10, 25, 50))) as get_session:
-            response = self._post(self.body)
+    @override_settings(GEMINI_API_KEY='')
+    def test_thanh_cong_0d_khong_can_khoa_gemini(self):
+        response = self._post(self.body)
         self.assertEqual(response.status_code, 200, response.data)
-        get_session.assert_called_once_with('isnet-general-use')
         self.assertEqual((response.data['width'], response.data['height']), (20, 40))
         png = Image.open(io.BytesIO(base64.b64decode(response.data['cutout_image_base64'])))
         self.assertEqual(png.size, (20, 40))
+        self.assertEqual(response.data['usage'],
+                         {'model': 'bag-detector-test', 'input_tokens': 0, 'output_tokens': 0, 'cost_usd': 0.0, 'cost_note': None})
+        self.assertEqual(response.data['detection'], {'status': 'applied', 'source': 'model', 'props_removed': 0})
+        # Model nhận đúng ảnh đã thu nhỏ + mặt nạ rembg cùng cỡ.
+        image, alpha = self.detect_product.call_args.args[1:]
+        self.assertEqual(alpha.shape, (image.height, image.width))
+
+    def test_model_tu_tin_bo_chan_gia_va_vat_tach_roi(self):
+        main = _view((5, 10, 25, 40, 0.95), body=(5, 20, 25, 40, 0.95), stand=(12, 40, 18, 56, 0.9))
+        self.detect_product.return_value = det.DetectionResult(main, {'bag': 0.97}, [])
+        response = self._post(self.body, remover=_bag_with_leg_and_jar)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['width'], response.data['height']), (20, 30))
+        self.assertEqual(response.data['detection'], {'status': 'applied', 'source': 'model', 'props_removed': 1})
+        self.assertEqual(response.data['body_box'], [0, 10, 20, 30])
+
+    def test_model_chua_chac_chi_bo_vat_tach_roi_va_bao_phan_dinh_lien(self):
+        # Khung lệch giữa 3 lần → không dám cắt chân giá dính liền túi (có thể cắt nhầm túi), chỉ bỏ cái lọ
+        # tách rời; chân giá model nghi là kệ chiếm >2% ảnh SP → báo người dùng xem lại.
+        reasons = ['khung túi 3 lần lệch nhau (60%)']
+        main = _view((5, 10, 25, 40, 0.9), body=(5, 20, 25, 40, 0.9), stand=(12, 40, 18, 56, 0.9))
+        self.detect_product.return_value = det.DetectionResult(main, {'bag': 0.6}, reasons)
+        response = self._post(self.body, remover=_bag_with_leg_and_jar)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['width'], response.data['height']), (20, 45))   # túi + chân giá, không có lọ
+        detection = response.data['detection']
+        self.assertEqual((detection['status'], detection['source'], detection['model_reasons']), ('skipped', 'model', reasons))
+        self.assertIn('chưa cắt phần dính liền túi', detection['reason'])
+        self.assertEqual(response.data['usage']['cost_usd'], 0.0)
+
+    def test_model_chua_chac_ma_khong_co_gi_dinh_lien_thi_khong_canh_bao(self):
+        reasons = ['kệ/hộp lúc thấy lúc không']
+        main = _view((5, 10, 25, 50, 0.9), body=(5, 20, 25, 50, 0.9))
+        self.detect_product.return_value = det.DetectionResult(main, {}, reasons)
+        response = self._post(self.body)
+        self.assertEqual(response.data['detection'],
+                         {'status': 'applied', 'source': 'model', 'props_removed': 0, 'model_reasons': reasons})
+
+    def test_khong_thay_tui_giu_nguyen_anh_tach_nen_va_bao(self):
+        self.detect_product.return_value = det.DetectionResult(_view(None), {}, ['không thấy túi'])
+        response = self._post(self.body, remover=_bag_with_leg_and_jar)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual((response.data['width'], response.data['height']), (50, 45))   # giữ cả túi, chân giá, lọ
+        self.assertEqual(response.data['detection']['status'], 'skipped')
+        self.assertIn('không thấy túi', response.data['detection']['reason'])
