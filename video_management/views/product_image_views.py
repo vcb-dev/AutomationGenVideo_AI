@@ -31,6 +31,7 @@ from video_management.services import held_swap as hs
 from video_management.services import pose_library as pl
 from video_management.services import product_detector as det
 from video_management.services import product_image_cost as cost
+from video_management.services import product_image_models as model_files
 from video_management.services import product_image_service as svc
 from video_management.services import product_upscale as up
 
@@ -79,6 +80,7 @@ def cutout(request):
     try:
         image_bytes, _ = _input_image(request, 'image', 'mime_type', 'ảnh sản phẩm')
         model_name = svc.read_rembg_model()
+        model_files.ensure_models()
         detector = det.get_detector(det.read_detector_model_path())
         upscaler = up.get_upscaler(up.read_upscale_model_path())
         session = svc.get_rembg_session(model_name)
@@ -187,6 +189,7 @@ def held_swap(request):
         product_bytes, _ = _input_image(request, 'product_image', 'product_mime_type', 'ảnh sản phẩm mới')
         person_image = svc.open_upright_image(person_bytes, 'ảnh chị Nhạm cầm sản phẩm')
         rembg_model = svc.read_rembg_model()
+        model_files.ensure_models()
         product_detector = det.get_detector(det.read_detector_model_path())
         upscaler = up.get_upscaler(up.read_upscale_model_path())
         swap_models = hs.get_models(*hs.read_swap_paths())
@@ -247,6 +250,7 @@ def held_auto(request):
     try:
         product_bytes, _ = _input_image(request, 'product_image', 'product_mime_type', 'ảnh sản phẩm mới')
         width_cm = svc.parse_width_cm(request.data.get('width_cm'))
+        model_files.ensure_models()
         folder, count = pl.read_library_settings()
         rembg_model = svc.read_rembg_model()
         product_detector = det.get_detector(det.read_detector_model_path())
