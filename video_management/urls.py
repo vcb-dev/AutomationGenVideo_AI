@@ -85,6 +85,7 @@ from .views.threads_fetch_views import fetch_threads_profile_posts, fetch_thread
 from .views.youtube_fetch_views import fetch_youtube_channel
 from .views.kuaishou_fetch_views import fetch_kuaishou_profile, fetch_kuaishou_search
 from .views.bilibili_fetch_views import fetch_bilibili_profile, fetch_bilibili_search
+from .views.reddit_fetch_views import fetch_reddit_search, fetch_reddit_subreddit
 from .views.product_views import (
     upload_product_catalog,
     list_product_catalogs,
@@ -280,6 +281,10 @@ urlpatterns = [
     # toàn từ đầu (BilibiliScraperController) — AI chỉ còn fetch-only ở đây.
     path('scraper/bilibili/fetch/profile/', fetch_bilibili_profile, name='scraper-bilibili-fetch-profile'),
     path('scraper/bilibili/fetch/search/', fetch_bilibili_search, name='scraper-bilibili-fetch-search'),
+
+    # Reddit — fetch-only (BE sở hữu DB): tìm theo từ khoá và theo cộng đồng (subreddit)
+    path('scraper/reddit/fetch/search/', fetch_reddit_search, name='scraper-reddit-fetch-search'),
+    path('scraper/reddit/fetch/subreddit/', fetch_reddit_subreddit, name='scraper-reddit-fetch-subreddit'),
 
     # TikTok Search (TikHub)
     path('tiktok/search-v2/', search_tiktok_videos, name='tiktok-search-v2'),
