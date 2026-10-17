@@ -19,6 +19,10 @@ class VideoManagementConfig(AppConfig):
         from video_management.services import tikhub_meter
         tikhub_meter.install()
 
+        # Tải model Tạo ảnh SP từ Drive (chỉ gunicorn, chỉ khi bật) — cũng phải đứng trước lệnh return.
+        from video_management.services import product_image_models
+        product_image_models.start_background_sync()
+
         # Only run in the main process (not in autoreload child)
         # Django runs ready() twice with autoreload: once in parent, once in child
         # We only want to run in the child (the one that serves requests)
